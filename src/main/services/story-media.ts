@@ -5,8 +5,16 @@ import { concatMp3Parts, probeDuration, renderLoopedVideo } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 
-function chunks(text: string, max = 3500): string[] {
+const TTS_CHUNK_SIZE = 1800
+const TTS_CHUNK_ATTEMPTS = 4
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function chunks(text: string, max = TTS_CHUNK_SIZE): string[] {
   const clean = text.replace(/\r/g, '').trim()
+  if (!clean) return []
   if (clean.length <= max) return [clean]
   const paragraphs = clean.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
   const result: string[] = []
@@ -44,6 +52,20 @@ export class StoryMediaService {
   private readonly storage = new ProjectStorageService()
   constructor(private readonly voices = new VoiceService()) {}
 
+  private async synthesizeChunk(voiceId: string, text: string, chunkIndex: number, total: number): Promise<Buffer> {
+    let lastError: unknown
+    for (let attempt = 1; attempt <= TTS_CHUNK_ATTEMPTS; attempt++) {
+      try {
+        return await this.voices.synthesize(voiceId, text)
+      } catch (error) {
+        lastError = error
+        if (attempt < TTS_CHUNK_ATTEMPTS) await sleep(1200 * attempt)
+      }
+    }
+    const reason = lastError instanceof Error ? lastError.message : String(lastError)
+    throw new Error(`Generate voice thất bại ở chunk ${chunkIndex + 1}/${total} sau ${TTS_CHUNK_ATTEMPTS} lần thử: ${reason}`)
+  }
+
   async get(projectId: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const [audio, background, render] = await Promise.all([
@@ -76,22 +98,28 @@ export class StoryMediaService {
     if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ cho Story MP3.')
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
 
-    await prisma.project.update({ where: { id: projectId }, data: { status: 'GENERATING_MEDIA' } })
     const pieces = chunks(script.content)
+    if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
+
+    await prisma.project.update({ where: { id: projectId }, data: { status: 'GENERATING_MEDIA' } })
     const partPaths: string[] = []
     try {
       for (let i = 0; i < pieces.length; i++) {
-        const bytes = await this.voices.synthesize(project.voiceId, pieces[i])
+        const bytes = await this.synthesizeChunk(project.voiceId, pieces[i], i, pieces.length)
+        if (!bytes.length) throw new Error(`CapCut trả audio rỗng ở chunk ${i + 1}/${pieces.length}.`)
         const path = await this.storage.writeBuffer(projectId, `audio/.parts/story-${String(i + 1).padStart(3, '0')}.mp3`, bytes)
         partPaths.push(path)
       }
+
       const output = this.storage.getProjectPath(projectId, 'audio', 'story.mp3')
       const listFile = this.storage.getProjectPath(projectId, 'audio', '.parts', 'concat.txt')
       await concatMp3Parts(partPaths, output, listFile)
       const duration = await probeDuration(output)
+      if (duration <= 0) throw new Error('Story MP3 đã tạo nhưng duration không hợp lệ.')
+
       await prisma.asset.deleteMany({ where: { projectId, type: 'STORY_AUDIO' } })
       await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
-      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: output, metadata: JSON.stringify({ duration, scriptId, voiceId: project.voiceId, chunks: pieces.length }) } })
+      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: output, metadata: JSON.stringify({ duration, scriptId, voiceId: project.voiceId, chunks: pieces.length, chunkSize: TTS_CHUNK_SIZE }) } })
       await prisma.project.update({ where: { id: projectId }, data: { status: 'MEDIA_READY' } })
       return this.get(projectId)
     } catch (error) {
@@ -123,15 +151,18 @@ export class StoryMediaService {
     ])
     if (!audio) throw new Error('Chưa có story.mp3. Generate Story MP3 trước.')
     if (!background) throw new Error('Chưa chọn background video.')
+
     await prisma.project.update({ where: { id: projectId }, data: { status: 'RENDERING' } })
     await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
     const output = this.storage.getProjectPath(projectId, 'videos', `story-${format.toLowerCase()}.mp4`)
     const render = await prisma.render.create({ data: { projectId, type: 'STORY_VIDEO', path: output, status: 'RUNNING', preset: `${format}:${fitMode}` } })
     try {
       await renderLoopedVideo({ backgroundPath: background.path, audioPath: audio.path, outputPath: output, format, fitMode })
+      const outputDuration = await probeDuration(output)
       await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
       await prisma.project.update({ where: { id: projectId }, data: { status: 'READY' } })
-      return this.get(projectId)
+      const result = await this.get(projectId)
+      return { ...result, audioDuration: result.audioDuration ?? outputDuration }
     } catch (error) {
       await prisma.render.update({ where: { id: render.id }, data: { status: 'FAILED' } })
       await prisma.project.update({ where: { id: projectId }, data: { status: 'FAILED' } })
