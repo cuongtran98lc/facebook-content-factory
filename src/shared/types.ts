@@ -93,7 +93,7 @@ export interface StoryMediaDTO {
 export interface GenerateStoryAudioInput { projectId: string; scriptId: string }
 export interface RenderStoryVideoInput { projectId: string; format: VideoFormat; fitMode: FitMode }
 
-export interface AppHealth { database: boolean; storagePath: string; ffmpeg: boolean }
+export interface AppHealth { database: boolean; storagePath: string; ffmpeg: boolean; ttsProvider: 'capcut' | 'elevenlabs' }
 
 export interface ContentFactoryAPI {
   app: { health(): Promise<AppHealth>; openStorageFolder(): Promise<void> }

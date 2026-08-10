@@ -103,7 +103,12 @@ export class StoryMediaService {
   async setBackground(projectId: string, sourcePath: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const copied = await this.storage.copyBackgroundVideo(projectId, sourcePath)
-    const duration = await probeDuration(copied)
+    let duration: number | null = null
+    try {
+      duration = await probeDuration(copied)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
     await prisma.asset.deleteMany({ where: { projectId, type: 'BACKGROUND_VIDEO' } })
     await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
     await prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: copied, metadata: JSON.stringify({ duration, sourceName: basename(sourcePath) }) } })

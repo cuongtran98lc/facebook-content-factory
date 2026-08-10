@@ -32,7 +32,12 @@ export function registerIpcHandlers(): void {
     } catch {
       database = false
     }
-    return { database, storagePath: getStorageRoot(), ffmpeg: await hasFfmpeg() }
+    return {
+      database,
+      storagePath: getStorageRoot(),
+      ffmpeg: await hasFfmpeg(),
+      ttsProvider: process.env.TTS_PROVIDER?.trim().toLowerCase() === 'capcut' ? 'capcut' : 'elevenlabs'
+    }
   })
 
   ipcMain.handle('app:open-storage', async () => {
