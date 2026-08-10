@@ -11,6 +11,11 @@ release/
 .env.*
 !.env.example
 
+# CapCut local bridge secrets/session request capture
+tools/capcut_bridge/capcut.local.json
+tools/capcut_bridge/.venv/
+tools/capcut_bridge/__pycache__/
+
 # Local database
 *.db
 *.db-journal
