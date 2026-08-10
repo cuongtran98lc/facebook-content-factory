@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
 
 function run(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -38,13 +37,25 @@ export async function probeDuration(path: string): Promise<number> {
 }
 
 export async function concatMp3Parts(parts: string[], output: string, listFile: string): Promise<void> {
-  if (parts.length === 1) {
-    await run('ffmpeg', ['-y', '-i', parts[0], '-c:a', 'copy', output])
-    return
-  }
+  if (!parts.length) throw new Error('Không có MP3 chunk để ghép.')
+
   const escaped = parts.map(path => `file '${path.replace(/'/g, "'\\''")}'`).join('\n')
   await writeFile(listFile, escaped, 'utf8')
-  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:a', 'copy', output])
+
+  // Re-encode once after concat. CapCut can return MP3 chunks with slightly different
+  // timestamps/headers, and stream-copying them may create incorrect duration or seeking.
+  await run('ffmpeg', [
+    '-y',
+    '-f', 'concat',
+    '-safe', '0',
+    '-i', listFile,
+    '-vn',
+    '-c:a', 'libmp3lame',
+    '-b:a', '192k',
+    '-ar', '44100',
+    '-ac', '2',
+    output
+  ])
 }
 
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE'
@@ -59,6 +70,9 @@ export async function renderLoopedVideo(input: {
 }): Promise<void> {
   const dims = input.format === 'REEL' ? [1080, 1920] : input.format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
   const [w, h] = dims
+  const audioDuration = await probeDuration(input.audioPath)
+  if (!Number.isFinite(audioDuration) || audioDuration <= 0) throw new Error('Story MP3 không có duration hợp lệ.')
+
   const filter = input.fitMode === 'FIT'
     ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=30`
     : `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=30`
@@ -71,12 +85,14 @@ export async function renderLoopedVideo(input: {
     '-map', '0:v:0',
     '-map', '1:a:0',
     '-vf', filter,
+    '-t', audioDuration.toFixed(3),
     '-c:v', 'libx264',
     '-preset', 'medium',
     '-crf', '20',
     '-pix_fmt', 'yuv420p',
     '-c:a', 'aac',
     '-b:a', '192k',
+    '-ar', '44100',
     '-shortest',
     '-movflags', '+faststart',
     input.outputPath
