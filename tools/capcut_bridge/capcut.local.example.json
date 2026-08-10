@@ -1,9 +1,9 @@
 {
   "voices": [
     {
-      "display_name": "CapCut Vietnamese Voice",
-      "voice_type": "PASTE_VOICE_TYPE_FROM_YOUR_CAPCUT_REQUEST",
-      "resource_id": "PASTE_RESOURCE_ID_IF_PRESENT",
+      "display_name": "CapCut BV074 Vietnamese Voice",
+      "voice_type": "BV074_streaming",
+      "resource_id": "7102355709945188865",
       "lang": "vi",
       "gender": ""
     }
@@ -15,13 +15,36 @@
       "Content-Type": "application/json"
     },
     "json": {
-      "REPLACE": "Paste the JSON body captured from your own CapCut request here, then replace dynamic values with {{text}}, {{voice_type}}, {{resource_id}}, {{rate}}"
+      "bind_id": "PASTE_BIND_ID",
+      "can_queue": true,
+      "enter_from": "text_to_speech",
+      "tasks": [
+        {
+          "context": "PASTE_CONTEXT",
+          "payload": "PASTE_CAPTURED_PAYLOAD_HERE_AND_REPLACE_SSML_TEXT_WITH_{{text}}_VOICE_WITH_{{voice_type}}_RESOURCE_WITH_{{resource_id}}_RATE_WITH_{{rate}}",
+          "req_key": "sami_text_to_speech",
+          "task_version": "v3"
+        }
+      ]
     }
   },
   "query_request": {
-    "method": "GET",
-    "url": "PASTE_FULL_CAPCUT_COMMON_TASK_QUERY_URL_HERE_WITH_{{task_id}}_IF_NEEDED",
-    "headers": {}
+    "method": "POST",
+    "url": "PASTE_FULL_CAPCUT_COMMON_TASK_QUERY_URL_HERE",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "tasks": [
+        {
+          "bind_id": "",
+          "id": "{{task_id}}",
+          "req_key": "sami_text_to_speech",
+          "task_version": "v3",
+          "token": "{{task_token}}"
+        }
+      ]
+    }
   },
   "poll_attempts": 30,
   "poll_interval_seconds": 1
