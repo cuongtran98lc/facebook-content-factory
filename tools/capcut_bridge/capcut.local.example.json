@@ -1,0 +1,28 @@
+{
+  "voices": [
+    {
+      "display_name": "CapCut Vietnamese Voice",
+      "voice_type": "PASTE_VOICE_TYPE_FROM_YOUR_CAPCUT_REQUEST",
+      "resource_id": "PASTE_RESOURCE_ID_IF_PRESENT",
+      "lang": "vi",
+      "gender": ""
+    }
+  ],
+  "create_request": {
+    "method": "POST",
+    "url": "PASTE_FULL_CAPCUT_COMMON_TASK_NEW_URL_HERE",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "REPLACE": "Paste the JSON body captured from your own CapCut request here, then replace dynamic values with {{text}}, {{voice_type}}, {{resource_id}}, {{rate}}"
+    }
+  },
+  "query_request": {
+    "method": "GET",
+    "url": "PASTE_FULL_CAPCUT_COMMON_TASK_QUERY_URL_HERE_WITH_{{task_id}}_IF_NEEDED",
+    "headers": {}
+  },
+  "poll_attempts": 30,
+  "poll_interval_seconds": 1
+}
