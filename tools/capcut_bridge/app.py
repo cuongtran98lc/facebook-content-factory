@@ -7,21 +7,28 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.getenv("CAPCUT_BRIDGE_CONFIG", ROOT / "capcut.local.json"))
+CUSTOM_VOICES_PATH = Path(os.getenv("VIENEU_CUSTOM_VOICES", ROOT / "custom_voices.json"))
 logger = logging.getLogger("capcut_bridge")
 
-app = FastAPI(title="Content Factory CapCut TTS Bridge", version="0.2.0")
+app = FastAPI(title="Content Factory Local TTS Bridge", version="0.3.0")
+
+_vieneu_engine: Any | None = None
+_vieneu_load_lock = threading.Lock()
+_vieneu_infer_lock = asyncio.Lock()
 
 TTS_SIGN_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmTd34Lw4b7IuldSXh/zY
@@ -41,6 +48,82 @@ class TTSRequest(BaseModel):
     rate: float = 1.0
 
 
+class VieNeuTTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    voice: str = Field(default="Ngọc Linh", min_length=1)
+    style: str = Field(default="doc_truyen", pattern="^(tu_nhien|tin_tuc|doc_truyen)$")
+
+
+def vieneu_voice_data() -> dict[str, Any]:
+    path = ROOT / ".venv" / "lib" / f"python{os.sys.version_info.major}.{os.sys.version_info.minor}" / "site-packages" / "vieneu" / "assets" / "voices_v3_turbo.json"
+    if not path.exists():
+        try:
+            import vieneu
+            path = Path(vieneu.__file__).resolve().parent / "assets" / "voices_v3_turbo.json"
+        except ImportError as exc:
+            raise HTTPException(503, detail="VieNeu chưa được cài. Chạy npm start để cài dependency bridge.") from exc
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        if CUSTOM_VOICES_PATH.exists():
+            custom = json.loads(CUSTOM_VOICES_PATH.read_text("utf-8"))
+            for name, voice in custom.get("presets", {}).items():
+                data.setdefault("presets", {})[name] = {**voice, "custom": True}
+        return data
+    except Exception as exc:
+        raise HTTPException(500, detail=f"Không đọc được VieNeu voice presets: {exc}") from exc
+
+
+def get_vieneu_engine() -> Any:
+    global _vieneu_engine
+    if _vieneu_engine is not None:
+        return _vieneu_engine
+    with _vieneu_load_lock:
+        if _vieneu_engine is None:
+            try:
+                from vieneu import Vieneu
+                _vieneu_engine = Vieneu(
+                    mode="v3turbo",
+                    backend="onnx",
+                    device="cpu",
+                    threads=max(1, int(os.getenv("VIENEU_THREADS", "4"))),
+                )
+                if CUSTOM_VOICES_PATH.exists():
+                    import numpy as np
+                    custom = json.loads(CUSTOM_VOICES_PATH.read_text("utf-8"))
+                    for name, voice in custom.get("presets", {}).items():
+                        embedding = voice.get("speaker_emb")
+                        codes = voice.get("codes")
+                        if embedding is None:
+                            continue
+                        _vieneu_engine._preset_voices[name] = {
+                            "description": voice.get("description", "Custom local voice"),
+                            "gender": voice.get("gender", ""),
+                            "style": voice.get("style", "tu_nhien"),
+                            "speaker_emb": np.asarray(embedding, dtype=np.float32),
+                            "codes": None if codes is None else np.asarray(codes, dtype=np.int64),
+                        }
+            except Exception as exc:
+                logger.exception("Cannot initialize VieNeu TTS")
+                raise RuntimeError(f"Không khởi tạo được VieNeu TTS: {exc}") from exc
+    return _vieneu_engine
+
+
+def render_vieneu_wav(request: VieNeuTTSRequest) -> bytes:
+    import soundfile as sf
+
+    engine = get_vieneu_engine()
+    wav = engine.infer(
+        request.text,
+        voice=request.voice,
+        style=request.style,
+        max_chars=min(256, max(80, int(os.getenv("VIENEU_MAX_CHARS", "220")))),
+        apply_watermark=True,
+    )
+    output = BytesIO()
+    sf.write(output, wav, engine.sample_rate, format="WAV", subtype="PCM_16")
+    return output.getvalue()
+
+
 def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         raise HTTPException(503, detail=f"Missing {CONFIG_PATH.name}. Copy capcut.local.example.json to capcut.local.json and configure your CapCut session request.")
@@ -56,6 +139,12 @@ def deep_replace(value: Any, replacements: dict[str, Any]) -> Any:
     if isinstance(value, list):
         return [deep_replace(v, replacements) for v in value]
     if isinstance(value, str):
+        try:
+            nested = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            nested = None
+        if isinstance(nested, (dict, list)):
+            return compact_json(deep_replace(nested, replacements))
         for key, replacement in replacements.items():
             value = value.replace("{{" + key + "}}", str(replacement if replacement is not None else ""))
     return value
@@ -140,10 +229,16 @@ def prepare_create_call(create: dict[str, Any]) -> tuple[dict[str, str], str]:
     body["bind_id"] = str(uuid.uuid4())
     task = body["tasks"][0]
     task["context"] = str(uuid.uuid4())
-    try:
-        payload = json.loads(task["payload"])
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise HTTPException(503, detail="create_request task payload must be a JSON string") from exc
+    raw_payload = task.get("payload")
+    if isinstance(raw_payload, dict):
+        payload = raw_payload
+    elif isinstance(raw_payload, str):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(503, detail=f"create_request task payload contains invalid JSON: {exc}") from exc
+    else:
+        raise HTTPException(503, detail="create_request task payload must be a JSON string or object")
     query = parse_qs(urlsplit(create["url"]).query)
     device_id = query.get("device_id", [""])[0]
     aid = query.get("aid", ["359289"])[0]
@@ -206,7 +301,45 @@ def extract_speech_url(payload: Any) -> str | None:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "configured": CONFIG_PATH.exists(), "config": str(CONFIG_PATH), "version": "0.2.0"}
+    return {
+        "ok": True,
+        "configured": CONFIG_PATH.exists(),
+        "config": str(CONFIG_PATH),
+        "version": "0.3.0",
+        "vieneu_loaded": _vieneu_engine is not None,
+    }
+
+
+@app.get("/api/vieneu/voices")
+def vieneu_voices() -> list[dict[str, Any]]:
+    data = vieneu_voice_data()
+    result = []
+    for name, voice in data.get("presets", {}).items():
+        result.append({
+            "id": name,
+            "display_name": name,
+            "gender": voice.get("gender", ""),
+            "region": voice.get("region", ""),
+            "style": voice.get("style", "tu_nhien"),
+            "description": voice.get("description", "VieNeu local voice"),
+            "custom": bool(voice.get("custom", False)),
+        })
+    return result
+
+
+@app.post("/api/vieneu/tts")
+async def vieneu_tts(request: VieNeuTTSRequest) -> Response:
+    presets = vieneu_voice_data().get("presets", {})
+    if request.voice not in presets:
+        raise HTTPException(400, detail=f"Không có VieNeu voice '{request.voice}'.")
+    try:
+        async with _vieneu_infer_lock:
+            wav = await asyncio.to_thread(render_vieneu_wav, request)
+        return Response(content=wav, media_type="audio/wav", headers={"X-TTS-Voice": request.voice})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, detail=str(exc)) from exc
 
 
 @app.get("/api/voices")
@@ -223,7 +356,7 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
         raise HTTPException(503, detail="create_request.url is missing in capcut.local.json")
 
     replacements = {
-        "text": request.text,
+        "text": request.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
         "voice": request.voice,
         "voice_type": request.voice,
         "resource_id": request.resource_id or "",
@@ -257,6 +390,16 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
                 logger.warning("CapCut is busy (ret=1014); retrying in %.1fs (%s/%s)", delay, attempt, create_attempts)
                 await asyncio.sleep(delay)
                 continue
+            if ret == "-6" or "shark block" in str(create_payload.get("errmsg", "")).lower():
+                raise HTTPException(
+                    403,
+                    detail=(
+                        "CapCut security blocked this session/device (ret=-6: shark block only). "
+                        "Close CapCut, wait for the temporary risk-control cooldown, sign in again, "
+                        "then capture a fresh create/query request into capcut.local.json. "
+                        "The bridge cannot bypass CapCut's Shark security layer."
+                    ),
+                )
             raise HTTPException(
                 502,
                 detail=f"CapCut rejected task creation (ret={ret}): {create_payload.get('errmsg', 'unknown error')}",

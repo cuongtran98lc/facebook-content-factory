@@ -1,5 +1,5 @@
 import { dialog, ipcMain, shell } from 'electron'
-import type { AIProviderName, GenerateIdeasInput, GenerateReelsInput, GenerateStoryAudioInput, GenerateStoryInput, PreviewVoiceInput, RenderStoryVideoInput, RewriteScriptInput, SaveAISettingsInput, SaveVoiceSettingsInput, SelectVoiceInput, UpdateScriptInput } from '../../shared/types'
+import type { AIProviderName, BackgroundKind, CrawlStoryInput, GenerateIdeasInput, GenerateReelsInput, GenerateReelVideosInput, GenerateStoryAudioInput, GenerateStoryInput, GenerateThumbnailInput, ImportStoryInput, PreviewVoiceInput, RenderStoryVideoInput, RewriteScriptInput, SaveAISettingsInput, SaveVoiceSettingsInput, SelectVoiceInput, UpdateScriptInput } from '../../shared/types'
 import { AIService } from '../services/ai'
 import { getPrisma } from '../services/database'
 import { hasFfmpeg } from '../services/ffmpeg'
@@ -12,6 +12,7 @@ import { ScriptService } from '../services/scripts'
 import { VoiceService } from '../services/voices'
 import { StoryMediaService } from '../services/story-media'
 import { ProjectStorageService } from '../services/storage'
+import { StoryCrawlerService } from '../services/story-crawler'
 
 const projects = new ProjectService()
 const pipeline = new PipelineService()
@@ -22,6 +23,12 @@ const scripts = new ScriptService(ai)
 const voices = new VoiceService(settings)
 const storyMedia = new StoryMediaService(voices)
 const storage = new ProjectStorageService()
+const crawler = new StoryCrawlerService()
+
+async function openFolder(path: string, label: string): Promise<void> {
+  const error = await shell.openPath(path)
+  if (error) throw new Error(`Không thể mở ${label}: ${error}`)
+}
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('app:health', async () => {
@@ -41,7 +48,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('app:open-storage', async () => {
-    await shell.openPath(getStorageRoot())
+    await openFolder(getStorageRoot(), 'storage nội bộ')
   })
 
   ipcMain.handle('projects:list', () => projects.list())
@@ -54,31 +61,49 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('scripts:list', (_event, projectId: string) => scripts.list(projectId))
   ipcMain.handle('scripts:generate-story', (_event, input: GenerateStoryInput) => scripts.generateStory(input))
+  ipcMain.handle('scripts:import-story', (_event, input: ImportStoryInput) => scripts.importStory(input))
   ipcMain.handle('scripts:review', (_event, scriptId: string) => scripts.review(scriptId))
   ipcMain.handle('scripts:rewrite', (_event, input: RewriteScriptInput) => scripts.rewrite(input))
   ipcMain.handle('scripts:update', (_event, input: UpdateScriptInput) => scripts.update(input))
+  ipcMain.handle('scripts:remove', (_event, scriptId: string) => scripts.remove(scriptId))
   ipcMain.handle('scripts:approve', (_event, scriptId: string) => scripts.approve(scriptId))
   ipcMain.handle('scripts:generate-reels', (_event, input: GenerateReelsInput) => scripts.generateReels(input))
+
+  ipcMain.handle('crawler:crawl', (event, input: CrawlStoryInput) => crawler.crawl(input, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('crawler:progress', progress)
+  }))
 
   ipcMain.handle('voices:list', (_event, search?: string) => voices.list(search))
   ipcMain.handle('voices:preview', (_event, input: PreviewVoiceInput) => voices.preview(input))
   ipcMain.handle('voices:select', (_event, input: SelectVoiceInput) => voices.select(input))
 
   ipcMain.handle('story-media:get', (_event, projectId: string) => storyMedia.get(projectId))
+  ipcMain.handle('story-media:generate-thumbnail', (_event, input: GenerateThumbnailInput) => storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt))
+  ipcMain.handle('story-media:generate-reel-videos', (event, input: GenerateReelVideosInput) => storyMedia.generateReelVideos(input.projectId, input.fitMode, input.soundEffect, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('story-media:reel-progress', progress)
+  }))
+  ipcMain.handle('story-media:resume-pending', event => storyMedia.resumePending(progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('story-media:reel-progress', progress)
+  }))
   ipcMain.handle('story-media:generate-audio', (_event, input: GenerateStoryAudioInput) => storyMedia.generateStoryAudio(input.projectId, input.scriptId))
-  ipcMain.handle('story-media:choose-background', async (_event, projectId: string) => {
+  ipcMain.handle('story-media:choose-background', async (_event, projectId: string, kind: BackgroundKind = 'VIDEO') => {
+    const image = kind === 'IMAGE'
     const result = await dialog.showOpenDialog({
-      title: 'Chọn background video',
+      title: image ? 'Chọn ảnh làm background' : 'Chọn background video',
       properties: ['openFile'],
-      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv'] }]
+      filters: image
+        ? [{ name: 'Ảnh', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }]
+        : [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv'] }]
     })
     if (result.canceled || !result.filePaths[0]) return null
-    return storyMedia.setBackground(projectId, result.filePaths[0])
+    return storyMedia.setBackground(projectId, result.filePaths[0], kind)
   })
-  ipcMain.handle('story-media:render', (_event, input: RenderStoryVideoInput) => storyMedia.render(input.projectId, input.format, input.fitMode))
+  ipcMain.handle('story-media:render', (event, input: RenderStoryVideoInput) => storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress)
+  }))
   ipcMain.handle('story-media:open-output', async (_event, projectId: string) => {
-    await storage.ensureProject(projectId)
-    await shell.openPath(storage.getProjectPath(projectId, 'videos'))
+    const output = await storage.ensureOutputProject(projectId)
+    await openFolder(output, 'output của truyện')
   })
 
   ipcMain.handle('settings:ai:get', () => settings.getAI())

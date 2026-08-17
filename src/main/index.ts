@@ -1,11 +1,16 @@
 import { app, BrowserWindow, net, protocol } from 'electron'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { registerIpcHandlers } from './ipc'
 import { closePrisma } from './services/database'
-import { getStorageRoot } from './services/paths'
+import { getOutputRoot, getStorageRoot } from './services/paths'
 import { pathToFileURL } from 'node:url'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'local-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
+
+function isInsideRoot(path: string, root: string): boolean {
+  const child = relative(resolve(root), resolve(path))
+  return child === '' || (child !== '..' && !child.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(child))
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -36,9 +41,9 @@ app.whenReady().then(() => {
   protocol.handle('local-media', request => {
     const url = new URL(request.url)
     const requested = decodeURIComponent(url.pathname.slice(1))
-    const root = getStorageRoot()
-    if (!requested.startsWith(root)) return new Response('Forbidden', { status: 403 })
-    return net.fetch(pathToFileURL(requested).toString())
+    const allowedRoots = [getStorageRoot(), getOutputRoot()]
+    if (!allowedRoots.some(root => isInsideRoot(requested, root))) return new Response('Forbidden', { status: 403 })
+    return net.fetch(pathToFileURL(resolve(requested)).toString())
   })
   registerIpcHandlers()
   createWindow()

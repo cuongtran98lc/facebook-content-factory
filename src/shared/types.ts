@@ -17,6 +17,12 @@ export type AIProviderName = 'openai' | 'gemini'
 export type ScriptType = 'LONG_STORY' | 'REEL'
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE'
 export type FitMode = 'CROP' | 'FIT'
+export type BackgroundKind = 'VIDEO' | 'IMAGE'
+export type SoundEffectPreset = 'DYNAMIC' | 'WHOOSH' | 'IMPACT' | 'CHIME'
+export interface SoundEffectOptions {
+  preset: SoundEffectPreset
+  volume: number
+}
 
 export interface ProjectDTO {
   id: string
@@ -44,9 +50,19 @@ export interface ScriptDTO {
   sourceScriptId: string | null; createdAt: string
 }
 export interface GenerateStoryInput { projectId: string; targetWords?: number }
+export interface ImportStoryInput { projectId: string; title?: string; content: string }
 export interface RewriteScriptInput { scriptId: string; instruction?: string }
 export interface UpdateScriptInput { scriptId: string; title?: string; content: string }
 export interface GenerateReelsInput { projectId: string; count?: number }
+export interface CrawlStoryInput { projectId: string; url: string; maxEpisodes?: number }
+export interface CrawlProgress {
+  current: number
+  total: number
+  percent: number
+  stage: 'DISCOVERING' | 'CRAWLING' | 'SAVING' | 'DONE'
+  message: string
+}
+export interface CrawlStoryResult { story: ScriptDTO; episodes: ScriptDTO[]; sourceUrl: string }
 
 export interface AISettingsDTO {
   provider: AIProviderName; openaiModel: string; geminiModel: string
@@ -79,6 +95,10 @@ export interface SelectVoiceInput { projectId: string; voiceId: string; voiceNam
 
 
 export interface StoryMediaDTO {
+  thumbnailPath: string | null
+  thumbnailUrl: string | null
+  thumbnailPrompt: string | null
+  thumbnailProvider: AIProviderName | null
   audioPath: string | null
   audioUrl: string | null
   audioDuration: number | null
@@ -86,12 +106,51 @@ export interface StoryMediaDTO {
   backgroundUrl: string | null
   backgroundName: string | null
   backgroundDuration: number | null
+  backgroundKind: BackgroundKind | null
   renderPath: string | null
   renderUrl: string | null
   renderStatus: string | null
+  storyVideoParts: StoryVideoPartDTO[]
+  reels: ReelMediaDTO[]
 }
+export interface StoryVideoPartDTO {
+  part: number
+  totalParts: number
+  startSeconds: number
+  duration: number | null
+  path: string | null
+  url: string | null
+  status: string | null
+}
+export interface ReelMediaDTO {
+  reelId: string
+  episode: number
+  title: string | null
+  audioPath: string | null
+  videoPath: string | null
+  videoUrl: string | null
+  thumbnailPath: string | null
+  thumbnailUrl: string | null
+  status: string | null
+}
+export interface GenerateThumbnailInput { projectId: string; scriptId: string; prompt?: string }
 export interface GenerateStoryAudioInput { projectId: string; scriptId: string }
-export interface RenderStoryVideoInput { projectId: string; format: VideoFormat; fitMode: FitMode }
+export interface RenderStoryVideoInput { projectId: string; format: VideoFormat; fitMode: FitMode; soundEffect?: SoundEffectOptions }
+export interface GenerateReelVideosInput { projectId: string; fitMode: FitMode; soundEffect?: SoundEffectOptions }
+export interface ReelVideoProgress {
+  current: number
+  total: number
+  percent: number
+  stage: 'STARTING' | 'AUDIO' | 'THUMBNAIL' | 'VIDEO' | 'DONE'
+  message: string
+}
+export interface StoryVideoProgress {
+  current: number
+  total: number
+  percent: number
+  stage: 'STARTING' | 'VIDEO' | 'DONE'
+  message: string
+}
 
 export interface AppHealth { database: boolean; storagePath: string; ffmpeg: boolean; ttsProvider: 'capcut' | 'elevenlabs' }
 
@@ -110,11 +169,17 @@ export interface ContentFactoryAPI {
   scripts: {
     list(projectId: string): Promise<ScriptDTO[]>
     generateStory(input: GenerateStoryInput): Promise<ScriptDTO>
+    importStory(input: ImportStoryInput): Promise<ScriptDTO>
     review(scriptId: string): Promise<ScriptDTO>
     rewrite(input: RewriteScriptInput): Promise<ScriptDTO>
     update(input: UpdateScriptInput): Promise<ScriptDTO>
+    remove(scriptId: string): Promise<void>
     approve(scriptId: string): Promise<ScriptDTO>
     generateReels(input: GenerateReelsInput): Promise<ScriptDTO[]>
+  }
+  crawler: {
+    crawl(input: CrawlStoryInput): Promise<CrawlStoryResult>
+    onProgress(callback: (progress: CrawlProgress) => void): () => void
   }
   voices: {
     list(search?: string): Promise<VoiceDTO[]>
@@ -123,8 +188,13 @@ export interface ContentFactoryAPI {
   }
   storyMedia: {
     get(projectId: string): Promise<StoryMediaDTO>
+    generateThumbnail(input: GenerateThumbnailInput): Promise<StoryMediaDTO>
+    generateReelVideos(input: GenerateReelVideosInput): Promise<StoryMediaDTO>
+    onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void
+    onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void
+    resumePending(): Promise<StoryMediaDTO | null>
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>
-    chooseBackground(projectId: string): Promise<StoryMediaDTO | null>
+    chooseBackground(projectId: string, kind?: BackgroundKind): Promise<StoryMediaDTO | null>
     render(input: RenderStoryVideoInput): Promise<StoryMediaDTO>
     openOutput(projectId: string): Promise<void>
   }

@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mkdirSync } from 'node:fs'
 
 export function getAppDataDir(): string {
@@ -15,6 +15,17 @@ export function getDatabasePath(): string {
 
 export function getStorageRoot(): string {
   const dir = join(getAppDataDir(), 'projects')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+export function getOutputRoot(): string {
+  const configured = process.env.CONTENT_FACTORY_OUTPUT_DIR?.trim()
+  const dir = configured
+    ? resolve(configured)
+    : app.isPackaged
+      ? join(app.getPath('documents'), 'Content Factory Output')
+      : join(app.getAppPath(), 'output')
   mkdirSync(dir, { recursive: true })
   return dir
 }

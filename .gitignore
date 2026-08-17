@@ -15,6 +15,9 @@ release/
 tools/capcut_bridge/capcut.local.json
 tools/capcut_bridge/.venv/
 tools/capcut_bridge/__pycache__/
+tools/capcut_bridge/custom_voices.json
+tools/capcut_bridge/*-reference.mp3
+tools/capcut_bridge/*-reference.wav
 
 # Local database
 *.db
@@ -25,6 +28,7 @@ tools/capcut_bridge/__pycache__/
 # Generated media / local app data
 storage/
 projects/
+output/
 *.mp3
 *.mp4
 

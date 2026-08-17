@@ -1,5 +1,6 @@
 import type {
   GenerateReelsInput,
+  ImportStoryInput,
   GenerateStoryInput,
   RewriteScriptInput,
   ScriptDTO,
@@ -50,6 +51,40 @@ export class ScriptService {
       orderBy: [{ type: 'asc' }, { version: 'desc' }, { createdAt: 'desc' }]
     })
     return rows.map(toDTO)
+  }
+
+  async importStory(input: ImportStoryInput): Promise<ScriptDTO> {
+    const content = input.content.replace(/\r\n?/g, '\n').trim()
+    if (content.length < 20) throw new Error('Nội dung truyện quá ngắn; cần ít nhất 20 ký tự.')
+    if (content.length > 500_000) throw new Error('File truyện quá lớn; giới hạn hiện tại là 500.000 ký tự.')
+    const prisma = getPrisma()
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: input.projectId } })
+    const latest = await prisma.script.findFirst({
+      where: { projectId: project.id, type: 'LONG_STORY' },
+      orderBy: { version: 'desc' }
+    })
+    await prisma.script.updateMany({
+      where: { projectId: project.id, type: 'LONG_STORY' },
+      data: { approved: false }
+    })
+    const row = await prisma.script.create({
+      data: {
+        projectId: project.id,
+        type: 'LONG_STORY',
+        title: input.title?.trim() || `Truyện nhập từ TXT v${(latest?.version ?? 0) + 1}`,
+        content,
+        version: (latest?.version ?? 0) + 1
+      }
+    })
+    // Imported text becomes the new source of truth. Hide media/reels produced
+    // from an older story so the UI cannot accidentally render mismatched audio.
+    await prisma.$transaction([
+      prisma.script.deleteMany({ where: { projectId: project.id, type: 'REEL' } }),
+      prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL'] } } }),
+      prisma.render.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } } }),
+      prisma.project.update({ where: { id: project.id }, data: { status: 'SCRIPT_READY' } })
+    ])
+    return toDTO(row)
   }
 
   async generateStory(input: GenerateStoryInput): Promise<ScriptDTO> {
@@ -188,6 +223,26 @@ export class ScriptService {
       data: { title: input.title?.trim() || undefined, content: input.content.trim() }
     })
     return toDTO(row)
+  }
+
+  async remove(scriptId: string): Promise<void> {
+    const prisma = getPrisma()
+    const script = await prisma.script.findUniqueOrThrow({ where: { id: scriptId } })
+    if (script.type === 'LONG_STORY') {
+      const childReels = await prisma.script.findMany({ where: { projectId: script.projectId, type: 'REEL', sourceScriptId: script.id }, select: { id: true } })
+      const reelIds = childReels.map(reel => reel.id)
+      await prisma.$transaction([
+        prisma.script.deleteMany({ where: { id: { in: reelIds } } }),
+        prisma.render.deleteMany({ where: { projectId: script.projectId, type: 'REEL_VIDEO', preset: { in: reelIds } } }),
+        prisma.script.delete({ where: { id: script.id } }),
+        prisma.project.update({ where: { id: script.projectId }, data: { status: 'IDEAS_READY' } })
+      ])
+      return
+    }
+    await prisma.$transaction([
+      prisma.render.deleteMany({ where: { projectId: script.projectId, type: 'REEL_VIDEO', preset: script.id } }),
+      prisma.script.delete({ where: { id: script.id } })
+    ])
   }
 
   async approve(scriptId: string): Promise<ScriptDTO> {
