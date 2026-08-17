@@ -1,4 +1,5 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { copyFile, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { getPrisma } from './database'
 import { getOutputRoot, getStorageRoot } from './paths'
@@ -94,6 +95,19 @@ export class ProjectStorageService {
     const output = await this.getOutputPath(projectId, relativePath)
     await mkdir(dirname(output), { recursive: true })
     await writeFile(output, content)
+    return output
+  }
+
+  async writeOutputText(projectId: string, relativePath: string, content: string): Promise<string> {
+    const output = await this.getOutputPath(projectId, relativePath)
+    const temporary = `${output}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, content, 'utf8')
+      await rename(temporary, output)
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined)
+      throw error
+    }
     return output
   }
 

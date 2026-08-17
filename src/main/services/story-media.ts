@@ -8,10 +8,14 @@ import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, norma
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
+import { PublishingMetadataService, type PublishMetadata, type PublishMode, type PublishTarget } from './video-metadata'
 
 const TTS_CHUNK_ATTEMPTS = 4
 const STORY_SHORT_MAX_MS = 180_000
 const STORY_VIDEO_PRESET_SCHEMA = 1
+const CTA_TEXT = 'Hãy nhấn like và đăng ký kênh để mình có thêm động lực làm truyện tiếp cho các bạn nghe nha.'
+const PUBLISH_METADATA_ASSET_TYPE = 'VIDEO_PUBLISH_METADATA'
+const PUBLISH_METADATA_SCHEMA = 1
 
 interface StoryVideoSegment {
   part: number
@@ -28,6 +32,21 @@ interface StoryVideoPreset extends StoryVideoSegment {
   fitMode: FitMode
   sfxRenderVersion: number
   soundEffect: SoundEffectOptions
+  scriptId?: string
+  audioAssetId?: string
+}
+
+interface StoredPublishMetadata extends PublishMetadata {
+  schemaVersion: number
+  scope: 'STORY' | 'REELS'
+  mode: PublishMode
+  renderId: string
+  scriptId: string
+  reelId?: string
+  part?: number
+  totalParts?: number
+  videoFile: string
+  generatedAt: string
 }
 
 function sleep(ms: number): Promise<void> {
@@ -72,6 +91,34 @@ function parseMeta(meta?: string | null): Record<string, unknown> {
   try { return JSON.parse(meta) as Record<string, unknown> } catch { return {} }
 }
 
+function parsePublishMetadata(meta?: string | null): StoredPublishMetadata | null {
+  const parsed = parseMeta(meta) as Partial<StoredPublishMetadata>
+  if (parsed.schemaVersion !== PUBLISH_METADATA_SCHEMA || typeof parsed.renderId !== 'string' || typeof parsed.title !== 'string' || typeof parsed.description !== 'string') return null
+  if (parsed.source !== 'AI' && parsed.source !== 'FALLBACK') return null
+  return parsed as StoredPublishMetadata
+}
+
+function storyTextPart(content: string, part: number, totalParts: number): string {
+  const words = content.replace(/\r/g, '').trim().split(/\s+/).filter(Boolean)
+  if (totalParts <= 1 || words.length < 2) return words.join(' ')
+  const start = Math.floor((words.length * Math.max(0, part - 1)) / totalParts)
+  const end = part >= totalParts ? words.length : Math.floor((words.length * part) / totalParts)
+  return words.slice(start, Math.max(start + 1, end)).join(' ')
+}
+
+function publishSidecar(metadata: StoredPublishMetadata): string {
+  return [
+    `TIÊU ĐỀ (${metadata.mode})`,
+    metadata.title,
+    '',
+    'MÔ TẢ',
+    metadata.description,
+    '',
+    `VIDEO: ${metadata.videoFile}`,
+    `NGUỒN: ${metadata.source}${metadata.provider ? ` · ${metadata.provider}` : ''}`
+  ].join('\n') + '\n'
+}
+
 export function planStoryVideoSegments(durationSeconds: number, format: VideoFormat): StoryVideoSegment[] {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error('Story MP3 không có duration hợp lệ.')
   const totalMs = Math.max(1, Math.round(durationSeconds * 1000))
@@ -92,6 +139,14 @@ function parseStoryVideoPreset(value?: string | null): StoryVideoPreset | null {
   } catch {
     return null
   }
+}
+
+function storyRenderFormat(path: string | null, preset?: StoryVideoPreset | null): VideoFormat {
+  if (preset?.format) return preset.format
+  const name = basename(path ?? '').toLowerCase()
+  if (name.includes('reel') || name.includes('short')) return 'REEL'
+  if (name.includes('square')) return 'SQUARE'
+  return 'LANDSCAPE'
 }
 
 function normalizeThumbnail(bytes: Buffer): Buffer {
@@ -121,7 +176,11 @@ function episodeThumbnail(bytes: Buffer, episode: number): Buffer {
 
 export class StoryMediaService {
   private readonly storage = new ProjectStorageService()
-  constructor(private readonly voices = new VoiceService(), private readonly thumbnails = new ThumbnailService()) {}
+  constructor(
+    private readonly voices = new VoiceService(),
+    private readonly thumbnails = new ThumbnailService(),
+    private readonly publishing = new PublishingMetadataService()
+  ) {}
 
   private async synthesizeChunk(voiceId: string, text: string, chunkIndex: number, total: number): Promise<Buffer> {
     let lastError: unknown
@@ -139,6 +198,16 @@ export class StoryMediaService {
     }
     const reason = lastError instanceof Error ? lastError.message : String(lastError)
     throw new Error(`Generate voice thất bại ở chunk ${chunkIndex + 1}/${total} sau ${TTS_CHUNK_ATTEMPTS} lần thử: ${reason}`)
+  }
+
+  private async makeCta(voiceId: string, projectId: string, forceRegen = false): Promise<string> {
+    const ctaPath = this.storage.getProjectPath(projectId, 'audio', '.parts', 'cta.mp3')
+    if (!forceRegen) {
+      try { if ((await stat(ctaPath)).size > 0) return ctaPath } catch {}
+    }
+    const bytes = await this.synthesizeChunk(voiceId, CTA_TEXT, 0, 1)
+    await this.storage.writeBuffer(projectId, 'audio/.parts/cta.mp3', bytes)
+    return ctaPath
   }
 
   async resumePending(onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO | null> {
@@ -159,7 +228,7 @@ export class StoryMediaService {
 
   async get(projectId: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
-    const [thumbnail, audio, background, storyRenders, reelScripts, reelRenders, reelThumbnails, reelAudios] = await Promise.all([
+    const [thumbnail, audio, background, storyRenders, reelScripts, reelRenders, reelThumbnails, reelAudios, publishAssets] = await Promise.all([
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'BACKGROUND_VIDEO' }, orderBy: { createdAt: 'desc' } }),
@@ -167,36 +236,57 @@ export class StoryMediaService {
       prisma.script.findMany({ where: { projectId, type: 'REEL' }, orderBy: { version: 'asc' } }),
       prisma.render.findMany({ where: { projectId, type: 'REEL_VIDEO', status: 'DONE' }, orderBy: { createdAt: 'asc' } }),
       prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' }, orderBy: { createdAt: 'asc' } }),
-      prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'asc' } })
+      prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'asc' } }),
+      prisma.asset.findMany({ where: { projectId, type: PUBLISH_METADATA_ASSET_TYPE }, orderBy: { createdAt: 'desc' } })
     ])
     const audioMeta = parseMeta(audio?.metadata)
     const bgMeta = parseMeta(background?.metadata)
     const thumbnailMeta = parseMeta(thumbnail?.metadata)
-    const latestStoryPreset = parseStoryVideoPreset(storyRenders[0]?.preset)
-    const activeStoryRenders = (latestStoryPreset
-      ? storyRenders.filter(row => parseStoryVideoPreset(row.preset)?.runId === latestStoryPreset.runId)
-      : storyRenders.slice(0, 1)
-    ).sort((left, right) => (parseStoryVideoPreset(left.preset)?.part ?? 1) - (parseStoryVideoPreset(right.preset)?.part ?? 1))
-    const storyVideoParts = activeStoryRenders.map((row) => {
-      const preset = parseStoryVideoPreset(row.preset)
-      const done = row.status === 'DONE'
-      return {
-        part: preset?.part ?? 1,
-        totalParts: preset?.totalParts ?? 1,
-        startSeconds: (preset?.startMs ?? 0) / 1000,
-        duration: preset ? preset.durationMs / 1000 : null,
-        path: done ? row.path : null,
-        url: done ? mediaUrl(row.path, row.updatedAt) : null,
-        status: row.status
-      }
+    const publishByRenderId = new Map<string, { path: string; data: StoredPublishMetadata }>()
+    for (const asset of publishAssets) {
+      const data = parsePublishMetadata(asset.metadata)
+      if (data && !publishByRenderId.has(data.renderId)) publishByRenderId.set(data.renderId, { path: asset.path, data })
+    }
+    const seenFormats = new Set<VideoFormat>()
+    const storyVideoOutputs = storyRenders.flatMap((latestRow) => {
+      const latestPreset = parseStoryVideoPreset(latestRow.preset)
+      const format = storyRenderFormat(latestRow.path, latestPreset)
+      if (seenFormats.has(format)) return []
+      seenFormats.add(format)
+      const runRows = (latestPreset
+        ? storyRenders.filter(row => parseStoryVideoPreset(row.preset)?.runId === latestPreset.runId)
+        : [latestRow]
+      ).sort((left, right) => (parseStoryVideoPreset(left.preset)?.part ?? 1) - (parseStoryVideoPreset(right.preset)?.part ?? 1))
+      const parts = runRows.map((row) => {
+        const preset = parseStoryVideoPreset(row.preset)
+        const done = row.status === 'DONE'
+        const publish = publishByRenderId.get(row.id)
+        return {
+          part: preset?.part ?? 1,
+          totalParts: preset?.totalParts ?? 1,
+          format,
+          startSeconds: (preset?.startMs ?? 0) / 1000,
+          duration: preset ? preset.durationMs / 1000 : null,
+          path: done ? row.path : null,
+          url: done ? mediaUrl(row.path, row.updatedAt) : null,
+          status: row.status,
+          publishTitle: publish?.data.title ?? null,
+          publishDescription: publish?.data.description ?? null,
+          publishMetadataPath: publish?.path ?? null,
+          publishSource: publish?.data.source ?? null
+        }
+      })
+      const expectedParts = latestPreset?.totalParts ?? (runRows.length ? 1 : 0)
+      const status = runRows.some(row => row.status === 'FAILED')
+        ? 'FAILED'
+        : runRows.length === expectedParts && runRows.every(row => row.status === 'DONE')
+          ? 'DONE'
+          : runRows[0]?.status ?? null
+      return [{ format, status, parts }]
     })
-    const firstStoryVideo = activeStoryRenders.find(row => row.status === 'DONE')
-    const expectedStoryParts = latestStoryPreset?.totalParts ?? (activeStoryRenders.length ? 1 : 0)
-    const renderStatus = activeStoryRenders.some(row => row.status === 'FAILED')
-      ? 'FAILED'
-      : activeStoryRenders.length === expectedStoryParts && activeStoryRenders.every(row => row.status === 'DONE')
-        ? 'DONE'
-        : activeStoryRenders[0]?.status ?? null
+    const storyVideoParts = storyVideoOutputs[0]?.parts ?? []
+    const firstStoryVideo = storyVideoParts.find(part => part.status === 'DONE')
+    const renderStatus = storyVideoOutputs[0]?.status ?? null
     return {
       thumbnailPath: thumbnail?.path ?? null,
       thumbnailUrl: mediaUrl(thumbnail?.path, thumbnail?.createdAt),
@@ -211,18 +301,182 @@ export class StoryMediaService {
       backgroundDuration: typeof bgMeta.duration === 'number' ? bgMeta.duration : null,
       backgroundKind: bgMeta.kind === 'IMAGE' ? 'IMAGE' : background ? 'VIDEO' : null,
       renderPath: firstStoryVideo?.path ?? null,
-      renderUrl: mediaUrl(firstStoryVideo?.path, firstStoryVideo?.updatedAt),
+      renderUrl: firstStoryVideo?.url ?? null,
       renderStatus,
       storyVideoParts,
+      storyVideoOutputs,
       reels: reelScripts.map((script, index) => {
         const episode = index + 1
         const match = (rows: Array<{ path: string; metadata: string | null; createdAt: Date }>) => rows.find(row => parseMeta(row.metadata).reelId === script.id)
         const reelRender = reelRenders.find(row => row.preset === script.id)
         const reelThumbnail = match(reelThumbnails)
         const reelAudio = match(reelAudios)
-        return { reelId: script.id, episode, title: script.title, audioPath: reelAudio?.path ?? null, videoPath: reelRender?.path ?? null, videoUrl: mediaUrl(reelRender?.path, reelRender?.updatedAt), thumbnailPath: reelThumbnail?.path ?? null, thumbnailUrl: mediaUrl(reelThumbnail?.path, reelThumbnail?.createdAt), status: reelRender?.status ?? null }
+        const publish = reelRender ? publishByRenderId.get(reelRender.id) : undefined
+        return {
+          reelId: script.id,
+          episode,
+          title: script.title,
+          audioPath: reelAudio?.path ?? null,
+          videoPath: reelRender?.path ?? null,
+          videoUrl: mediaUrl(reelRender?.path, reelRender?.updatedAt),
+          thumbnailPath: reelThumbnail?.path ?? null,
+          thumbnailUrl: mediaUrl(reelThumbnail?.path, reelThumbnail?.createdAt),
+          status: reelRender?.status ?? null,
+          publishTitle: publish?.data.title ?? null,
+          publishDescription: publish?.data.description ?? null,
+          publishMetadataPath: publish?.path ?? null,
+          publishSource: publish?.data.source ?? null
+        }
       })
     }
+  }
+
+  async generateMetadata(projectId: string, scope: 'ALL' | 'STORY' | 'REELS' = 'ALL', onProgress?: (progress: StoryVideoProgress) => void): Promise<StoryMediaDTO> {
+    const prisma = getPrisma()
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
+    const targets: Array<{
+      input: PublishTarget
+      scope: 'STORY' | 'REELS'
+      renderId: string
+      renderPath: string
+      scriptId: string
+      reelId?: string
+      part?: number
+      totalParts?: number
+    }> = []
+
+    if (scope !== 'REELS') {
+      const [audio, storyRenders] = await Promise.all([
+        prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } }),
+        prisma.render.findMany({ where: { projectId, type: 'STORY_VIDEO', status: 'DONE', path: { not: null } }, orderBy: { createdAt: 'desc' } })
+      ])
+      const audioMeta = parseMeta(audio?.metadata)
+      const fallbackScriptId = typeof audioMeta.scriptId === 'string' ? audioMeta.scriptId : null
+      const seenStoryFormats = new Set<VideoFormat>()
+      const activeRuns = storyRenders.flatMap((latestRow) => {
+        const latestPreset = parseStoryVideoPreset(latestRow.preset)
+        const format = storyRenderFormat(latestRow.path, latestPreset)
+        if (seenStoryFormats.has(format)) return []
+        seenStoryFormats.add(format)
+        const rows = (latestPreset
+          ? storyRenders.filter(row => parseStoryVideoPreset(row.preset)?.runId === latestPreset.runId)
+          : [latestRow]
+        ).sort((left, right) => (parseStoryVideoPreset(left.preset)?.part ?? 1) - (parseStoryVideoPreset(right.preset)?.part ?? 1))
+        return [{ format, rows, scriptId: latestPreset?.scriptId ?? fallbackScriptId }]
+      })
+      const latestFallbackStory = await prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: { version: 'desc' } })
+      for (const run of activeRuns) {
+        const story = run.scriptId
+          ? await prisma.script.findFirst({ where: { id: run.scriptId, projectId, type: 'LONG_STORY' } })
+          : latestFallbackStory
+        if (!story) continue
+        for (const render of run.rows) {
+          if (!render.path) continue
+          const preset = parseStoryVideoPreset(render.preset)
+          const format = run.format
+          const part = preset?.part ?? 1
+          const totalParts = preset?.totalParts ?? 1
+          const mode: PublishMode = format === 'REEL' ? 'STORY_SHORT_9_16' : format === 'SQUARE' ? 'STORY_LONG_1_1' : 'STORY_LONG_16_9'
+          targets.push({
+            input: {
+              key: render.id,
+              mode,
+              storyTitle: story.title?.trim() || project.name,
+              content: format === 'REEL' ? storyTextPart(story.content, part, totalParts) : story.content,
+              part: format === 'REEL' ? part : undefined,
+              totalParts: format === 'REEL' ? totalParts : undefined
+            },
+            scope: 'STORY',
+            renderId: render.id,
+            renderPath: render.path,
+            scriptId: story.id,
+            part: format === 'REEL' ? part : undefined,
+            totalParts: format === 'REEL' ? totalParts : undefined
+          })
+        }
+      }
+    }
+
+    if (scope !== 'STORY') {
+      const [reels, renders] = await Promise.all([
+        prisma.script.findMany({ where: { projectId, type: 'REEL' }, orderBy: { version: 'asc' } }),
+        prisma.render.findMany({ where: { projectId, type: 'REEL_VIDEO', status: 'DONE', path: { not: null } }, orderBy: { createdAt: 'asc' } })
+      ])
+      for (const [index, reel] of reels.entries()) {
+        const render = renders.find(row => row.preset === reel.id)
+        if (!render?.path) continue
+        const episode = index + 1
+        targets.push({
+          input: {
+            key: render.id,
+            mode: 'REEL_SHORT_9_16',
+            storyTitle: reel.title?.trim() || `${project.name} · Tập ${episode}`,
+            content: reel.content,
+            part: episode,
+            totalParts: reels.length
+          },
+          scope: 'REELS',
+          renderId: render.id,
+          renderPath: render.path,
+          scriptId: reel.id,
+          reelId: reel.id,
+          part: episode,
+          totalParts: reels.length
+        })
+      }
+    }
+
+    if (!targets.length) throw new Error('Chưa có video hoàn chỉnh để tạo title và description.')
+    const reportMetadata = (current: number, percent: number, message: string) => onProgress?.({ current, total: targets.length, percent: Math.round(percent), stage: 'METADATA', message })
+    reportMetadata(0, 5, `Đang phân tích nội dung của ${targets.length} video...`)
+    const generated = new Map((await this.publishing.generate(targets.map(target => target.input))).map(item => [item.key, item]))
+    reportMetadata(0, 60, 'Đã tạo nội dung, đang lưu metadata cạnh từng video...')
+    const oldAssets = await prisma.asset.findMany({ where: { projectId, type: PUBLISH_METADATA_ASSET_TYPE } })
+
+    for (const [index, target] of targets.entries()) {
+      const result = generated.get(target.input.key)
+      if (!result) continue
+      const videoFile = basename(target.renderPath)
+      const publishedVideoPath = await this.storage.copyToOutput(projectId, `videos/${videoFile}`, target.renderPath)
+      if (publishedVideoPath !== target.renderPath) {
+        await prisma.render.update({ where: { id: target.renderId }, data: { path: publishedVideoPath } })
+      }
+      const stored: StoredPublishMetadata = {
+        ...result,
+        schemaVersion: PUBLISH_METADATA_SCHEMA,
+        scope: target.scope,
+        mode: target.input.mode,
+        renderId: target.renderId,
+        scriptId: target.scriptId,
+        reelId: target.reelId,
+        part: target.part,
+        totalParts: target.totalParts,
+        videoFile,
+        generatedAt: new Date().toISOString()
+      }
+      const stem = videoFile.replace(/\.[^.]+$/, '')
+      const metadataPath = await this.storage.writeOutputText(projectId, `videos/${stem}.metadata.txt`, publishSidecar(stored))
+      await prisma.asset.create({
+        data: {
+          projectId,
+          type: PUBLISH_METADATA_ASSET_TYPE,
+          path: metadataPath,
+          metadata: JSON.stringify(stored)
+        }
+      })
+      const replacedIds = oldAssets.filter(asset => parsePublishMetadata(asset.metadata)?.renderId === target.renderId).map(asset => asset.id)
+      if (replacedIds.length) await prisma.asset.deleteMany({ where: { id: { in: replacedIds } } })
+      reportMetadata(index + 1, 60 + ((index + 1) / targets.length) * 38, `Đã lưu title/description ${index + 1}/${targets.length}.`)
+    }
+    const activeRenderIds = new Set(targets.map(target => target.renderId))
+    const staleMetadataIds = oldAssets.filter(asset => {
+      const metadata = parsePublishMetadata(asset.metadata)
+      if (!metadata || activeRenderIds.has(metadata.renderId)) return false
+      return scope === 'ALL' || metadata.scope === scope
+    }).map(asset => asset.id)
+    if (staleMetadataIds.length) await prisma.asset.deleteMany({ where: { id: { in: staleMetadataIds } } })
+    reportMetadata(targets.length, 100, `Hoàn tất metadata cho ${targets.length}/${targets.length} video.`)
+    return this.get(projectId)
   }
 
   async generateReelVideos(projectId: string, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO> {
@@ -250,7 +504,7 @@ export class StoryMediaService {
     if (!baseThumbnail) throw new Error('Hãy Generate Thumbnail Truyện trước để tạo thumbnail từng tập.')
     const backgroundKind: BackgroundKind = parseMeta(background.metadata).kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
     if (!resuming) await prisma.render.deleteMany({ where: { projectId, type: 'REEL_VIDEO' } })
-    const totalUnits = reels.length * 3
+    const totalUnits = reels.length * 4
     let completedUnits = 0
     const report = (current: number, stage: ReelVideoProgress['stage'], message: string, forcePercent?: number) => {
       const progress = forcePercent ?? Math.round((completedUnits / totalUnits) * 100)
@@ -258,6 +512,8 @@ export class StoryMediaService {
       void prisma.job.update({ where: { id: job.id }, data: { progress, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION, current, stage, message }) } })
     }
     report(0, 'STARTING', `Đang chuẩn bị ${reels.length} tập...`, 0)
+    // Pre-generate CTA once; reuse the same file for every reel
+    const ctaPath = await this.makeCta(project.voiceId, projectId, !resuming)
     const publishedBaseThumbnail = await this.storage.copyToOutput(projectId, 'images/thumbnail.png', baseThumbnail.path)
     if (publishedBaseThumbnail !== baseThumbnail.path) {
       await prisma.asset.update({ where: { id: baseThumbnail.id }, data: { path: publishedBaseThumbnail } })
@@ -286,6 +542,7 @@ export class StoryMediaService {
             const audioBytes = await this.synthesizeChunk(project.voiceId, text, chunkIndex, reelChunks.length)
             partPaths.push(await this.storage.writeBuffer(projectId, `audio/reels/.parts/${slug}-${String(chunkIndex + 1).padStart(2, '0')}.mp3`, audioBytes))
           }
+          partPaths.push(ctaPath)
           audioPath = await this.storage.getOutputPath(projectId, 'audio', 'reels', `${slug}.mp3`)
           await concatMp3Parts(partPaths, audioPath, this.storage.getProjectPath(projectId, 'audio', 'reels', '.parts', `${slug}-concat.txt`))
           const duration = await probeDuration(audioPath)
@@ -317,9 +574,17 @@ export class StoryMediaService {
         }
         completedUnits++
       }
+      report(reels.length, 'METADATA', `Đang tạo title + description riêng cho ${reels.length} video...`)
+      let metadataWarning = ''
+      try {
+        await this.generateMetadata(projectId, 'REELS', progress => report(reels.length, 'METADATA', progress.message, 75 + progress.percent * 0.25))
+      } catch (error) {
+        metadataWarning = error instanceof Error ? error.message : String(error)
+      }
+      completedUnits += reels.length
       await prisma.project.update({ where: { id: projectId }, data: { status: 'READY' } })
       await prisma.job.update({ where: { id: job.id }, data: { status: 'DONE', progress: 100 } })
-      report(reels.length, 'DONE', `Hoàn tất ${reels.length}/${reels.length} Reel videos.`, 100)
+      report(reels.length, 'DONE', metadataWarning ? `Đã xong video; metadata cần thử lại: ${metadataWarning}` : `Hoàn tất ${reels.length}/${reels.length} Reel videos + title/description.`, 100)
       return this.get(projectId)
     } catch (error) {
       await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: error instanceof Error ? error.message : String(error) } })
@@ -399,6 +664,9 @@ export class StoryMediaService {
         await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
       }
 
+      // Append CTA at the end of the story audio
+      partPaths.push(await this.makeCta(project.voiceId, projectId, !resuming))
+
       const output = await this.storage.getOutputPath(projectId, 'audio', 'story.mp3')
       const listFile = this.storage.getProjectPath(projectId, 'audio', '.parts', 'concat.txt')
       await concatMp3Parts(partPaths, output, listFile)
@@ -447,6 +715,8 @@ export class StoryMediaService {
     if (!audio) throw new Error('Chưa có story.mp3. Generate Story MP3 trước.')
     if (!background) throw new Error('Chưa chọn video hoặc ảnh background.')
     const backgroundKind: BackgroundKind = parseMeta(background.metadata).kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
+    const sourceAudioMeta = parseMeta(audio.metadata)
+    const sourceScriptId = typeof sourceAudioMeta.scriptId === 'string' ? sourceAudioMeta.scriptId : undefined
     const audioPath = await this.storage.copyToOutput(projectId, 'audio/story.mp3', audio.path)
     if (audioPath !== audio.path) await prisma.asset.update({ where: { id: audio.id }, data: { path: audioPath } })
     if (thumbnail) {
@@ -462,7 +732,14 @@ export class StoryMediaService {
     }
 
     await prisma.project.update({ where: { id: projectId }, data: { status: 'RENDERING' } })
-    await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
+    const previousFormatRenders = await prisma.render.findMany({
+      where: { projectId, type: 'STORY_VIDEO', status: { not: 'STALE' } },
+      select: { id: true, path: true, preset: true }
+    })
+    const previousFormatIds = previousFormatRenders
+      .filter(row => storyRenderFormat(row.path, parseStoryVideoPreset(row.preset)) === format)
+      .map(row => row.id)
+    if (previousFormatIds.length) await prisma.render.updateMany({ where: { id: { in: previousFormatIds } }, data: { status: 'STALE' } })
     report(0, 0, 'STARTING', format === 'REEL' ? `Đang chuẩn bị ${segments.length} video Short 9:16...` : 'Đang chuẩn bị Story video...')
     let currentRenderId: string | null = null
     try {
@@ -470,11 +747,11 @@ export class StoryMediaService {
         const output = format === 'REEL'
           ? await this.storage.getOutputPath(projectId, 'videos', `story-reel-short-${String(segment.part).padStart(digits, '0')}-of-${String(segment.totalParts).padStart(digits, '0')}.mp4`)
           : await this.storage.getOutputPath(projectId, 'videos', `story-${format.toLowerCase()}.mp4`)
-        const preset: StoryVideoPreset = { ...segment, kind: 'story-video', schema: STORY_VIDEO_PRESET_SCHEMA, runId, format, fitMode, sfxRenderVersion: SFX_RENDER_VERSION, soundEffect }
+        const preset: StoryVideoPreset = { ...segment, kind: 'story-video', schema: STORY_VIDEO_PRESET_SCHEMA, runId, format, fitMode, sfxRenderVersion: SFX_RENDER_VERSION, soundEffect, scriptId: sourceScriptId, audioAssetId: audio.id }
         const render = await prisma.render.create({ data: { projectId, type: 'STORY_VIDEO', path: output, status: 'RUNNING', preset: JSON.stringify(preset) } })
         currentRenderId = render.id
         const label = format === 'REEL' ? `Short ${segment.part}/${segment.totalParts}` : 'Story video'
-        report(segment.part, (index / segments.length) * 100, 'VIDEO', `${label}: render ${Math.round(segment.durationMs / 1000)} giây + SFX...`)
+        report(segment.part, (index / segments.length) * 92, 'VIDEO', `${label}: render ${Math.round(segment.durationMs / 1000)} giây + SFX...`)
         await renderLoopedVideo({
           backgroundPath: background.path,
           backgroundKind,
@@ -486,15 +763,24 @@ export class StoryMediaService {
           soundEffect,
           audioStartSeconds: segment.startMs / 1000,
           audioDurationSeconds: segment.durationMs / 1000,
-          onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 100, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX`)
+          onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 92, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX`)
         })
         const renderedDuration = await probeDuration(output)
         if (Math.abs(renderedDuration - segment.durationMs / 1000) > 1) throw new Error(`${label} có duration không hợp lệ sau khi render.`)
         await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
         currentRenderId = null
       }
+      report(segments.length, 94, 'METADATA', `Đang tạo title + description cho ${segments.length} video...`)
+      let metadataWarning = ''
+      try {
+        await this.generateMetadata(projectId, 'STORY', progress => report(segments.length, 94 + progress.percent * 0.05, 'METADATA', progress.message))
+      } catch (error) {
+        metadataWarning = error instanceof Error ? error.message : String(error)
+      }
       await prisma.project.update({ where: { id: projectId }, data: { status: 'READY' } })
-      report(segments.length, 100, 'DONE', format === 'REEL' ? `Hoàn tất ${segments.length}/${segments.length} video Short 9:16.` : 'Story video đã render xong.')
+      report(segments.length, 100, 'DONE', metadataWarning
+        ? `Video đã xong; metadata cần thử lại: ${metadataWarning}`
+        : format === 'REEL' ? `Hoàn tất ${segments.length}/${segments.length} video Short 9:16 + title/description.` : 'Story video + title/description đã hoàn tất.')
       return this.get(projectId)
     } catch (error) {
       if (currentRenderId) await prisma.render.update({ where: { id: currentRenderId }, data: { status: 'FAILED' } })

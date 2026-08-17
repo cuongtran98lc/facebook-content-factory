@@ -62,15 +62,34 @@ model Asset {
 }
 
 model Render {
-  id        String   @id @default(cuid())
-  type      String
-  path      String?
-  status    String   @default("PENDING")
-  preset    String?
-  projectId String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String         @id @default(cuid())
+  type          String
+  path          String?
+  status        String         @default("PENDING")
+  preset        String?
+  projectId     String
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scheduledPost ScheduledPost?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model ScheduledPost {
+  id             String    @id @default(cuid())
+  renderId       String    @unique
+  render         Render    @relation(fields: [renderId], references: [id], onDelete: Cascade)
+  platform       String    @default("YOUTUBE")
+  status         String    @default("PENDING")
+  scheduledAt    DateTime?
+  uploadedAt     DateTime?
+  youtubeVideoId String?
+  youtubeUrl     String?
+  privacyStatus  String    @default("private")
+  titleOverride  String?
+  descOverride   String?
+  error          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 model Job {

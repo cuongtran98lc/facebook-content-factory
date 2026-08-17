@@ -1,5 +1,5 @@
-import { dialog, ipcMain, shell } from 'electron'
-import type { AIProviderName, BackgroundKind, CrawlStoryInput, GenerateIdeasInput, GenerateReelsInput, GenerateReelVideosInput, GenerateStoryAudioInput, GenerateStoryInput, GenerateThumbnailInput, ImportStoryInput, PreviewVoiceInput, RenderStoryVideoInput, RewriteScriptInput, SaveAISettingsInput, SaveVoiceSettingsInput, SelectVoiceInput, UpdateScriptInput } from '../../shared/types'
+import { clipboard, dialog, ipcMain, shell } from 'electron'
+import type { AIProviderName, BackgroundKind, CrawlStoryInput, GenerateIdeasInput, GeneratePublishMetadataInput, GenerateReelsInput, GenerateReelVideosInput, GenerateStoryAudioInput, GenerateStoryInput, GenerateThumbnailInput, ImportStoryInput, PreviewVoiceInput, RenderStoryVideoInput, RewriteScriptInput, SaveAISettingsInput, SaveVoiceSettingsInput, SchedulePostInput, SelectVoiceInput, UpdateScriptInput, YouTubeCredentialsInput } from '../../shared/types'
 import { AIService } from '../services/ai'
 import { getPrisma } from '../services/database'
 import { hasFfmpeg } from '../services/ffmpeg'
@@ -13,6 +13,8 @@ import { VoiceService } from '../services/voices'
 import { StoryMediaService } from '../services/story-media'
 import { ProjectStorageService } from '../services/storage'
 import { StoryCrawlerService } from '../services/story-crawler'
+import { YouTubeService } from '../services/youtube'
+import { SchedulerService } from '../services/scheduler'
 
 const projects = new ProjectService()
 const pipeline = new PipelineService()
@@ -24,6 +26,8 @@ const voices = new VoiceService(settings)
 const storyMedia = new StoryMediaService(voices)
 const storage = new ProjectStorageService()
 const crawler = new StoryCrawlerService()
+const youtube = new YouTubeService(settings)
+export const scheduler = new SchedulerService(youtube)
 
 async function openFolder(path: string, label: string): Promise<void> {
   const error = await shell.openPath(path)
@@ -49,6 +53,14 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('app:open-storage', async () => {
     await openFolder(getStorageRoot(), 'storage nội bộ')
+  })
+  ipcMain.handle('app:open-external', (_event, url: string) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+  })
+  ipcMain.handle('app:copy-text', (_event, value: string) => {
+    const text = typeof value === 'string' ? value.slice(0, 20_000) : ''
+    if (!text) throw new Error('Không có nội dung để copy.')
+    clipboard.writeText(text)
   })
 
   ipcMain.handle('projects:list', () => projects.list())
@@ -101,6 +113,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('story-media:render', (event, input: RenderStoryVideoInput) => storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, progress => {
     if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress)
   }))
+  ipcMain.handle('story-media:generate-metadata', (event, input: GeneratePublishMetadataInput) => storyMedia.generateMetadata(input.projectId, input.scope, progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress)
+  }))
   ipcMain.handle('story-media:open-output', async (_event, projectId: string) => {
     const output = await storage.ensureOutputProject(projectId)
     await openFolder(output, 'output của truyện')
@@ -123,4 +138,18 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('pipeline:demo', (_event, projectId: string) => pipeline.generateDemo(projectId))
+
+  // Scheduler
+  ipcMain.handle('scheduler:list', () => scheduler.list())
+  ipcMain.handle('scheduler:schedule', (_event, input: SchedulePostInput) => scheduler.schedule(input))
+  ipcMain.handle('scheduler:cancel', (_event, id: string) => scheduler.cancel(id))
+  ipcMain.handle('scheduler:upload-now', (_event, renderId: string) => scheduler.uploadNow(renderId))
+
+  // YouTube OAuth
+  ipcMain.handle('youtube:save-credentials', (_event, input: YouTubeCredentialsInput) => {
+    settings.saveYouTubeClientCredentials(input.clientId, input.clientSecret)
+  })
+  ipcMain.handle('youtube:begin-auth', () => youtube.beginAuth())
+  ipcMain.handle('youtube:status', () => youtube.getStatus())
+  ipcMain.handle('youtube:revoke', () => youtube.revokeAuth())
 }

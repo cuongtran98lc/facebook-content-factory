@@ -1,6 +1,6 @@
 import { app, BrowserWindow, net, protocol } from 'electron'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import { registerIpcHandlers } from './ipc'
+import { registerIpcHandlers, scheduler } from './ipc'
 import { closePrisma } from './services/database'
 import { getOutputRoot, getStorageRoot } from './services/paths'
 import { pathToFileURL } from 'node:url'
@@ -46,6 +46,7 @@ app.whenReady().then(() => {
     return net.fetch(pathToFileURL(resolve(requested)).toString())
   })
   registerIpcHandlers()
+  scheduler.start()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

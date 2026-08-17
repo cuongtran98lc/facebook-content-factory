@@ -80,7 +80,7 @@ export class ScriptService {
     // from an older story so the UI cannot accidentally render mismatched audio.
     await prisma.$transaction([
       prisma.script.deleteMany({ where: { projectId: project.id, type: 'REEL' } }),
-      prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL'] } } }),
+      prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL', 'VIDEO_PUBLISH_METADATA'] } } }),
       prisma.render.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } } }),
       prisma.project.update({ where: { id: project.id }, data: { status: 'SCRIPT_READY' } })
     ])
@@ -218,29 +218,88 @@ export class ScriptService {
   }
 
   async update(input: UpdateScriptInput): Promise<ScriptDTO> {
-    const row = await getPrisma().script.update({
-      where: { id: input.scriptId },
-      data: { title: input.title?.trim() || undefined, content: input.content.trim() }
-    })
+    const prisma = getPrisma()
+    const current = await prisma.script.findUniqueOrThrow({ where: { id: input.scriptId } })
+    const nextContent = input.content.trim()
+    const nextTitle = input.title?.trim() || current.title
+    const contentChanged = nextContent !== current.content
+    const titleChanged = nextTitle !== current.title
+    if (current.type !== 'LONG_STORY' || (!contentChanged && !titleChanged)) {
+      const row = await prisma.script.update({ where: { id: input.scriptId }, data: { title: nextTitle, content: nextContent } })
+      return toDTO(row)
+    }
+
+    const publishAssets = await prisma.asset.findMany({ where: { projectId: current.projectId, type: 'VIDEO_PUBLISH_METADATA' }, select: { id: true, metadata: true } })
+    const storyMetadataIds = publishAssets.filter(asset => {
+      try { return (JSON.parse(asset.metadata ?? '{}') as { scope?: string }).scope === 'STORY' } catch { return false }
+    }).map(asset => asset.id)
+    const updateScript = prisma.script.update({ where: { id: input.scriptId }, data: { title: nextTitle, content: nextContent } })
+    if (contentChanged) {
+      const [row] = await prisma.$transaction([
+        updateScript,
+        prisma.project.update({ where: { id: current.projectId }, data: { status: 'SCRIPT_READY' } }),
+        prisma.asset.deleteMany({ where: { id: { in: storyMetadataIds } } }),
+        prisma.asset.deleteMany({ where: { projectId: current.projectId, type: { in: ['STORY_AUDIO', 'THUMBNAIL'] } } }),
+        prisma.render.updateMany({ where: { projectId: current.projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } }),
+        prisma.job.updateMany({ where: { projectId: current.projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING' }, data: { status: 'FAILED', error: 'Story đã thay đổi; hãy generate audio lại.' } })
+      ])
+      return toDTO(row)
+    }
+    const [row] = await prisma.$transaction([
+      updateScript,
+      prisma.project.update({ where: { id: current.projectId }, data: { status: 'SCRIPT_READY' } }),
+      prisma.asset.deleteMany({ where: { id: { in: storyMetadataIds } } })
+    ])
     return toDTO(row)
   }
 
   async remove(scriptId: string): Promise<void> {
     const prisma = getPrisma()
     const script = await prisma.script.findUniqueOrThrow({ where: { id: scriptId } })
+    const childReels = script.type === 'LONG_STORY'
+      ? await prisma.script.findMany({ where: { projectId: script.projectId, type: 'REEL', sourceScriptId: script.id }, select: { id: true } })
+      : []
+    const reelIds = script.type === 'REEL' ? [script.id] : childReels.map(reel => reel.id)
+    const [renders, assets] = await Promise.all([
+      prisma.render.findMany({ where: { projectId: script.projectId }, select: { id: true, type: true, preset: true, status: true } }),
+      prisma.asset.findMany({ where: { projectId: script.projectId }, select: { id: true, type: true, metadata: true } })
+    ])
+    const storyHasCurrentAudio = assets.some(asset => {
+      if (asset.type !== 'STORY_AUDIO') return false
+      try { return (JSON.parse(asset.metadata ?? '{}') as { scriptId?: string }).scriptId === script.id } catch { return false }
+    })
+    const storyRenderIds = script.type === 'LONG_STORY' ? renders.filter(render => {
+      if (render.type !== 'STORY_VIDEO') return false
+      try {
+        const preset = JSON.parse(render.preset ?? '{}') as { scriptId?: string }
+        return preset.scriptId === script.id || (storyHasCurrentAudio && render.status !== 'STALE' && !preset.scriptId)
+      } catch {
+        return storyHasCurrentAudio && render.status !== 'STALE'
+      }
+    }).map(render => render.id) : []
+    const reelRenderIds = renders.filter(render => render.type === 'REEL_VIDEO' && render.preset && reelIds.includes(render.preset)).map(render => render.id)
+    const renderIds = new Set([...storyRenderIds, ...reelRenderIds])
+    const assetIds = assets.filter(asset => {
+      let metadata: { scriptId?: string; reelId?: string; renderId?: string } = {}
+      try { metadata = JSON.parse(asset.metadata ?? '{}') as typeof metadata } catch {}
+      if (asset.type === 'VIDEO_PUBLISH_METADATA') return metadata.scriptId === script.id || Boolean(metadata.reelId && reelIds.includes(metadata.reelId)) || Boolean(metadata.renderId && renderIds.has(metadata.renderId))
+      if (script.type === 'LONG_STORY' && (asset.type === 'STORY_AUDIO' || asset.type === 'THUMBNAIL')) return metadata.scriptId === script.id
+      if (asset.type === 'REEL_AUDIO' || asset.type === 'REEL_THUMBNAIL') return Boolean(metadata.reelId && reelIds.includes(metadata.reelId))
+      return false
+    }).map(asset => asset.id)
     if (script.type === 'LONG_STORY') {
-      const childReels = await prisma.script.findMany({ where: { projectId: script.projectId, type: 'REEL', sourceScriptId: script.id }, select: { id: true } })
-      const reelIds = childReels.map(reel => reel.id)
       await prisma.$transaction([
         prisma.script.deleteMany({ where: { id: { in: reelIds } } }),
-        prisma.render.deleteMany({ where: { projectId: script.projectId, type: 'REEL_VIDEO', preset: { in: reelIds } } }),
+        prisma.render.deleteMany({ where: { id: { in: [...storyRenderIds, ...reelRenderIds] } } }),
+        prisma.asset.deleteMany({ where: { id: { in: assetIds } } }),
         prisma.script.delete({ where: { id: script.id } }),
         prisma.project.update({ where: { id: script.projectId }, data: { status: 'IDEAS_READY' } })
       ])
       return
     }
     await prisma.$transaction([
-      prisma.render.deleteMany({ where: { projectId: script.projectId, type: 'REEL_VIDEO', preset: script.id } }),
+      prisma.render.deleteMany({ where: { id: { in: reelRenderIds } } }),
+      prisma.asset.deleteMany({ where: { id: { in: assetIds } } }),
       prisma.script.delete({ where: { id: script.id } })
     ])
   }
@@ -285,7 +344,16 @@ export class ScriptService {
       const reels = Array.isArray(parsed) ? parsed : parsed.reels
       if (!Array.isArray(reels) || reels.length === 0) throw new Error('AI không trả về reels hợp lệ.')
 
-      await prisma.script.deleteMany({ where: { projectId: input.projectId, type: 'REEL' } })
+      const publishAssets = await prisma.asset.findMany({ where: { projectId: input.projectId, type: 'VIDEO_PUBLISH_METADATA' }, select: { id: true, metadata: true } })
+      const reelMetadataIds = publishAssets.filter(asset => {
+        try { return (JSON.parse(asset.metadata ?? '{}') as { scope?: string }).scope === 'REELS' } catch { return false }
+      }).map(asset => asset.id)
+      await prisma.$transaction([
+        prisma.script.deleteMany({ where: { projectId: input.projectId, type: 'REEL' } }),
+        prisma.render.deleteMany({ where: { projectId: input.projectId, type: 'REEL_VIDEO' } }),
+        prisma.asset.deleteMany({ where: { projectId: input.projectId, type: { in: ['REEL_AUDIO', 'REEL_THUMBNAIL'] } } }),
+        prisma.asset.deleteMany({ where: { id: { in: reelMetadataIds } } })
+      ])
       const created: ScriptDTO[] = []
       for (const [index, raw] of reels.slice(0, count).entries()) {
         const item = raw as Record<string, unknown>

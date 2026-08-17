@@ -4,7 +4,9 @@ import type { ContentFactoryAPI, CrawlProgress, ReelVideoProgress, StoryVideoPro
 const api: ContentFactoryAPI = {
   app: {
     health: () => ipcRenderer.invoke('app:health'),
-    openStorageFolder: () => ipcRenderer.invoke('app:open-storage')
+    openStorageFolder: () => ipcRenderer.invoke('app:open-storage'),
+    copyText: (text) => ipcRenderer.invoke('app:copy-text', text),
+    openExternal: (url) => ipcRenderer.invoke('app:open-external', url)
   },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
@@ -58,6 +60,7 @@ const api: ContentFactoryAPI = {
     generateAudio: (input) => ipcRenderer.invoke('story-media:generate-audio', input),
     chooseBackground: (projectId, kind) => ipcRenderer.invoke('story-media:choose-background', projectId, kind),
     render: (input) => ipcRenderer.invoke('story-media:render', input),
+    generateMetadata: (input) => ipcRenderer.invoke('story-media:generate-metadata', input),
     openOutput: (projectId) => ipcRenderer.invoke('story-media:open-output', projectId)
   },
   settings: {
@@ -69,6 +72,28 @@ const api: ContentFactoryAPI = {
   },
   pipeline: {
     generateDemo: (projectId) => ipcRenderer.invoke('pipeline:demo', projectId)
+  },
+  scheduler: {
+    list: () => ipcRenderer.invoke('scheduler:list'),
+    schedule: (input) => ipcRenderer.invoke('scheduler:schedule', input),
+    cancel: (id) => ipcRenderer.invoke('scheduler:cancel', id),
+    uploadNow: (renderId) => ipcRenderer.invoke('scheduler:upload-now', renderId),
+    onUploadProgress: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: unknown) => callback(progress as Parameters<typeof callback>[0])
+      ipcRenderer.on('scheduler:upload-progress', listener)
+      return () => ipcRenderer.removeListener('scheduler:upload-progress', listener)
+    },
+    onPostUpdated: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, post: unknown) => callback(post as Parameters<typeof callback>[0])
+      ipcRenderer.on('scheduler:post-updated', listener)
+      return () => ipcRenderer.removeListener('scheduler:post-updated', listener)
+    }
+  },
+  youtube: {
+    saveCredentials: (input) => ipcRenderer.invoke('youtube:save-credentials', input),
+    beginAuth: () => ipcRenderer.invoke('youtube:begin-auth'),
+    getStatus: () => ipcRenderer.invoke('youtube:status'),
+    revoke: () => ipcRenderer.invoke('youtube:revoke')
   }
 }
 

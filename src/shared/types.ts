@@ -111,16 +111,27 @@ export interface StoryMediaDTO {
   renderUrl: string | null
   renderStatus: string | null
   storyVideoParts: StoryVideoPartDTO[]
+  storyVideoOutputs: StoryVideoOutputDTO[]
   reels: ReelMediaDTO[]
+}
+export interface StoryVideoOutputDTO {
+  format: VideoFormat
+  status: string | null
+  parts: StoryVideoPartDTO[]
 }
 export interface StoryVideoPartDTO {
   part: number
   totalParts: number
+  format: VideoFormat
   startSeconds: number
   duration: number | null
   path: string | null
   url: string | null
   status: string | null
+  publishTitle: string | null
+  publishDescription: string | null
+  publishMetadataPath: string | null
+  publishSource: 'AI' | 'FALLBACK' | null
 }
 export interface ReelMediaDTO {
   reelId: string
@@ -132,30 +143,81 @@ export interface ReelMediaDTO {
   thumbnailPath: string | null
   thumbnailUrl: string | null
   status: string | null
+  publishTitle: string | null
+  publishDescription: string | null
+  publishMetadataPath: string | null
+  publishSource: 'AI' | 'FALLBACK' | null
 }
 export interface GenerateThumbnailInput { projectId: string; scriptId: string; prompt?: string }
 export interface GenerateStoryAudioInput { projectId: string; scriptId: string }
 export interface RenderStoryVideoInput { projectId: string; format: VideoFormat; fitMode: FitMode; soundEffect?: SoundEffectOptions }
 export interface GenerateReelVideosInput { projectId: string; fitMode: FitMode; soundEffect?: SoundEffectOptions }
+export interface GeneratePublishMetadataInput { projectId: string; scope?: 'ALL' | 'STORY' | 'REELS' }
 export interface ReelVideoProgress {
   current: number
   total: number
   percent: number
-  stage: 'STARTING' | 'AUDIO' | 'THUMBNAIL' | 'VIDEO' | 'DONE'
+  stage: 'STARTING' | 'AUDIO' | 'THUMBNAIL' | 'VIDEO' | 'METADATA' | 'DONE'
   message: string
 }
 export interface StoryVideoProgress {
   current: number
   total: number
   percent: number
-  stage: 'STARTING' | 'VIDEO' | 'DONE'
+  stage: 'STARTING' | 'VIDEO' | 'METADATA' | 'DONE'
   message: string
 }
 
 export interface AppHealth { database: boolean; storagePath: string; ffmpeg: boolean; ttsProvider: 'capcut' | 'elevenlabs' }
 
+// --- Scheduler & YouTube ---
+export type ScheduleStatus = 'PENDING' | 'UPLOADING' | 'DONE' | 'FAILED' | 'CANCELLED'
+export type PrivacyStatus = 'public' | 'private' | 'unlisted'
+
+export interface ScheduledPostDTO {
+  id: string | null
+  renderId: string
+  renderType: string
+  renderPath: string | null
+  projectId: string
+  projectName: string
+  publishTitle: string | null
+  publishDescription: string | null
+  status: ScheduleStatus | null
+  scheduledAt: string | null
+  uploadedAt: string | null
+  youtubeVideoId: string | null
+  youtubeUrl: string | null
+  privacyStatus: PrivacyStatus
+  error: string | null
+  renderCreatedAt: string
+}
+
+export interface YouTubeAuthStatus {
+  connected: boolean
+  channelId: string | null
+  channelTitle: string | null
+}
+
+export interface YouTubeCredentialsInput { clientId: string; clientSecret: string }
+
+export interface SchedulePostInput {
+  renderId: string
+  scheduledAt?: string | null
+  privacyStatus?: PrivacyStatus
+  titleOverride?: string
+  descOverride?: string
+}
+
+export interface UploadProgress {
+  renderId: string
+  percent: number
+  stage: 'UPLOADING' | 'DONE' | 'ERROR'
+  message: string
+}
+
 export interface ContentFactoryAPI {
-  app: { health(): Promise<AppHealth>; openStorageFolder(): Promise<void> }
+  app: { health(): Promise<AppHealth>; openStorageFolder(): Promise<void>; copyText(text: string): Promise<void>; openExternal(url: string): Promise<void> }
   projects: {
     list(): Promise<ProjectDTO[]>
     create(input: CreateProjectInput): Promise<ProjectDTO>
@@ -196,6 +258,7 @@ export interface ContentFactoryAPI {
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>
     chooseBackground(projectId: string, kind?: BackgroundKind): Promise<StoryMediaDTO | null>
     render(input: RenderStoryVideoInput): Promise<StoryMediaDTO>
+    generateMetadata(input: GeneratePublishMetadataInput): Promise<StoryMediaDTO>
     openOutput(projectId: string): Promise<void>
   }
   settings: {
@@ -206,4 +269,18 @@ export interface ContentFactoryAPI {
     saveVoice(input: SaveVoiceSettingsInput): Promise<VoiceSettingsDTO>
   }
   pipeline: { generateDemo(projectId: string): Promise<{ jobId: string }> }
+  scheduler: {
+    list(): Promise<ScheduledPostDTO[]>
+    schedule(input: SchedulePostInput): Promise<ScheduledPostDTO>
+    cancel(id: string): Promise<ScheduledPostDTO>
+    uploadNow(renderId: string): Promise<ScheduledPostDTO>
+    onUploadProgress(callback: (progress: UploadProgress) => void): () => void
+    onPostUpdated(callback: (post: ScheduledPostDTO) => void): () => void
+  }
+  youtube: {
+    saveCredentials(input: YouTubeCredentialsInput): Promise<void>
+    beginAuth(): Promise<YouTubeAuthStatus>
+    getStatus(): Promise<YouTubeAuthStatus>
+    revoke(): Promise<void>
+  }
 }

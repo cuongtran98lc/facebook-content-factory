@@ -339,7 +339,7 @@ export class StoryCrawlerService {
     await prisma.$transaction([
       prisma.script.updateMany({ where: { projectId: project.id, type: 'LONG_STORY' }, data: { approved: false } }),
       prisma.script.deleteMany({ where: { projectId: project.id, type: 'REEL' } }),
-      prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL'] } } }),
+      prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL', 'VIDEO_PUBLISH_METADATA'] } } }),
       prisma.render.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } } })
     ])
     const parent = await prisma.script.create({

@@ -43,12 +43,16 @@ Chọn Dynamic / Whoosh / Impact / Chime và mức SFX
   ↓
 FFmpeg loop background, duck voice và trộn 1 SFX cho mỗi video
   ↓
-story-*.mp4
+story-*.mp4 + title/description tương ứng
 ```
 
 SFX chỉ được trộn vào MP4 cuối, không ghi đè file MP3 voice. Preset `Dynamic` luân phiên Whoosh / Impact / Chime và thay đổi thời điểm theo từng tập.
 
 Khi Output là `9:16`, Story MP3 được chia liên tục thành các file `story-reel-short-XX-of-YY.mp4`. Các phần được cân bằng để không có đoạn cuối quá ngắn và không phần nào dài quá 3 phút. Output `16:9` và `1:1` vẫn tạo một video.
+
+Các bản render `16:9`, `9:16` và `1:1` được giữ độc lập trong cùng folder truyện; tạo một tỷ lệ mới không làm ẩn kết quả của tỷ lệ trước.
+
+Sau khi render, app tự tạo metadata đăng bài bằng AI: video dài `16:9` có một title/description cho toàn truyện; mỗi Short `9:16` và mỗi Reel có title/description riêng theo đúng phần nội dung. Nếu AI lỗi hoặc hết quota, app dùng fallback để video vẫn hoàn tất. UI có nút copy riêng và nút **Generate/Regenerate Titles & Descriptions** cho video cũ. Một file `*.metadata.txt` cũng được lưu cạnh từng MP4.
 
 ## Local data
 
@@ -174,4 +178,5 @@ Khi bật CapCut provider, UI hiện tại vẫn dùng cùng flow `Load voices �
 - Chọn một background video từ máy.
 - FFmpeg loop background vô hạn và dừng đúng khi story MP3 kết thúc.
 - Output presets: 16:9, 9:16, 1:1; fit mode crop hoặc pad.
+- Tự tạo title/description tương ứng cho video dài và từng video ngắn; có nút copy và sidecar `*.metadata.txt`.
 - MP3, thumbnail và video cuối nằm trong `output/<tên-truyện>--<id>/{audio,images,videos}`; bấm **Mở output truyện** trên thanh trên cùng để mở trực tiếp.

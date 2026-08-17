@@ -1,4 +1,5 @@
-import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StoryMediaDTO, VideoFormat } from '../../../shared/types'
+import { useRef, useState } from 'react'
+import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
 
 type Props = {
   busy: boolean
@@ -11,6 +12,7 @@ type Props = {
   reelProgress: ReelVideoProgress | null
   onGenerateAudio(): void
   onGenerateReelVideos(): void
+  onGenerateMetadata(): void
   onChooseBackground(kind: BackgroundKind): void
   onRender(): void
   onVideoFormatChange(value: VideoFormat): void
@@ -34,17 +36,83 @@ const SOUND_EFFECT_LABELS: Record<SoundEffectPreset, string> = {
   CHIME: 'Chime · điểm nhấn'
 }
 
+type PublishMetadataProps = {
+  title: string | null
+  description: string | null
+  metadataPath: string | null
+  source: string | null
+}
+
+function PublishMetadata({ title, description, metadataPath, source }: PublishMetadataProps) {
+  const [copied, setCopied] = useState('')
+  const [copyFailed, setCopyFailed] = useState(false)
+  const feedbackTimer = useRef<number | null>(null)
+  const hasMetadata = Boolean(title || description)
+  const allText = [title, description].filter((value): value is string => Boolean(value)).join('\n\n')
+
+  async function copyText(value: string, label: string) {
+    if (!value) return
+    try {
+      await window.contentFactory.app.copyText(value)
+      setCopied(label)
+      setCopyFailed(false)
+    } catch {
+      setCopied('Copy thất bại')
+      setCopyFailed(true)
+    }
+    if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current)
+    feedbackTimer.current = window.setTimeout(() => setCopied(''), 1600)
+  }
+
+  return <div className={`publish-copy ${hasMetadata ? '' : 'empty-metadata'}`}>
+    <div className="publish-copy-head">
+      <strong>Title &amp; Description</strong>
+      <div>
+        {source && <span className="publish-source">{source}</span>}
+        {copied && <span className={copyFailed ? 'copy-error' : 'copy-confirm'}>{copyFailed ? '✕' : '✓'} {copied}</span>}
+      </div>
+    </div>
+    {hasMetadata ? <>
+      <label>Title<input readOnly value={title ?? ''} onFocus={(event) => event.currentTarget.select()} /></label>
+      <label>Description<textarea readOnly rows={4} value={description ?? ''} onFocus={(event) => event.currentTarget.select()} /></label>
+      <div className="copy-actions">
+        <button className="secondary" disabled={!title} onClick={() => void copyText(title ?? '', 'Đã copy title')}>Copy title</button>
+        <button className="secondary" disabled={!description} onClick={() => void copyText(description ?? '', 'Đã copy description')}>Copy description</button>
+        <button className="secondary" disabled={!allText} onClick={() => void copyText(allText, 'Đã copy tất cả')}>Copy cả hai</button>
+      </div>
+      {metadataPath && <span className="publish-path" title={metadataPath}>Metadata: {metadataPath}</span>}
+    </> : <span className="publish-empty">Chưa có title và description cho video này.</span>}
+  </div>
+}
+
+function StoryVideoResult({ output }: { output: StoryVideoOutputDTO }) {
+  const isShort = output.format === 'REEL'
+  const formatLabel = output.format === 'LANDSCAPE' ? 'Video dài 16:9' : output.format === 'SQUARE' ? 'Video vuông 1:1' : `${output.parts.length} Short Video${output.parts.length > 1 ? 's' : ''} 9:16`
+  return <section className="render-result">
+    <div className="story-video-result-head"><strong>{formatLabel}</strong><span>{output.status}</span></div>
+    {isShort
+      ? <div className="story-short-grid">{output.parts.map(part=><article key={part.part}><div><strong>SHORT {part.part}/{part.totalParts}</strong><span>{formatDuration(part.duration)} · bắt đầu {formatDuration(part.startSeconds)}</span></div>{part.url ? <video src={part.url} controls preload="metadata" /> : <div className="short-unavailable">{part.status ?? 'Đang chờ'}</div>}<PublishMetadata title={part.publishTitle} description={part.publishDescription} metadataPath={part.publishMetadataPath} source={part.publishSource} /></article>)}</div>
+      : output.parts[0]?.url && <div className="story-long-output"><video src={output.parts[0].url} controls /><PublishMetadata title={output.parts[0].publishTitle} description={output.parts[0].publishDescription} metadataPath={output.parts[0].publishMetadataPath} source={output.parts[0].publishSource} /></div>}
+  </section>
+}
+
 export function StoryMediaFlow(props: Props) {
   const audioDone = Boolean(props.media?.audioPath)
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
     ? props.media.storyVideoParts
-    : props.media?.renderUrl ? [{ part: 1, totalParts: 1, startSeconds: 0, duration: null, path: props.media.renderPath, url: props.media.renderUrl, status: props.media.renderStatus }] : []
-  const renderDone = Boolean(storyVideoParts.length && storyVideoParts.every(part => part.status === 'DONE'))
+    : props.media?.renderUrl ? [{ part: 1, totalParts: 1, format: props.videoFormat, startSeconds: 0, duration: null, path: props.media.renderPath, url: props.media.renderUrl, status: props.media.renderStatus, publishTitle: null, publishDescription: null, publishMetadataPath: null, publishSource: null }] : []
+  const storyVideoOutputs = props.media?.storyVideoOutputs?.length
+    ? props.media.storyVideoOutputs
+    : storyVideoParts.length ? [{ format: storyVideoParts[0].format, status: props.media?.renderStatus ?? null, parts: storyVideoParts }] : []
+  const selectedOutput = storyVideoOutputs.find(output => output.format === props.videoFormat)
+  const renderDone = Boolean(selectedOutput?.parts.length && selectedOutput.parts.every(part => part.status === 'DONE'))
   const canGenerateAudio = props.hasVoice && props.ffmpegReady
   const canChooseBackground = audioDone
   const canRender = audioDone && backgroundDone && props.ffmpegReady
   const hasReelVideos = Boolean(props.media?.reels.some(reel => reel.videoUrl))
+  const hasRenderedVideo = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.url))) || Boolean(props.media?.reels.some(reel => reel.videoUrl))
+  const hasPublishMetadata = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.publishTitle || part.publishDescription))) || Boolean(props.media?.reels.some(reel => reel.publishTitle || reel.publishDescription))
 
   const audioHint = !props.hasVoice
     ? 'Chọn voice trước để tạo MP3.'
@@ -101,7 +169,11 @@ export function StoryMediaFlow(props: Props) {
       <label>Fit<select value={props.fitMode} onChange={(event) => props.onFitModeChange(event.target.value as FitMode)}><option value="CROP">Fill / Crop</option><option value="FIT">Fit / Pad</option></select></label>
       <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? `${renderDone ? 'Regenerate' : 'Generate'} Short Videos + SFX` : `${renderDone ? 'Regenerate' : 'Generate'} Story Video + SFX`}</button>
     </div>
-    {!!storyVideoParts.length && <div className="render-result"><div className="story-video-result-head"><strong>{storyVideoParts.length > 1 ? `${storyVideoParts.length} Short Videos 9:16` : 'Rendered Story Video'}</strong></div>{storyVideoParts.length > 1 ? <div className="story-short-grid">{storyVideoParts.map(part=><article key={part.part}><div><strong>SHORT {part.part}/{part.totalParts}</strong><span>{formatDuration(part.duration)} · bắt đầu {formatDuration(part.startSeconds)}</span></div>{part.url ? <video src={part.url} controls preload="metadata" /> : <div className="short-unavailable">{part.status ?? 'Đang chờ'}</div>}</article>)}</div> : storyVideoParts[0]?.url && <video src={storyVideoParts[0].url} controls />}</div>}
+    {!!storyVideoOutputs.length && <div className="story-video-output-groups">{storyVideoOutputs.map(output => <StoryVideoResult key={output.format} output={output} />)}</div>}
+    <div className="publish-metadata-toolbar">
+      <div><strong>Title &amp; Description theo từng video</strong><span>Tạo nội dung đăng riêng cho video dài 16:9, từng Short 9:16 và từng Reel.</span></div>
+      <button className="secondary" onClick={props.onGenerateMetadata} disabled={props.busy || !hasRenderedVideo}>{hasPublishMetadata ? 'Regenerate' : 'Generate'} Titles &amp; Descriptions</button>
+    </div>
     <div className="reel-render-section">
       <div className="media-flow-title"><div><strong>Final · Reel Videos theo từng tập</strong><span>{props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}</span></div></div>
       <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy || !props.ffmpegReady || !props.hasVoice || !props.media?.backgroundPath || !props.media?.thumbnailPath || !props.media?.reels.length}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + SFX</button>
@@ -109,7 +181,7 @@ export function StoryMediaFlow(props: Props) {
         <div><strong>{props.reelProgress.percent}%</strong><span>{props.reelProgress.message}</span></div>
         <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.reelProgress.percent}><i style={{ width: `${props.reelProgress.percent}%` }} /></div>
       </div>}
-      {!!props.media?.reels.some(reel => reel.videoUrl) && <div className="reel-output-grid">{props.media.reels.map(reel => reel.videoUrl && <article key={reel.reelId}><div><strong>TẬP {reel.episode}</strong><span>{reel.title}</span></div>{reel.thumbnailUrl && <img src={reel.thumbnailUrl} alt={`Thumbnail tập ${reel.episode}`} />}<video src={reel.videoUrl} controls /></article>)}</div>}
+      {!!props.media?.reels.some(reel => reel.videoUrl) && <div className="reel-output-grid">{props.media.reels.map(reel => reel.videoUrl && <article key={reel.reelId}><div><strong>TẬP {reel.episode}</strong><span>{reel.title}</span></div>{reel.thumbnailUrl && <img src={reel.thumbnailUrl} alt={`Thumbnail tập ${reel.episode}`} />}<video src={reel.videoUrl} controls /><PublishMetadata title={reel.publishTitle} description={reel.publishDescription} metadataPath={reel.publishMetadataPath} source={reel.publishSource} /></article>)}</div>}
     </div>
   </div>
 }

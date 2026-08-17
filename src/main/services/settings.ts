@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AIProviderName, AISettingsDTO, SaveAISettingsInput, SaveVoiceSettingsInput, VoiceSettingsDTO } from '../../shared/types'
+import type { AIProviderName, AISettingsDTO, SaveAISettingsInput, SaveVoiceSettingsInput, VoiceSettingsDTO, YouTubeAuthStatus } from '../../shared/types'
 
 interface SettingsSchema {
   aiProvider: AIProviderName
@@ -11,6 +11,13 @@ interface SettingsSchema {
   geminiApiKeyEncrypted?: string
   elevenLabsModel: string
   elevenLabsApiKeyEncrypted?: string
+  youtubeClientId?: string
+  youtubeClientSecretEncrypted?: string
+  youtubeAccessTokenEncrypted?: string
+  youtubeRefreshTokenEncrypted?: string
+  youtubeTokenExpiry?: number
+  youtubeChannelId?: string
+  youtubeChannelTitle?: string
 }
 
 const DEFAULT_SETTINGS: SettingsSchema = {
@@ -138,5 +145,57 @@ export class SettingsService {
     const key = decrypt(encrypted)
     if (!key) throw new Error(`Chưa cấu hình API key cho ${provider}. Vào Settings để thêm key.`)
     return key
+  }
+
+  // YouTube credential management
+  getYouTubeStatus(): YouTubeAuthStatus {
+    const s = readSettings()
+    const connected = Boolean(s.youtubeAccessTokenEncrypted && s.youtubeRefreshTokenEncrypted)
+    return { connected, channelId: s.youtubeChannelId ?? null, channelTitle: s.youtubeChannelTitle ?? null }
+  }
+
+  saveYouTubeClientCredentials(clientId: string, clientSecret: string): void {
+    const s = readSettings()
+    s.youtubeClientId = clientId.trim()
+    s.youtubeClientSecretEncrypted = clientSecret.trim() ? encrypt(clientSecret.trim()) : undefined
+    writeSettings(s)
+  }
+
+  getYouTubeClientCredentials(): { clientId: string; clientSecret: string } {
+    const s = readSettings()
+    return { clientId: s.youtubeClientId ?? '', clientSecret: decrypt(s.youtubeClientSecretEncrypted) ?? '' }
+  }
+
+  saveYouTubeTokens(accessToken: string, refreshToken: string, expiry: number): void {
+    const s = readSettings()
+    s.youtubeAccessTokenEncrypted = encrypt(accessToken)
+    if (refreshToken) s.youtubeRefreshTokenEncrypted = encrypt(refreshToken)
+    s.youtubeTokenExpiry = expiry
+    writeSettings(s)
+  }
+
+  getYouTubeTokens(): { accessToken: string; refreshToken: string; expiry: number } | null {
+    const s = readSettings()
+    const accessToken = decrypt(s.youtubeAccessTokenEncrypted)
+    const refreshToken = decrypt(s.youtubeRefreshTokenEncrypted)
+    if (!accessToken || !refreshToken) return null
+    return { accessToken, refreshToken, expiry: s.youtubeTokenExpiry ?? 0 }
+  }
+
+  saveYouTubeChannelInfo(channelId: string, channelTitle: string): void {
+    const s = readSettings()
+    s.youtubeChannelId = channelId
+    s.youtubeChannelTitle = channelTitle
+    writeSettings(s)
+  }
+
+  clearYouTubeTokens(): void {
+    const s = readSettings()
+    delete s.youtubeAccessTokenEncrypted
+    delete s.youtubeRefreshTokenEncrypted
+    delete s.youtubeTokenExpiry
+    delete s.youtubeChannelId
+    delete s.youtubeChannelTitle
+    writeSettings(s)
   }
 }
