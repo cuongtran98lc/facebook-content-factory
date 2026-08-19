@@ -12,12 +12,12 @@ release/
 !.env.example
 
 # CapCut local bridge secrets/session request capture
-tools/capcut_bridge/capcut.local.json
+# tools/capcut_bridge/capcut.local.json
 tools/capcut_bridge/.venv/
-tools/capcut_bridge/__pycache__/
-tools/capcut_bridge/custom_voices.json
-tools/capcut_bridge/*-reference.mp3
-tools/capcut_bridge/*-reference.wav
+# tools/capcut_bridge/__pycache__/
+# tools/capcut_bridge/custom_voices.json
+# tools/capcut_bridge/*-reference.mp3
+# tools/capcut_bridge/*-reference.wav
 
 # Local database
 *.db

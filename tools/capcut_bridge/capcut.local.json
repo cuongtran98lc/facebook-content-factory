@@ -1,0 +1,160 @@
+{
+  "voices": [
+    {
+      "display_name": "CapCut BV074",
+      "voice_type": "BV074_streaming",
+      "resource_id": "7102355709945188865",
+      "lang": "vi",
+      "gender": ""
+    },
+    {
+      "display_name": "Nhỏ Ngọt Ngào",
+      "voice_type": "BV421_vivn_streaming",
+      "resource_id": "7252594014782755330",
+      "lang": "vi-VN",
+      "gender": ""
+    },
+    {
+      "display_name": "Giọng Nữ Phổ Thông",
+      "voice_type": "vi_female_huong",
+      "resource_id": "7264854897953083905",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Giọng Bé",
+      "voice_type": "BV074_streaming_dsp",
+      "resource_id": "7550087831092251920",
+      "lang": "vi-VN",
+      "gender": ""
+    },
+    {
+      "display_name": "Việt Méo",
+      "voice_type": "BV075_streaming_vibrato_dsp",
+      "resource_id": "7569450639810465040",
+      "lang": "vi-VN",
+      "gender": ""
+    },
+    {
+      "display_name": "Mai",
+      "voice_type": "BV562_streaming",
+      "resource_id": "7483736254694035984",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Ban Mai",
+      "voice_type": "multi_female_yangguangnv_uranus_bigtts",
+      "resource_id": "7637456432522218773",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Review Phim new",
+      "voice_type": "multi_female_richgirl_uranus_bigtts",
+      "resource_id": "7637460351541447956",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Bản Tin 1",
+      "voice_type": "multi_female_quanweinv_uranus_bigtts",
+      "resource_id": "7637458743197732117",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Review Phim 4",
+      "voice_type": "multi_female_stokie_uranus_bigtts",
+      "resource_id": "7637456729696996628",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Bản Tin nữ",
+      "voice_type": "multi_female_sisi_uranus_bigtts",
+      "resource_id": "7637455857285860629",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Review Phim 3",
+      "voice_type": "multi_female_daqi_uranus_bigtts",
+      "resource_id": "7637451983389019409",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Review Phim 2",
+      "voice_type": "multi_female_xyf04auto_uranus_bigtts",
+      "resource_id": "7637458743197732117",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Sunny Idol",
+      "voice_type": "multi_female_kiwi_uranus_bigtts",
+      "resource_id": "7637457995882089749",
+      "lang": "vi-VN",
+      "gender": "female"
+    },
+    {
+      "display_name": "Kenny Đại Đế",
+      "voice_type": "BV075_streaming_demon_dsp",
+      "resource_id": "7569442422665661712",
+      "lang": "vi-VN",
+      "gender": "male"
+    }
+  ],
+
+  "create_request": {
+    "method": "POST",
+    "url": "https://editor-api-sg.capcutapi.com/lv/v1/common_task/new?app_name=CapCut&device_type=MacBookPro18,1&os_version=26.5.1&channel=capcutpc_0&version_name=9.1.0&device_brand=MacBookPro18,1&babi_param=%7B%22feature_entrance%22%3A%22editor%22%2C%22feature_entrance_detail%22%3A%22editor-feature-text_to_speech%22%2C%22feature_key%22%3A%22text_to_speech%22%2C%22scenario%22%3A%22video_editor%22%7D&device_id=7576574410229089799&iid=7672315648165529364&region=VN&version_code=9.1.0&device_platform=mac&aid=359289",
+
+    "headers": {
+      "Content-Type": "application/json"
+    },
+
+    "json": {
+      "bind_id": "da7b20ed-b3ef-42fe-a958-d6c4c43cb99a",
+      "can_queue": true,
+      "enter_from": "text_to_speech",
+
+      "tasks": [
+        {
+          "context": "8bc98e84-0650-458e-ae59-2f5bc915152a",
+
+          "payload": "{\"audio_format\":\"mp3\",\"credit_disable\":false,\"extra_info\":\"{\\\"benefit_info\\\":{}}\",\"need_merge_voice\":false,\"need_subtitle_timestamp\":false,\"scene\":\"text_to_speech\",\"sign\":\"KcFQFfEjLD7g5Vlf8XaHVaKhAeMBJ5Gi/9NKvaY2iVxcEM9jgohMcw3oZpKq2uk8eaks0GZ2jOzJO/b0lntIPJQPRTAz5YoiGQFsaIC9i/RbrxHKAbNp5W+1T3ngYrAYID4b4HN9Pl3F5x0qejUG+U/xvAHoqZglit5P8qgtZTPyCeR5OYeevNxAxOaNBJ4ibPPlTRLDx0Wd65nZ07jmGn04pPWf0YD6waVs8WFDbkuwyaL12VOVireh2ALf53ZP78PmM4LqJc3bynOQjgcV79G1HD/NdPl9jBbNDZTTdnOPZDMR6l5PCw2+DAwfEKiM1fYyAyNjT1cznvk2a5E8kg==\",\"ssml\":\"<speak version=\\\"1.0\\\" xmlns=\\\"http://www.w3.org/2001/10/synthesis\\\" xml:lang=\\\"vi-VN\\\"><voice name=\\\"{{voice_type}}\\\" platform=\\\"sami\\\" resource_id=\\\"{{resource_id}}\\\" need_subtitle_timestamp=\\\"false\\\"><prosody rate=\\\"{{rate}}\\\">{{text}}</prosody></voice></speak>\"}",
+
+          "req_key": "sami_text_to_speech",
+          "task_version": "v3"
+        }
+      ]
+    }
+  },
+
+  "query_request": {
+    "method": "POST",
+
+    "url": "https://editor-api-sg.capcutapi.com/lv/v1/common_task/query?aid=359289&app_name=CapCut&device_type=MacBookPro18,1&os_version=26.5.1&channel=capcutpc_0&device_brand=MacBookPro18,1&device_id=7576574410229089799&version_name=9.1.0&device_platform=mac&version_code=9.1.0&iid=7672315648165529364",
+
+    "headers": {
+      "Content-Type": "application/json"
+    },
+
+    "json": {
+      "tasks": [
+        {
+          "bind_id": "",
+          "id": "{{task_id}}",
+          "req_key": "sami_text_to_speech",
+          "task_version": "v3",
+          "token": "{{task_token}}"
+        }
+      ]
+    }
+  },
+
+  "poll_attempts": 30,
+  "poll_interval_seconds": 1
+}
