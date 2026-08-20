@@ -32,6 +32,7 @@ type CapCutTtsResponse = {
   voice?: string
   display_name?: string
   detail?: string
+  audio_data?: string
 }
 
 type VieNeuBridgeVoice = {
@@ -347,6 +348,9 @@ export class VoiceService {
     }
 
     const payload = await response.json() as CapCutTtsResponse
+    if (payload.audio_data) {
+      return Buffer.from(payload.audio_data, 'base64')
+    }
     if (!payload.speech_url) throw new Error(`CapCut bridge không trả speech_url: ${payload.detail || JSON.stringify(payload)}`)
 
     const audioResponse = await fetch(payload.speech_url, { signal: AbortSignal.timeout(60000) })

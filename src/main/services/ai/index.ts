@@ -2,6 +2,7 @@ import type { AIProviderName } from '../../../shared/types'
 import { SettingsService } from '../settings'
 import { GeminiProvider } from './gemini'
 import { OpenAIProvider } from './openai'
+import { ClaudeProvider } from './claude'
 import type { AIProvider } from './types'
 
 export class AIService {
@@ -11,9 +12,9 @@ export class AIService {
     const name = providerName ?? this.settings.getProvider()
     const key = this.settings.getApiKey(name)
     const model = this.settings.getModel(name)
-    return name === 'openai'
-      ? new OpenAIProvider(key, model)
-      : new GeminiProvider(key, model)
+    if (name === 'openai') return new OpenAIProvider(key, model)
+    if (name === 'claude') return new ClaudeProvider(key, model)
+    return new GeminiProvider(key, model)
   }
 
   async test(providerName?: AIProviderName): Promise<{ ok: boolean; provider: AIProviderName; message: string }> {

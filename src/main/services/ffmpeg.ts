@@ -140,6 +140,7 @@ export async function renderLoopedVideo(input: {
   soundEffect?: SoundEffectOptions
   audioStartSeconds?: number
   audioDurationSeconds?: number
+  ctaPath?: string
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const dims = input.format === 'REEL' ? [1080, 1920] : input.format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
@@ -149,6 +150,9 @@ export async function renderLoopedVideo(input: {
   const audioStart = Math.min(Math.max(0, input.audioStartSeconds ?? 0), Math.max(0, sourceAudioDuration - 0.001))
   const availableDuration = sourceAudioDuration - audioStart
   const audioDuration = Math.min(Math.max(0.001, input.audioDurationSeconds ?? availableDuration), availableDuration)
+
+  const ctaDuration = input.ctaPath ? await probeDuration(input.ctaPath) : 0
+  const totalAudioDuration = audioDuration + ctaDuration
 
   const filter = input.fitMode === 'FIT'
     ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=30`
@@ -164,11 +168,24 @@ export async function renderLoopedVideo(input: {
   const effectEnd = Math.min(audioDuration, effectAt + effect.duration + 0.1)
   const effectDelayMs = Math.round(effectAt * 1000)
   const effectGain = (soundEffect.volume / 100) * effect.gain
-  const audioMix = [
-    `[2:a]${effect.filters},volume=${effectGain.toFixed(3)},aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,adelay=delays=${effectDelayMs}:all=1[sfx]`,
-    `[1:a]atrim=start=0:duration=${audioDuration.toFixed(3)},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.82:enable='between(t,${effectAt.toFixed(3)},${effectEnd.toFixed(3)})'[narration]`,
-    '[narration][sfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]'
-  ].join(';')
+
+  const hasCta = Boolean(input.ctaPath)
+  const effectIndex = hasCta ? 3 : 2
+
+  const audioMix = hasCta
+    ? [
+        `[1:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo[nar_res]`,
+        `[2:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo[cta_res]`,
+        `[nar_res][cta_res]concat=n=2:v=0:a=1[combined_nar]`,
+        `[${effectIndex}:a]${effect.filters},volume=${effectGain.toFixed(3)},aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,adelay=delays=${effectDelayMs}:all=1[sfx]`,
+        `[combined_nar]volume=0.82:enable='between(t,${effectAt.toFixed(3)},${effectEnd.toFixed(3)})'[narration]`,
+        '[narration][sfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]'
+      ].join(';')
+    : [
+        `[2:a]${effect.filters},volume=${effectGain.toFixed(3)},aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,adelay=delays=${effectDelayMs}:all=1[sfx]`,
+        `[1:a]atrim=start=0:duration=${audioDuration.toFixed(3)},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.82:enable='between(t,${effectAt.toFixed(3)},${effectEnd.toFixed(3)})'[narration]`,
+        '[narration][sfx]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]'
+      ].join(';')
 
   const backgroundInput = input.backgroundKind === 'IMAGE'
     ? ['-loop', '1', '-framerate', '30', '-i', input.backgroundPath]
@@ -178,6 +195,7 @@ export async function renderLoopedVideo(input: {
     '-t', audioDuration.toFixed(3),
     '-i', input.audioPath
   ]
+  const ctaInput = input.ctaPath ? ['-i', input.ctaPath] : []
   const progressOutput = input.onProgress ? ['-progress', 'pipe:1', '-nostats'] : []
 
   await run('ffmpeg', [
@@ -185,13 +203,14 @@ export async function renderLoopedVideo(input: {
     ...progressOutput,
     ...backgroundInput,
     ...audioInput,
+    ...ctaInput,
     '-f', 'lavfi',
     '-i', effect.source,
     '-filter_complex', audioMix,
     '-map', '0:v:0',
     '-map', '[aout]',
     '-vf', filter,
-    '-t', audioDuration.toFixed(3),
+    '-t', totalAudioDuration.toFixed(3),
     '-c:v', 'libx264',
     '-preset', 'medium',
     '-crf', '20',
@@ -202,6 +221,18 @@ export async function renderLoopedVideo(input: {
     '-shortest',
     '-movflags', '+faststart',
     input.outputPath
-  ], seconds => input.onProgress?.(Math.min(99, Math.max(0, Math.round((seconds / audioDuration) * 100)))))
+  ], seconds => input.onProgress?.(Math.min(99, Math.max(0, Math.round((seconds / totalAudioDuration) * 100)))))
   input.onProgress?.(100)
+}
+
+export async function extractVideoFrame(videoPath: string, outputPath: string, timeSeconds = 1): Promise<void> {
+  await run('ffmpeg', [
+    '-y',
+    '-ss', timeSeconds.toFixed(3),
+    '-i', videoPath,
+    '-vframes', '1',
+    '-q:v', '2',
+    '-update', '1',
+    outputPath
+  ])
 }

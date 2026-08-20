@@ -13,7 +13,7 @@ export type ProjectStatus =
   | 'READY'
   | 'FAILED'
 
-export type AIProviderName = 'openai' | 'gemini'
+export type AIProviderName = 'openai' | 'gemini' | 'claude'
 export type ScriptType = 'LONG_STORY' | 'REEL'
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE'
 export type FitMode = 'CROP' | 'FIT'
@@ -65,13 +65,13 @@ export interface CrawlProgress {
 export interface CrawlStoryResult { story: ScriptDTO; episodes: ScriptDTO[]; sourceUrl: string }
 
 export interface AISettingsDTO {
-  provider: AIProviderName; openaiModel: string; geminiModel: string
-  hasOpenAIKey: boolean; hasGeminiKey: boolean
+  provider: AIProviderName; openaiModel: string; geminiModel: string; claudeModel: string
+  hasOpenAIKey: boolean; hasGeminiKey: boolean; hasClaudeKey: boolean
 }
 export interface SaveAISettingsInput {
-  provider: AIProviderName; openaiModel: string; geminiModel: string
-  openaiApiKey?: string; geminiApiKey?: string
-  clearOpenAIKey?: boolean; clearGeminiKey?: boolean
+  provider: AIProviderName; openaiModel: string; geminiModel: string; claudeModel: string
+  openaiApiKey?: string; geminiApiKey?: string; claudeApiKey?: string
+  clearOpenAIKey?: boolean; clearGeminiKey?: boolean; clearClaudeKey?: boolean
 }
 export interface AIConnectionResult { ok: boolean; provider: AIProviderName; message: string }
 

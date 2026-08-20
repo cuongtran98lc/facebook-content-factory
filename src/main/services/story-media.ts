@@ -4,7 +4,7 @@ import { nativeImage } from 'electron'
 import { readFile, stat } from 'node:fs/promises'
 import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getPrisma } from './database'
-import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset } from './ffmpeg'
+import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
@@ -572,6 +572,11 @@ export class StoryMediaService {
           await renderLoopedVideo({ backgroundPath: background.path, backgroundKind, audioPath, outputPath: videoPath, format: 'REEL', fitMode, soundEffectSeed: episode, soundEffect })
           await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
         }
+        try {
+          await extractVideoFrame(videoPath, videoPath.replace(/\.mp4$/i, '.jpg'))
+        } catch (err) {
+          console.error('Failed to extract reel video thumbnail:', err)
+        }
         completedUnits++
       }
       report(reels.length, 'METADATA', `Đang tạo title + description riêng cho ${reels.length} video...`)
@@ -664,8 +669,9 @@ export class StoryMediaService {
         await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
       }
 
-      // Append CTA at the end of the story audio
-      partPaths.push(await this.makeCta(project.voiceId, projectId, !resuming))
+      // We no longer append CTA directly to the raw story.mp3 file because CTA is now dynamically
+      // appended at the rendering stage to both long videos and all short video segments.
+      // partPaths.push(await this.makeCta(project.voiceId, projectId, !resuming))
 
       const output = await this.storage.getOutputPath(projectId, 'audio', 'story.mp3')
       const listFile = this.storage.getProjectPath(projectId, 'audio', '.parts', 'concat.txt')
@@ -707,7 +713,8 @@ export class StoryMediaService {
   async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, onProgress?: (progress: StoryVideoProgress) => void): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
-    const [audio, background, thumbnail] = await Promise.all([
+    const [project, audio, background, thumbnail] = await Promise.all([
+      prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
       prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'BACKGROUND_VIDEO' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } })
@@ -741,6 +748,7 @@ export class StoryMediaService {
       .map(row => row.id)
     if (previousFormatIds.length) await prisma.render.updateMany({ where: { id: { in: previousFormatIds } }, data: { status: 'STALE' } })
     report(0, 0, 'STARTING', format === 'REEL' ? `Đang chuẩn bị ${segments.length} video Short 9:16...` : 'Đang chuẩn bị Story video...')
+    const ctaPath = project.voiceId ? await this.makeCta(project.voiceId, projectId) : undefined
     let currentRenderId: string | null = null
     try {
       for (const [index, segment] of segments.entries()) {
@@ -763,11 +771,19 @@ export class StoryMediaService {
           soundEffect,
           audioStartSeconds: segment.startMs / 1000,
           audioDurationSeconds: segment.durationMs / 1000,
+          ctaPath,
           onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 92, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX`)
         })
+        const ctaDuration = ctaPath ? await probeDuration(ctaPath) : 0
+        const expectedDuration = segment.durationMs / 1000 + ctaDuration
         const renderedDuration = await probeDuration(output)
-        if (Math.abs(renderedDuration - segment.durationMs / 1000) > 1) throw new Error(`${label} có duration không hợp lệ sau khi render.`)
+        if (Math.abs(renderedDuration - expectedDuration) > 1) throw new Error(`${label} có duration không hợp lệ sau khi render.`)
         await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
+        try {
+          await extractVideoFrame(output, output.replace(/\.mp4$/i, '.jpg'))
+        } catch (err) {
+          console.error('Failed to extract story video thumbnail:', err)
+        }
         currentRenderId = null
       }
       report(segments.length, 94, 'METADATA', `Đang tạo title + description cho ${segments.length} video...`)

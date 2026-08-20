@@ -222,6 +222,9 @@ def signed_headers(url: str, body: str, configured: dict[str, Any] | None = None
 
 
 def prepare_create_call(create: dict[str, Any]) -> tuple[dict[str, str], str]:
+    url = create.get("url", "")
+    if "PASTE_FULL_CAPCUT_COMMON_TASK_NEW_URL_HERE" in url:
+        raise HTTPException(400, detail="CapCut bridge chưa được cấu hình session. Vui lòng cấu hình file capcut.local.json hoặc chọn giọng đọc khác (như Edge TTS hoặc VieNeu).")
     body = create.get("json")
     if not isinstance(body, dict) or not isinstance(body.get("tasks"), list) or not body["tasks"]:
         raise HTTPException(503, detail="create_request.json.tasks is missing in capcut.local.json")
@@ -233,6 +236,8 @@ def prepare_create_call(create: dict[str, Any]) -> tuple[dict[str, str], str]:
     if isinstance(raw_payload, dict):
         payload = raw_payload
     elif isinstance(raw_payload, str):
+        if "PASTE_CAPTURED_PAYLOAD_HERE" in raw_payload:
+            raise HTTPException(400, detail="CapCut bridge chưa được cấu hình session. Vui lòng cấu hình file capcut.local.json hoặc chọn giọng đọc khác (như Edge TTS hoặc VieNeu).")
         try:
             payload = json.loads(raw_payload)
         except json.JSONDecodeError as exc:
@@ -366,14 +371,42 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
     timeout = httpx.Timeout(60.0, connect=15.0)
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        import base64
+
+        async def download_audio_b64(url: str) -> str:
+            for download_attempt in range(1, 4):
+                try:
+                    audio_res = await client.get(url, timeout=30.0)
+                    if audio_res.is_error:
+                        raise httpx.HTTPStatusError(f"HTTP {audio_res.status_code}", request=audio_res.request, response=audio_res)
+                    return base64.b64encode(audio_res.content).decode("utf-8")
+                except (httpx.HTTPError, httpx.HTTPStatusError) as exc:
+                    if download_attempt < 3:
+                        logger.warning("Failed to download audio from CDN: %s; retrying...", exc)
+                        await asyncio.sleep(1.0)
+                    else:
+                        logger.error("Failed to download audio from CDN after all attempts: %s", exc)
+                        raise HTTPException(502, detail=f"Failed to download audio from CapCut CDN: {exc}")
+
         create_attempts = max(1, int(config.get("create_attempts", 3)))
         create_payload: dict[str, Any] = {}
         for attempt in range(1, create_attempts + 1):
-            create_headers, create_body = prepare_create_call(create)
-            response = await client.request(
-                create.get("method", "POST"), create["url"], params=create.get("params"),
-                headers=create_headers, content=create_body.encode("utf-8"),
-            )
+            try:
+                create_headers, create_body = prepare_create_call(create)
+                response = await client.request(
+                    create.get("method", "POST"), create["url"], params=create.get("params"),
+                    headers=create_headers, content=create_body.encode("utf-8"),
+                )
+            except httpx.HTTPError as exc:
+                if attempt < create_attempts:
+                    delay = float(config.get("create_retry_delay_seconds", 1.5)) * attempt
+                    logger.warning("CapCut request connection/network error: %s; retrying in %.1fs (%s/%s)", exc, delay, attempt, create_attempts)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error("CapCut request connection/network error after %s attempts: %s", create_attempts, exc)
+                    raise HTTPException(502, detail=f"CapCut request connection/network error: {exc}")
+
             if response.is_error:
                 logger.error("CapCut create failed (%s): %s", response.status_code, response.text[:1000])
                 raise HTTPException(response.status_code, detail=f"CapCut create failed: {response.text[:1000]}")
@@ -407,7 +440,8 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
 
         speech_url = extract_speech_url(create_payload)
         if speech_url:
-            return {"status": "success", "speech_url": speech_url, "voice": request.voice}
+            audio_b64 = await download_audio_b64(speech_url)
+            return {"status": "success", "speech_url": speech_url, "voice": request.voice, "audio_data": audio_b64}
 
         task = extract_task(create_payload)
         if not task or not task.get("id"):
@@ -425,10 +459,16 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
         for _ in range(int(config.get("poll_attempts", 30))):
             query_call = deep_replace(query_template, query_replacements)
             query_headers, query_body = prepare_query_call(query_call)
-            poll = await client.request(
-                query_call.get("method", "POST"), query_call["url"], params=query_call.get("params"),
-                headers=query_headers, content=query_body.encode("utf-8"),
-            )
+            try:
+                poll = await client.request(
+                    query_call.get("method", "POST"), query_call["url"], params=query_call.get("params"),
+                    headers=query_headers, content=query_body.encode("utf-8"),
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("CapCut query connection/network error: %s; retrying...", exc)
+                await asyncio.sleep(float(config.get("poll_interval_seconds", 1.0)))
+                continue
+
             if poll.is_error:
                 logger.error("CapCut query failed (%s): %s", poll.status_code, poll.text[:1000])
                 raise HTTPException(poll.status_code, detail=f"CapCut query failed: {poll.text[:1000]}")
@@ -441,7 +481,8 @@ async def tts(request: TTSRequest) -> dict[str, Any]:
             status = str((polled_task or {}).get("status", "")).lower()
             speech_url = extract_speech_url(payload)
             if speech_url:
-                return {"status": "success", "speech_url": speech_url, "voice": request.voice, "task_id": task["id"]}
+                audio_b64 = await download_audio_b64(speech_url)
+                return {"status": "success", "speech_url": speech_url, "voice": request.voice, "task_id": task["id"], "audio_data": audio_b64}
             if status in {"failed", "fail", "error"}:
                 raise HTTPException(502, detail=f"CapCut TTS task failed: {polled_task}")
             await asyncio.sleep(float(config.get("poll_interval_seconds", 1.0)))

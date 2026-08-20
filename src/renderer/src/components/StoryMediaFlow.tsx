@@ -10,7 +10,6 @@ type Props = {
   fitMode: FitMode
   soundEffect: SoundEffectOptions
   reelProgress: ReelVideoProgress | null
-  onGenerateAudio(): void
   onGenerateReelVideos(): void
   onGenerateMetadata(): void
   onChooseBackground(kind: BackgroundKind): void
@@ -97,7 +96,6 @@ function StoryVideoResult({ output }: { output: StoryVideoOutputDTO }) {
 }
 
 export function StoryMediaFlow(props: Props) {
-  const audioDone = Boolean(props.media?.audioPath)
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
     ? props.media.storyVideoParts
@@ -107,52 +105,34 @@ export function StoryMediaFlow(props: Props) {
     : storyVideoParts.length ? [{ format: storyVideoParts[0].format, status: props.media?.renderStatus ?? null, parts: storyVideoParts }] : []
   const selectedOutput = storyVideoOutputs.find(output => output.format === props.videoFormat)
   const renderDone = Boolean(selectedOutput?.parts.length && selectedOutput.parts.every(part => part.status === 'DONE'))
-  const canGenerateAudio = props.hasVoice && props.ffmpegReady
-  const canChooseBackground = audioDone
-  const canRender = audioDone && backgroundDone && props.ffmpegReady
+  const canChooseBackground = props.hasVoice
+  const canRender = backgroundDone && props.ffmpegReady && props.hasVoice
   const hasReelVideos = Boolean(props.media?.reels.some(reel => reel.videoUrl))
   const hasRenderedVideo = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.url))) || Boolean(props.media?.reels.some(reel => reel.videoUrl))
   const hasPublishMetadata = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.publishTitle || part.publishDescription))) || Boolean(props.media?.reels.some(reel => reel.publishTitle || reel.publishDescription))
 
-  const audioHint = !props.hasVoice
-    ? 'Chọn voice trước để tạo MP3.'
-    : !props.ffmpegReady
-      ? 'Cần FFmpeg để ghép các đoạn MP3.'
-      : audioDone ? 'MP3 đã sẵn sàng; có thể tạo lại từ story hiện tại.' : 'Sẵn sàng tạo MP3 từ story hiện tại.'
-  const videoHint = audioDone
-    ? (props.media?.backgroundName ?? 'Chọn video hoặc ảnh nền từ máy.')
-    : 'Hoàn tất Story MP3 trước.'
+  const videoHint = props.media?.backgroundName ?? 'Chọn video hoặc ảnh nền từ máy.'
 
   return <div className="story-media-box">
     <div className="media-flow-title">
-      <div><strong>Full Story MP3 + Loop Video</strong><span>Story → MP3 → video nền → tự trộn dynamic sound effect → video hoàn chỉnh.</span></div>
+      <div><strong>Full Story MP3 + Loop Video</strong><span>Chọn video nền → nhạc nền/sound effect → tự động tạo giọng đọc và render video hoàn chỉnh.</span></div>
       <div className="media-flow-progress">
-        <span className={audioDone ? 'done' : 'active'}>1</span>
+        <span className={backgroundDone ? 'done' : 'active'}>1</span>
         <i />
-        <span className={backgroundDone ? 'done' : audioDone ? 'active' : ''}>2</span>
+        <span className={backgroundDone ? 'active' : ''}>2</span>
         <i />
-        <span className={backgroundDone ? 'done' : ''}>3</span>
-        <i />
-        <span className={renderDone ? 'done' : backgroundDone ? 'active' : ''}>4</span>
+        <span className={renderDone ? 'done' : backgroundDone ? 'active' : ''}>3</span>
       </div>
     </div>
 
     <div className="media-step">
-      <div><b>1</b><div><strong>Story MP3</strong><span>{audioHint}</span></div></div>
-      <button className="secondary" onClick={props.onGenerateAudio} disabled={props.busy || !canGenerateAudio}>
-        {audioDone ? 'Regenerate Story MP3' : 'Generate Story MP3'}
-      </button>
-    </div>
-    {props.media?.audioUrl && <div className="media-preview compact"><audio className="voice-player" src={props.media.audioUrl} controls /><span>Duration: {formatDuration(props.media.audioDuration)}</span></div>}
-
-    <div className="media-step">
-      <div><b>2</b><div><strong>Background video / ảnh</strong><span>{videoHint}</span></div></div>
+      <div><b>1</b><div><strong>Background video / ảnh</strong><span>{videoHint}</span></div></div>
       <div className="background-actions"><button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button><button className="secondary" onClick={()=>props.onChooseBackground('IMAGE')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'IMAGE' ? 'Đổi Ảnh' : 'Chọn Ảnh'}</button></div>
     </div>
     {props.media?.backgroundUrl && <div className="media-preview">{props.media.backgroundKind === 'IMAGE' ? <img src={props.media.backgroundUrl} alt="Background" /> : <video src={props.media.backgroundUrl} controls muted />}<span>{props.media.backgroundKind === 'IMAGE' ? 'Ảnh tĩnh · tự kéo dài theo voice' : `Duration: ${formatDuration(props.media.backgroundDuration)}`}</span></div>}
 
     <div className="media-step sound-effect-step">
-      <div><b>3</b><div><strong>Sound effect cho mỗi video</strong><span>SFX chỉ được trộn vào MP4 cuối; MP3 voice gốc không bị thay đổi.</span></div></div>
+      <div><b>2</b><div><strong>Sound effect cho mỗi video</strong><span>SFX được tự động trộn vào video hoàn chỉnh cùng với giọng đọc.</span></div></div>
       <span className="sfx-required">LUÔN BẬT</span>
     </div>
     <div className="sound-effect-controls">
@@ -162,20 +142,26 @@ export function StoryMediaFlow(props: Props) {
     <div className="sfx-note"><strong>{SOUND_EFFECT_LABELS[props.soundEffect.preset]} · {props.soundEffect.volume}%</strong><span>Dynamic luân phiên Whoosh / Impact / Chime và thay đổi vị trí theo từng tập. Video cũ cần bấm Regenerate để có SFX mới.</span></div>
 
     <div className="media-step render-step">
-      <div><b>4</b><div><strong>{props.videoFormat === 'REEL' ? 'Render các Short 9:16 + SFX' : 'Render Story video + SFX'}</strong><span>{!props.ffmpegReady ? 'Cần FFmpeg để render.' : !backgroundDone ? 'Chọn video hoặc ảnh background trước.' : props.videoFormat === 'REEL' ? `Tự chia liên tục thành các phần cân bằng, tối đa 3:00/phần; mỗi Short có ${SOUND_EFFECT_LABELS[props.soundEffect.preset]}.` : `Sẽ trộn ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ở mức ${props.soundEffect.volume}%, có ducking để không lấn giọng.`}</span></div></div>
+      <div><b>3</b><div><strong>Tạo giọng đọc &amp; Render video</strong><span>{!props.ffmpegReady ? 'Cần FFmpeg để render.' : !backgroundDone ? 'Chọn video hoặc ảnh background trước.' : 'Hệ thống sẽ tự động tạo Story MP3 và render video.'}</span></div></div>
     </div>
     <div className="render-options">
       <label>Output<select value={props.videoFormat} onChange={(event) => props.onVideoFormatChange(event.target.value as VideoFormat)}><option value="LANDSCAPE">16:9 · 1920x1080 · 1 video</option><option value="REEL">9:16 · tự chia Short ≈2:30–3:00</option><option value="SQUARE">1:1 · 1080x1080 · 1 video</option></select></label>
       <label>Fit<select value={props.fitMode} onChange={(event) => props.onFitModeChange(event.target.value as FitMode)}><option value="CROP">Fill / Crop</option><option value="FIT">Fit / Pad</option></select></label>
-      <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? `${renderDone ? 'Regenerate' : 'Generate'} Short Videos + SFX` : `${renderDone ? 'Regenerate' : 'Generate'} Story Video + SFX`}</button>
+      <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? 'Tạo Short Videos (Âm thanh + Video)' : 'Tạo Story Video (Âm thanh + Video)'}</button>
     </div>
+    {props.media?.audioUrl && <div className="media-preview compact"><audio className="voice-player" src={props.media.audioUrl} controls /><span>Duration: {formatDuration(props.media.audioDuration)}</span></div>}
     {!!storyVideoOutputs.length && <div className="story-video-output-groups">{storyVideoOutputs.map(output => <StoryVideoResult key={output.format} output={output} />)}</div>}
     <div className="publish-metadata-toolbar">
       <div><strong>Title &amp; Description theo từng video</strong><span>Tạo nội dung đăng riêng cho video dài 16:9, từng Short 9:16 và từng Reel.</span></div>
       <button className="secondary" onClick={props.onGenerateMetadata} disabled={props.busy || !hasRenderedVideo}>{hasPublishMetadata ? 'Regenerate' : 'Generate'} Titles &amp; Descriptions</button>
     </div>
     <div className="reel-render-section">
-      <div className="media-flow-title"><div><strong>Final · Reel Videos theo từng tập</strong><span>{props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}</span></div></div>
+      <div className="reel-render-section-title-wrapper" style={{ marginTop: '1.5rem' }}>
+        <strong>Final · Reel Videos theo từng tập</strong>
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted, #888)', display: 'block', marginTop: '0.2rem' }}>
+          {props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}
+        </span>
+      </div>
       <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy || !props.ffmpegReady || !props.hasVoice || !props.media?.backgroundPath || !props.media?.thumbnailPath || !props.media?.reels.length}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + SFX</button>
       {props.reelProgress && <div className={`reel-progress ${props.reelProgress.stage === 'DONE' ? 'done' : ''}`}>
         <div><strong>{props.reelProgress.percent}%</strong><span>{props.reelProgress.message}</span></div>
