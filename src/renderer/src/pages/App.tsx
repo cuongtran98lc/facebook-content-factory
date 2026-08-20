@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AIProviderName,
   AISettingsDTO,
@@ -17,18 +17,26 @@ import type {
   VoiceDTO,
   VoiceSettingsDTO,
 } from '../../../shared/types';
+import { ExportQueueView } from '../components/ExportQueueView';
+import { MetricsDashboardView } from '../components/MetricsDashboardView';
+import { RenderQueueView } from '../components/RenderQueueView';
 import { SchedulerView } from '../components/SchedulerView';
 import { StoryMediaFlow } from '../components/StoryMediaFlow';
 import { ThumbnailGenerator } from '../components/ThumbnailGenerator';
 
-type View = 'dashboard' | 'ideas' | 'scripts' | 'scheduler' | 'settings';
+type View = 'dashboard' | 'ideas' | 'scripts' | 'scheduler' | 'export-queue' | 'metrics' | 'render-queue' | 'settings';
 
 const DEFAULT_SETTINGS: AISettingsDTO = {
-  provider: 'gemini',
+  // Groq mặc định tạm thời — Gemini đang bị Google chặn project ("denied
+  // access", lỗi 403 đã xác nhận là bug phía Google, không sửa được từ app).
+  // Đổi lại 'gemini' khi Google xử lý xong review.
+  provider: 'groq',
   openaiModel: 'gpt-5.4-mini',
-  geminiModel: 'gemini-2.5-flash',
+  geminiModel: 'gemini-3.6-flash',
+  groqModel: 'openai/gpt-oss-120b', // llama-3.3-70b-versatile đã bị Groq deprecate
   hasOpenAIKey: false,
   hasGeminiKey: false,
+  hasGroqKey: false,
 };
 
 const DEFAULT_VOICE_SETTINGS: VoiceSettingsDTO = { elevenLabsModel: 'eleven_multilingual_v2', hasElevenLabsKey: false };
@@ -80,8 +88,10 @@ export default function App() {
   const [settings, setSettings] = useState<AISettingsDTO>(DEFAULT_SETTINGS);
   const [openaiKey, setOpenaiKey] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
+  const [groqKey, setGroqKey] = useState('');
   const [clearOpenAIKey, setClearOpenAIKey] = useState(false);
   const [clearGeminiKey, setClearGeminiKey] = useState(false);
+  const [clearGroqKey, setClearGroqKey] = useState(false);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettingsDTO>(DEFAULT_VOICE_SETTINGS);
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [clearElevenLabsKey, setClearElevenLabsKey] = useState(false);
@@ -106,6 +116,8 @@ export default function App() {
     () => projects.find(project => project.id === selectedId) ?? projects[0],
     [projects, selectedId],
   );
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const stories = useMemo(
     () => scripts.filter(script => script.type === 'LONG_STORY').sort((a, b) => b.version - a.version),
     [scripts],
@@ -192,6 +204,14 @@ export default function App() {
   useEffect(() => window.contentFactory.storyMedia.onReelVideoProgress(setReelProgress), []);
   useEffect(() => window.contentFactory.storyMedia.onStoryVideoProgress(setStoryVideoProgress), []);
   useEffect(() => window.contentFactory.crawler.onProgress(setCrawlProgress), []);
+  useEffect(() => {
+    return window.contentFactory.renderQueue.onUpdated(() => {
+      void reloadProjects();
+      if (selectedRef.current?.id) {
+        void window.contentFactory.storyMedia.get(selectedRef.current.id).then(setStoryMedia);
+      }
+    });
+  }, []);
   useEffect(() => {
     if (view !== 'scripts' || health?.ttsProvider !== 'capcut') return;
     let active = true;
@@ -604,48 +624,27 @@ export default function App() {
   }
 
   async function renderStoryVideo() {
+    // Xếp vào Render Queue thay vì render trực tiếp (docs/designs/render-queue.md)
+    // — enqueue() trả về gần như ngay lập tức, không còn khoá màn hình 15-25
+    // phút chờ FFmpeg. Theo dõi tiến độ ở tab Render Queue.
     if (!selected) return;
     if (!health?.ffmpeg) return setMessage('FFmpeg/ffprobe chưa sẵn sàng trên máy.');
     if (!storyMedia?.audioPath) return setMessage('Hãy hoàn tất bước 1: Generate Story MP3 trước.');
     if (!storyMedia.backgroundPath) return setMessage('Hãy hoàn tất bước 2: chọn Video hoặc Ảnh background trước.');
-    setStoryVideoProgress({
-      current: 0,
-      total: 1,
-      percent: 0,
-      stage: 'STARTING',
-      message: videoFormat === 'REEL' ? 'Đang tính số video Short 9:16...' : 'Đang chuẩn bị Story video...',
-    });
-    setStoryVideoGenerating(true);
     setBusy(true);
-    setMessage(
-      videoFormat === 'REEL'
-        ? 'Đang chia Story thành các Short 9:16 dài tối đa 3 phút...'
-        : `Đang trộn ${soundEffect.preset.toLowerCase()} SFX ${soundEffect.volume}% và render video...`,
-    );
     try {
-      const media = await window.contentFactory.storyMedia.render({
+      await window.contentFactory.renderQueue.enqueue({
         projectId: selected.id,
         format: videoFormat,
         fitMode,
         soundEffect,
       });
-      setStoryMedia(media);
-      await reloadProjects();
-      const output = media.storyVideoOutputs.find(item => item.format === videoFormat);
-      const metadataDone = Boolean(
-        output?.parts.length && output.parts.every(part => part.publishTitle && part.publishDescription),
-      );
       setMessage(
-        metadataDone
-          ? videoFormat === 'REEL'
-            ? `✓ Đã tạo ${output?.parts.length ?? 0} video Short 9:16, mỗi phần có SFX + title/description riêng.`
-            : '✓ Bước 4/4 hoàn tất: Story video đã có SFX + title/description.'
-          : '✓ Video đã render xong. Metadata chưa hoàn tất; bấm Generate Titles & Descriptions để thử lại.',
+        '✓ Đã xếp vào hàng đợi render — xem tiến độ ở tab 🎞️ Render Queue. Bạn có thể tiếp tục làm việc khác trong lúc chờ.',
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
-      setStoryVideoGenerating(false);
       setBusy(false);
     }
   }
@@ -694,9 +693,11 @@ export default function App() {
 
   async function generateVideoMetadata() {
     if (!selected) return;
+    const media = await window.contentFactory.storyMedia.get(selected.id);
+    setStoryMedia(media);
     const hasVideo = Boolean(
-      storyMedia?.storyVideoOutputs.some(output => output.parts.some(part => part.status === 'DONE')) ||
-      storyMedia?.reels.some(reel => reel.status === 'DONE'),
+      media?.storyVideoOutputs.some(output => output.parts.some(part => part.status === 'DONE')) ||
+      media?.reels.some(reel => reel.status === 'DONE'),
     );
     if (!hasVideo) return setMessage('Chưa có video hoàn chỉnh để tạo title và description.');
     setStoryVideoProgress({
@@ -710,8 +711,11 @@ export default function App() {
     setBusy(true);
     setMessage('Đang tạo title + description tương ứng cho từng video...');
     try {
-      const media = await window.contentFactory.storyMedia.generateMetadata({ projectId: selected.id, scope: 'ALL' });
-      setStoryMedia(media);
+      const updatedMedia = await window.contentFactory.storyMedia.generateMetadata({
+        projectId: selected.id,
+        scope: 'ALL',
+      });
+      setStoryMedia(updatedMedia);
       setMessage('✓ Đã tạo xong title + description và lưu file metadata cạnh từng video.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -730,16 +734,21 @@ export default function App() {
         provider: settings.provider,
         openaiModel: settings.openaiModel,
         geminiModel: settings.geminiModel,
+        groqModel: settings.groqModel,
         openaiApiKey: openaiKey || undefined,
         geminiApiKey: geminiKey || undefined,
+        groqApiKey: groqKey || undefined,
         clearOpenAIKey,
         clearGeminiKey,
+        clearGroqKey,
       });
       setSettings(saved);
       setOpenaiKey('');
       setGeminiKey('');
+      setGroqKey('');
       setClearOpenAIKey(false);
       setClearGeminiKey(false);
+      setClearGroqKey(false);
       setMessage('Đã lưu AI Settings.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -839,8 +848,17 @@ export default function App() {
           <button className="nav" disabled>
             Media · v0.4
           </button>
+          <button className={`nav ${view === 'render-queue' ? 'active' : ''}`} onClick={() => setView('render-queue')}>
+            🎞️ Render Queue
+          </button>
           <button className={`nav ${view === 'scheduler' ? 'active' : ''}`} onClick={() => setView('scheduler')}>
             📅 Scheduler
+          </button>
+          <button className={`nav ${view === 'export-queue' ? 'active' : ''}`} onClick={() => setView('export-queue')}>
+            📤 Export Queue
+          </button>
+          <button className={`nav ${view === 'metrics' ? 'active' : ''}`} onClick={() => setView('metrics')}>
+            📊 Metrics
           </button>
           <button className={`nav ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>
             Settings
@@ -869,7 +887,13 @@ export default function App() {
                     ? 'Story & Reels'
                     : view === 'scheduler'
                       ? '📅 Content Scheduler'
-                      : 'Settings'}
+                      : view === 'export-queue'
+                        ? '📤 Export Queue (Facebook/TikTok)'
+                        : view === 'metrics'
+                          ? '📊 Metrics Dashboard'
+                          : view === 'render-queue'
+                            ? '🎞️ Render Queue'
+                            : 'Settings'}
             </h1>
             <p>
               {view === 'scripts'
@@ -1419,7 +1443,13 @@ export default function App() {
           </section>
         )}
 
+        {view === 'render-queue' && <RenderQueueView />}
+
         {view === 'scheduler' && <SchedulerView />}
+
+        {view === 'export-queue' && <ExportQueueView />}
+
+        {view === 'metrics' && <MetricsDashboardView />}
 
         {view === 'settings' && (
           <section className="settings-grid">
@@ -1432,8 +1462,36 @@ export default function App() {
                   onChange={e => setSettings({ ...settings, provider: e.target.value as AIProviderName })}>
                   <option value="gemini">Gemini</option>
                   <option value="openai">OpenAI</option>
+                  <option value="groq">Groq (free)</option>
                 </select>
               </label>
+              <label>
+                Groq model
+                <input
+                  value={settings.groqModel}
+                  onChange={e => setSettings({ ...settings, groqModel: e.target.value })}
+                />
+              </label>
+              <label>
+                Groq API key
+                <input
+                  type="password"
+                  placeholder={
+                    settings.hasGroqKey
+                      ? 'Saved — nhập key mới để thay thế'
+                      : 'Paste Groq API key (console.groq.com — free)'
+                  }
+                  value={groqKey}
+                  onChange={e => setGroqKey(e.target.value)}
+                />
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={clearGroqKey} onChange={e => setClearGroqKey(e.target.checked)} /> Xóa
+                Groq key đã lưu
+              </label>
+              <button type="button" className="secondary" disabled={busy} onClick={() => testAI('groq')}>
+                Test Groq
+              </button>
               <label>
                 Gemini model
                 <input

@@ -25,15 +25,23 @@ model Project {
 }
 
 model Idea {
-  id          String   @id @default(cuid())
-  title       String
-  hook        String?
-  description String?
-  score       Float?
-  selected    Boolean  @default(false)
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
+  id            String   @id @default(cuid())
+  title         String
+  hook          String?
+  description   String?
+  score         Float?
+  selected      Boolean  @default(false)
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pillarId      String?
+  pillar        Pillar?  @relation(fields: [pillarId], references: [id], onDelete: SetNull)
+  seriesId      String?
+  series        Series?  @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  episodeNumber Int?
+  renders       Render[]
+  createdAt     DateTime @default(now())
+
+  @@unique([seriesId, episodeNumber])
 }
 
 model Script {
@@ -48,7 +56,66 @@ model Script {
   sourceScriptId String?
   projectId      String
   project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  seriesId       String?
+  series         Series?  @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  episodeNumber  Int?
   createdAt      DateTime @default(now())
+
+  @@unique([seriesId, episodeNumber])
+}
+
+/// Chủ đề xoay vòng (5 pillar cho kênh "Chuyện tình yêu đêm khuya", có thể mở
+/// rộng sau). Toàn cục theo kênh, không theo từng Project. `rotationIndex` là
+/// thứ tự cố định dùng cho round-robin — xem PillarService.getNextInRotation()
+/// (đổi từ LRU sang round-robin theo outside-voice CM#3: ở nhịp ~5 video/ngày
+/// đúng bằng 5 pillar, LRU suy biến vì mọi pillar chạm cùng ngày).
+model Pillar {
+  id            String        @id @default(cuid())
+  name          String
+  description   String?
+  colorTag      String?
+  active        Boolean       @default(true)
+  rotationIndex Int
+  ideas         Idea[]
+  series        Series[]
+  wonMetrics    DailyMetric[] @relation("WinningPillar")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+/// Nhóm các Idea/Script thành 1 chuỗi tập nối tiếp (cliffhanger). Không phải
+/// "story bible" đầy đủ — chỉ đủ để sắp thứ tự tập, prefill dựa vào `hook`
+/// của tập trước (xem SeriesService trong design doc).
+model Series {
+  id          String   @id @default(cuid())
+  name        String
+  pillarId    String?
+  pillar      Pillar?  @relation(fields: [pillarId], references: [id], onDelete: SetNull)
+  description String?
+  ideas       Idea[]
+  scripts     Script[]
+  createdAt   DateTime @default(now())
+}
+
+/// 1 dòng/ngày, nhập tay (xem design doc — không auto-compute trong tháng 1).
+/// Service phải dùng upsert theo `date`, không phải create (outside-voice CM#6).
+model DailyMetric {
+  id               String   @id @default(cuid())
+  date             DateTime
+  subs             Int?
+  watchHours       Float?
+  shortsViews      Int?
+  fbFollowers      Int?
+  fbMinutesViewed  Int?
+  tiktokFollowers  Int?
+  tiktokViews      Int?
+  winningPillarId  String?
+  winningPillar    Pillar?  @relation("WinningPillar", fields: [winningPillarId], references: [id], onDelete: SetNull)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([date])
 }
 
 model Asset {
@@ -62,21 +129,30 @@ model Asset {
 }
 
 model Render {
-  id            String         @id @default(cuid())
-  type          String
-  path          String?
-  status        String         @default("PENDING")
-  preset        String?
-  projectId     String
-  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  scheduledPost ScheduledPost?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id             String          @id @default(cuid())
+  type           String
+  path           String?
+  status         String          @default("PENDING")
+  preset         String?
+  projectId      String
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Đường nối ngược Render → Idea → Pillar, thêm ngay (nullable, additive)
+  /// theo outside-voice CM#2 — để TODO #2 (auto-tính pillar thắng từ YouTube
+  /// Analytics) không cần thêm 1 migration nữa ở tháng 2.
+  ideaId         String?
+  idea           Idea?           @relation(fields: [ideaId], references: [id], onDelete: SetNull)
+  /// 1 render có thể có NHIỀU ScheduledPost độc lập — 1 dòng/nền tảng (YouTube
+  /// auto + Facebook thủ công + TikTok thủ công đều là 3 trạng thái riêng cho
+  /// cùng 1 video). Phát hiện khi build Export Queue: renderId từng là
+  /// @unique (1:1), đã đổi sang @@unique([renderId, platform]) bên dưới.
+  scheduledPosts ScheduledPost[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 }
 
 model ScheduledPost {
   id             String    @id @default(cuid())
-  renderId       String    @unique
+  renderId       String
   render         Render    @relation(fields: [renderId], references: [id], onDelete: Cascade)
   platform       String    @default("YOUTUBE")
   status         String    @default("PENDING")
@@ -90,6 +166,8 @@ model ScheduledPost {
   error          String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  @@unique([renderId, platform])
 }
 
 model Job {

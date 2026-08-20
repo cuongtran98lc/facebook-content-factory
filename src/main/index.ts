@@ -1,15 +1,20 @@
-import { app, BrowserWindow, net, protocol } from 'electron'
-import { isAbsolute, join, relative, resolve } from 'node:path'
-import { registerIpcHandlers, scheduler } from './ipc'
-import { closePrisma } from './services/database'
-import { getOutputRoot, getStorageRoot } from './services/paths'
-import { pathToFileURL } from 'node:url'
+import { app, BrowserWindow, net, protocol } from 'electron';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { registerIpcHandlers, renderQueue, scheduler } from './ipc';
+import { closePrisma } from './services/database';
+import { getOutputRoot, getStorageRoot } from './services/paths';
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'local-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'local-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
 
 function isInsideRoot(path: string, root: string): boolean {
-  const child = relative(resolve(root), resolve(path))
-  return child === '' || (child !== '..' && !child.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(child))
+  const child = relative(resolve(root), resolve(path));
+  return (
+    child === '' ||
+    (child !== '..' && !child.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(child))
+  );
 }
 
 function createWindow(): void {
@@ -24,39 +29,40 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
-  })
+      sandbox: false,
+    },
+  });
 
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => win.show());
 
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
-    void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    void win.loadURL(process.env['ELECTRON_RENDERER_URL']);
   } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    void win.loadFile(join(__dirname, '../renderer/index.html'));
   }
 }
 
 app.whenReady().then(() => {
   protocol.handle('local-media', request => {
-    const url = new URL(request.url)
-    const requested = decodeURIComponent(url.pathname.slice(1))
-    const allowedRoots = [getStorageRoot(), getOutputRoot()]
-    if (!allowedRoots.some(root => isInsideRoot(requested, root))) return new Response('Forbidden', { status: 403 })
-    return net.fetch(pathToFileURL(resolve(requested)).toString())
-  })
-  registerIpcHandlers()
-  scheduler.start()
-  createWindow()
+    const url = new URL(request.url);
+    const requested = decodeURIComponent(url.pathname.slice(1));
+    const allowedRoots = [getStorageRoot(), getOutputRoot()];
+    if (!allowedRoots.some(root => isInsideRoot(requested, root))) return new Response('Forbidden', { status: 403 });
+    return net.fetch(pathToFileURL(resolve(requested)).toString());
+  });
+  registerIpcHandlers();
+  scheduler.start();
+  void renderQueue.start();
+  createWindow();
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  if (process.platform !== 'darwin') app.quit();
+});
 
 app.on('before-quit', () => {
-  void closePrisma()
-})
+  void closePrisma();
+});
