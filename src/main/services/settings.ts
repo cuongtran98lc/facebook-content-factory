@@ -27,10 +27,12 @@ interface SettingsSchema {
   youtubeTokenExpiry?: number;
   youtubeChannelId?: string;
   youtubeChannelTitle?: string;
+  facebookPageId?: string;
+  facebookAccessTokenEncrypted?: string;
 }
 
 const DEFAULT_SETTINGS: SettingsSchema = {
-  aiProvider: 'gemini',
+  aiProvider: 'gemini', // default to gemini if possible
   openaiModel: 'gpt-5.4-mini',
   geminiModel: 'gemini-3.6-flash',
   // llama-3.3-70b-versatile đã bị Groq deprecate — openai/gpt-oss-120b là
@@ -39,6 +41,29 @@ const DEFAULT_SETTINGS: SettingsSchema = {
   groqModel: 'openai/gpt-oss-120b',
   elevenLabsModel: 'eleven_multilingual_v2',
 };
+
+function getEnvKey(keyName: string): string | null {
+  if (process.env[keyName]) return process.env[keyName]!;
+  try {
+    const envPath = join(process.cwd(), '.env');
+    const content = readFileSync(envPath, 'utf8');
+    for (const line of content.split('\n')) {
+      const match = line.match(/^\s*([^#=]+)\s*=\s*(.*)$/);
+      if (match) {
+        const k = match[1].trim();
+        let v = match[2].trim();
+        if (k === keyName) {
+          // Strip quotes if present
+          if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+            v = v.slice(1, -1);
+          }
+          return v;
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
 
 function getSettingsPath(): string {
   // This is intentionally resolved lazily. SettingsService is imported before
@@ -55,7 +80,15 @@ function readSettings(): SettingsSchema {
   const path = getSettingsPath();
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<SettingsSchema>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    const hasGeminiKey = Boolean(merged.geminiApiKeyEncrypted || getEnvKey('GEMINI_API_KEY'));
+    const hasGroqKey = Boolean(merged.groqApiKeyEncrypted || getEnvKey('GROQ_API_KEY'));
+    
+    // Auto-migrate/fallback from gemini to groq ONLY if gemini key is missing (both stored & env) but groq key is present
+    if (merged.aiProvider === 'gemini' && !hasGeminiKey && hasGroqKey) {
+      merged.aiProvider = 'groq';
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -92,14 +125,17 @@ function decrypt(value?: string): string | null {
 export class SettingsService {
   getAI(): AISettingsDTO {
     const settings = readSettings();
+    const hasOpenAIKey = Boolean(settings.openaiApiKeyEncrypted || getEnvKey('OPENAI_API_KEY'));
+    const hasGeminiKey = Boolean(settings.geminiApiKeyEncrypted || getEnvKey('GEMINI_API_KEY'));
+    const hasGroqKey = Boolean(settings.groqApiKeyEncrypted || getEnvKey('GROQ_API_KEY'));
     return {
       provider: settings.aiProvider,
       openaiModel: settings.openaiModel,
       geminiModel: settings.geminiModel,
       groqModel: settings.groqModel,
-      hasOpenAIKey: Boolean(settings.openaiApiKeyEncrypted),
-      hasGeminiKey: Boolean(settings.geminiApiKeyEncrypted),
-      hasGroqKey: Boolean(settings.groqApiKeyEncrypted),
+      hasOpenAIKey,
+      hasGeminiKey,
+      hasGroqKey,
     };
   }
 
@@ -171,7 +207,12 @@ export class SettingsService {
           ? settings.groqApiKeyEncrypted
           : settings.geminiApiKeyEncrypted;
 
-    const key = decrypt(encrypted);
+    let key = decrypt(encrypted);
+    if (!key) {
+      if (provider === 'gemini') key = getEnvKey('GEMINI_API_KEY');
+      else if (provider === 'groq') key = getEnvKey('GROQ_API_KEY');
+      else if (provider === 'openai') key = getEnvKey('OPENAI_API_KEY');
+    }
     if (!key) throw new Error(`Chưa cấu hình API key cho ${provider}. Vào Settings để thêm key.`);
     return key;
   }
@@ -225,6 +266,38 @@ export class SettingsService {
     delete s.youtubeTokenExpiry;
     delete s.youtubeChannelId;
     delete s.youtubeChannelTitle;
+    writeSettings(s);
+  }
+
+  getFacebookStatus(): { connected: boolean; pageId: string | null } {
+    const s = readSettings();
+    const connected = Boolean(s.facebookPageId && s.facebookAccessTokenEncrypted);
+    return { connected, pageId: s.facebookPageId ?? null };
+  }
+
+  saveFacebookCredentials(pageId: string, accessToken: string): void {
+    const s = readSettings();
+    s.facebookPageId = pageId.trim();
+    if (accessToken.trim()) {
+      s.facebookAccessTokenEncrypted = encrypt(accessToken.trim());
+    } else {
+      delete s.facebookAccessTokenEncrypted;
+    }
+    writeSettings(s);
+  }
+
+  getFacebookCredentials(): { pageId: string; accessToken: string } {
+    const s = readSettings();
+    return {
+      pageId: s.facebookPageId ?? '',
+      accessToken: decrypt(s.facebookAccessTokenEncrypted) ?? '',
+    };
+  }
+
+  clearFacebookCredentials(): void {
+    const s = readSettings();
+    delete s.facebookPageId;
+    delete s.facebookAccessTokenEncrypted;
     writeSettings(s);
   }
 }

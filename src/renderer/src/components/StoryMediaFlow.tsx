@@ -9,6 +9,7 @@ type Props = {
   videoFormat: VideoFormat
   fitMode: FitMode
   soundEffect: SoundEffectOptions
+  includeSubtitles: boolean
   reelProgress: ReelVideoProgress | null
   onGenerateAudio(): void
   onGenerateReelVideos(): void
@@ -18,6 +19,7 @@ type Props = {
   onVideoFormatChange(value: VideoFormat): void
   onFitModeChange(value: FitMode): void
   onSoundEffectChange(value: SoundEffectOptions): void
+  onIncludeSubtitlesChange(value: boolean): void
 }
 
 function formatDuration(seconds?: number | null): string {
@@ -113,6 +115,7 @@ export function StoryMediaFlow(props: Props) {
   const hasReelVideos = Boolean(props.media?.reels.some(reel => reel.videoUrl))
   const hasRenderedVideo = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.url))) || Boolean(props.media?.reels.some(reel => reel.videoUrl))
   const hasPublishMetadata = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.publishTitle || part.publishDescription))) || Boolean(props.media?.reels.some(reel => reel.publishTitle || reel.publishDescription))
+  const renderFeatures = `SFX${props.includeSubtitles ? ' + Sub' : ''}`
 
   const audioHint = !props.hasVoice
     ? 'Chọn voice trước để tạo MP3.'
@@ -162,12 +165,13 @@ export function StoryMediaFlow(props: Props) {
     <div className="sfx-note"><strong>{SOUND_EFFECT_LABELS[props.soundEffect.preset]} · {props.soundEffect.volume}%</strong><span>Dynamic luân phiên Whoosh / Impact / Chime và thay đổi vị trí theo từng tập. Video cũ cần bấm Regenerate để có SFX mới.</span></div>
 
     <div className="media-step render-step">
-      <div><b>4</b><div><strong>{props.videoFormat === 'REEL' ? 'Render các Short 9:16 + SFX' : 'Render Story video + SFX'}</strong><span>{!props.ffmpegReady ? 'Cần FFmpeg để render.' : !backgroundDone ? 'Chọn video hoặc ảnh background trước.' : props.videoFormat === 'REEL' ? `Tự chia liên tục thành các phần cân bằng, tối đa 3:00/phần; mỗi Short có ${SOUND_EFFECT_LABELS[props.soundEffect.preset]}.` : `Sẽ trộn ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ở mức ${props.soundEffect.volume}%, có ducking để không lấn giọng.`}</span></div></div>
+      <div><b>4</b><div><strong>{props.videoFormat === 'REEL' ? `Render các Short 9:16 + ${renderFeatures}` : `Render Story video + ${renderFeatures}`}</strong><span>{!props.ffmpegReady ? 'Cần FFmpeg để render.' : !backgroundDone ? 'Chọn video hoặc ảnh background trước.' : props.videoFormat === 'REEL' ? `Tự chia liên tục thành các phần cân bằng, tối đa 3:00/phần; mỗi Short có ${SOUND_EFFECT_LABELS[props.soundEffect.preset]}${props.includeSubtitles ? ' và phụ đề tự động' : ''}.` : `Sẽ trộn ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ở mức ${props.soundEffect.volume}%${props.includeSubtitles ? ' và đốt phụ đề vào video' : ''}, có ducking để không lấn giọng.`}</span></div></div>
     </div>
     <div className="render-options">
       <label>Output<select value={props.videoFormat} onChange={(event) => props.onVideoFormatChange(event.target.value as VideoFormat)}><option value="LANDSCAPE">16:9 · 1920x1080 · 1 video</option><option value="REEL">9:16 · tự chia Short ≈2:30–3:00</option><option value="SQUARE">1:1 · 1080x1080 · 1 video</option></select></label>
       <label>Fit<select value={props.fitMode} onChange={(event) => props.onFitModeChange(event.target.value as FitMode)}><option value="CROP">Fill / Crop</option><option value="FIT">Fit / Pad</option></select></label>
-      <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? `${renderDone ? 'Regenerate' : 'Generate'} Short Videos + SFX` : `${renderDone ? 'Regenerate' : 'Generate'} Story Video + SFX`}</button>
+      <label className="subtitle-option">Phụ đề<span><input type="checkbox" checked={props.includeSubtitles} disabled={props.busy} onChange={(event) => props.onIncludeSubtitlesChange(event.target.checked)} />Đốt vào video</span></label>
+      <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? `${renderDone ? 'Regenerate' : 'Generate'} Short Videos + ${renderFeatures}` : `${renderDone ? 'Regenerate' : 'Generate'} Story Video + ${renderFeatures}`}</button>
     </div>
     {!!storyVideoOutputs.length && <div className="story-video-output-groups">{storyVideoOutputs.map(output => <StoryVideoResult key={output.format} output={output} />)}</div>}
     <div className="publish-metadata-toolbar">
@@ -175,8 +179,8 @@ export function StoryMediaFlow(props: Props) {
       <button className="secondary" onClick={props.onGenerateMetadata} disabled={props.busy || !hasRenderedVideo}>{hasPublishMetadata ? 'Regenerate' : 'Generate'} Titles &amp; Descriptions</button>
     </div>
     <div className="reel-render-section">
-      <div className="media-flow-title"><div><strong>Final · Reel Videos theo từng tập</strong><span>{props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}</span></div></div>
-      <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy || !props.ffmpegReady || !props.hasVoice || !props.media?.backgroundPath || !props.media?.thumbnailPath || !props.media?.reels.length}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + SFX</button>
+      <div className="media-flow-title"><div><strong>Final · Reel Videos theo từng tập</strong><span>{props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video${props.includeSubtitles ? ' + phụ đề' : ''} · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}</span></div></div>
+      <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy || !props.ffmpegReady || !props.hasVoice || !props.media?.backgroundPath || !props.media?.thumbnailPath || !props.media?.reels.length}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + {renderFeatures}</button>
       {props.reelProgress && <div className={`reel-progress ${props.reelProgress.stage === 'DONE' ? 'done' : ''}`}>
         <div><strong>{props.reelProgress.percent}%</strong><span>{props.reelProgress.message}</span></div>
         <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.reelProgress.percent}><i style={{ width: `${props.reelProgress.percent}%` }} /></div>

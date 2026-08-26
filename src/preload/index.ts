@@ -79,6 +79,8 @@ const api: ContentFactoryAPI = {
   storyMedia: {
     get: projectId => ipcRenderer.invoke('story-media:get', projectId),
     generateThumbnail: input => ipcRenderer.invoke('story-media:generate-thumbnail', input),
+    extractThumbnailFromVideo: input => ipcRenderer.invoke('story-media:extract-thumbnail-from-video', input),
+    chooseVideoFile: () => ipcRenderer.invoke('story-media:choose-video-file'),
     generateReelVideos: input => ipcRenderer.invoke('story-media:generate-reel-videos', input),
     onReelVideoProgress: callback => {
       const listener = (_event: Electron.IpcRendererEvent, progress: ReelVideoProgress) => callback(progress);
@@ -111,7 +113,7 @@ const api: ContentFactoryAPI = {
     list: platform => ipcRenderer.invoke('scheduler:list', platform),
     schedule: input => ipcRenderer.invoke('scheduler:schedule', input),
     cancel: id => ipcRenderer.invoke('scheduler:cancel', id),
-    uploadNow: renderId => ipcRenderer.invoke('scheduler:upload-now', renderId),
+    uploadNow: (renderId, platform) => ipcRenderer.invoke('scheduler:upload-now', renderId, platform),
     markManualPosted: (renderId, platform) => ipcRenderer.invoke('scheduler:mark-manual-posted', renderId, platform),
     markManualPending: (renderId, platform) => ipcRenderer.invoke('scheduler:mark-manual-pending', renderId, platform),
     onUploadProgress: callback => {
@@ -132,6 +134,12 @@ const api: ContentFactoryAPI = {
     beginAuth: () => ipcRenderer.invoke('youtube:begin-auth'),
     getStatus: () => ipcRenderer.invoke('youtube:status'),
     revoke: () => ipcRenderer.invoke('youtube:revoke'),
+  },
+  facebook: {
+    saveCredentials: input => ipcRenderer.invoke('facebook:save-credentials', input),
+    getStatus: () => ipcRenderer.invoke('facebook:status'),
+    revoke: () => ipcRenderer.invoke('facebook:revoke'),
+    fetchPages: userAccessToken => ipcRenderer.invoke('facebook:fetch-pages', userAccessToken),
   },
 };
 

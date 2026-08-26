@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import type { Platform, PrivacyStatus, ScheduledPostDTO, SchedulePostInput, UploadProgress } from '../../shared/types';
 import { getPrisma } from './database';
 import type { YouTubeService } from './youtube';
+import type { FacebookService } from './facebook';
 
 type RenderRow = Awaited<ReturnType<typeof findRender>>;
 type PostRow = Awaited<ReturnType<typeof findPostForRender>>;
@@ -21,16 +22,73 @@ async function findPostForRender(renderId: string, platform: Platform) {
   return getPrisma().scheduledPost.findUnique({ where: { renderId_platform: { renderId, platform } } });
 }
 
-async function readMeta(videoPath: string | null): Promise<{ title: string | null; description: string | null }> {
-  if (!videoPath) return { title: null, description: null };
-  const metaPath = videoPath.replace(/\.[^.]+$/, '.metadata.txt');
+async function readMeta(
+  projectId: string,
+  renderId: string,
+  videoPath: string | null,
+): Promise<{ title: string | null; description: string | null }> {
+  // 1. Try to find the asset metadata from the DB first (most reliable)
   try {
-    const text = await readFile(metaPath, 'utf8');
-    const data = JSON.parse(text) as Record<string, string>;
-    return { title: data.title ?? null, description: data.description ?? null };
-  } catch {
-    return { title: null, description: null };
+    const assets = await getPrisma().asset.findMany({
+      where: {
+        projectId,
+        type: 'VIDEO_PUBLISH_METADATA',
+      },
+    });
+    for (const asset of assets) {
+      if (asset.metadata) {
+        const data = JSON.parse(asset.metadata);
+        if (data.renderId === renderId) {
+          return {
+            title: data.title || null,
+            description: data.description || null,
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to read metadata from database assets:', error);
   }
+
+  // 2. Fallback to parsing sidecar file if available
+  if (videoPath) {
+    const metaPath = videoPath.replace(/\.[^.]+$/, '.metadata.txt');
+    try {
+      const text = await readFile(metaPath, 'utf8');
+
+      // If it's JSON, parse it
+      if (text.trim().startsWith('{')) {
+        const data = JSON.parse(text) as Record<string, string>;
+        return { title: data.title ?? null, description: data.description ?? null };
+      }
+
+      // Otherwise, parse it as a sidecar plain text file
+      const lines = text.split('\n');
+      let title: string | null = null;
+      let description: string | null = null;
+
+      const titleIndex = lines.findIndex((l) => l.startsWith('TIÊU ĐỀ'));
+      if (titleIndex !== -1 && lines[titleIndex + 1]) {
+        title = lines[titleIndex + 1].trim();
+      }
+
+      const descIndex = lines.findIndex((l) => l.startsWith('MÔ TẢ'));
+      if (descIndex !== -1) {
+        const descLines: string[] = [];
+        for (let i = descIndex + 1; i < lines.length; i++) {
+          if (lines[i].startsWith('VIDEO:')) break;
+          descLines.push(lines[i]);
+        }
+        description = descLines.join('\n').trim();
+      }
+
+      return { title, description };
+    } catch {
+      // Ignore
+    }
+  }
+
+  return { title: null, description: null };
 }
 
 function toDTO(
@@ -69,7 +127,10 @@ function sendToRenderer(channel: string, data: unknown): void {
 export class SchedulerService {
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly youtube: YouTubeService) {}
+  constructor(
+    private readonly youtube: YouTubeService,
+    private readonly facebook: FacebookService,
+  ) {}
 
   start(): void {
     this.timer = setInterval(() => void this.checkDuePosts(), 60_000);
@@ -95,7 +156,7 @@ export class SchedulerService {
     });
     const dtos = await Promise.all(
       renders.map(async render => {
-        const meta = await readMeta(render.path);
+        const meta = await readMeta(render.projectId, render.id, render.path);
         const post = render.scheduledPosts[0] ?? null;
         return toDTO(render, post, meta);
       }),
@@ -128,7 +189,7 @@ export class SchedulerService {
       },
     });
     const render = await findRender(input.renderId);
-    const meta = await readMeta(render.path);
+    const meta = await readMeta(render.projectId, render.id, render.path);
     const post = await findPostForRender(input.renderId, platform);
     return toDTO(render, post, meta);
   }
@@ -143,7 +204,7 @@ export class SchedulerService {
       update: { status: 'MANUAL_POSTED', uploadedAt: new Date(), error: null },
     });
     const render = await findRender(renderId);
-    const meta = await readMeta(render.path);
+    const meta = await readMeta(render.projectId, render.id, render.path);
     const post = await findPostForRender(renderId, platform);
     return toDTO(render, post, meta);
   }
@@ -155,7 +216,7 @@ export class SchedulerService {
       update: { status: 'MANUAL_PENDING', uploadedAt: null },
     });
     const render = await findRender(renderId);
-    const meta = await readMeta(render.path);
+    const meta = await readMeta(render.projectId, render.id, render.path);
     const post = await findPostForRender(renderId, platform);
     return toDTO(render, post, meta);
   }
@@ -163,43 +224,36 @@ export class SchedulerService {
   async cancel(id: string): Promise<ScheduledPostDTO> {
     const updated = await getPrisma().scheduledPost.update({ where: { id }, data: { status: 'CANCELLED' } });
     const render = await findRender(updated.renderId);
-    const meta = await readMeta(render.path);
+    const meta = await readMeta(render.projectId, render.id, render.path);
     return toDTO(render, updated, meta);
   }
 
-  async uploadNow(renderId: string): Promise<ScheduledPostDTO> {
-    const platform: Platform = 'YOUTUBE';
+  async uploadNow(renderId: string, platformInput?: Platform): Promise<ScheduledPostDTO> {
+    const platform: Platform = platformInput ?? 'YOUTUBE';
     await getPrisma().scheduledPost.upsert({
       where: { renderId_platform: { renderId, platform } },
       create: { renderId, platform, status: 'UPLOADING', privacyStatus: 'private' },
       update: { status: 'UPLOADING', scheduledAt: null, error: null },
     });
     const render = await findRender(renderId);
-    const meta = await readMeta(render.path);
+    const meta = await readMeta(render.projectId, render.id, render.path);
     const post = await findPostForRender(renderId, platform);
-    if (post) void this.doUpload(render, post, meta);
+    if (post) void this.doUpload(render, post, meta, platform);
     return toDTO(render, post, meta);
   }
 
   private async checkDuePosts(): Promise<void> {
-    // Guard tường minh: vòng lặp tự động này CHỈ được đụng vào post YouTube.
-    // Facebook/TikTok dùng status MANUAL_PENDING/MANUAL_POSTED (không bao giờ
-    // bằng 'PENDING') nên về lý thuyết đã được loại trừ tự nhiên — nhưng
-    // `platform: 'YOUTUBE'` ở đây là lớp phòng thủ thứ 2, phòng trường hợp
-    // code sau này lỡ set status: 'PENDING' cho 1 dòng platform khác YouTube.
-    // Đây là bug kiến trúc thật được tìm thấy ở /plan-eng-review (Architecture #1)
-    // — xem test CRITICAL #1 trong Test Plan.
     const due = await getPrisma().scheduledPost.findMany({
       where: {
         status: 'PENDING',
-        platform: 'YOUTUBE',
+        platform: { in: ['YOUTUBE', 'FACEBOOK'] },
         OR: [{ scheduledAt: null }, { scheduledAt: { lte: new Date() } }],
       },
       include: { render: { include: { project: true } } },
     });
     for (const post of due) {
-      const meta = await readMeta(post.render.path);
-      void this.doUpload(post.render, post, meta);
+      const meta = await readMeta(post.render.projectId, post.render.id, post.render.path);
+      void this.doUpload(post.render, post, meta, post.platform as Platform);
     }
   }
 
@@ -207,6 +261,7 @@ export class SchedulerService {
     render: { id: string; path: string | null; project: { name: string } },
     post: { id: string; titleOverride: string | null; descOverride: string | null; privacyStatus: string },
     meta: { title: string | null; description: string | null },
+    platform: Platform
   ): Promise<void> {
     const renderId = render.id;
     if (!render.path) {
@@ -215,7 +270,7 @@ export class SchedulerService {
         data: { status: 'FAILED', error: 'Video file path missing.' },
       });
       const updatedRender = await findRender(renderId);
-      const updatedPost = await findPostForRender(renderId, 'YOUTUBE');
+      const updatedPost = await findPostForRender(renderId, platform);
       sendToRenderer('scheduler:post-updated', toDTO(updatedRender, updatedPost, meta));
       return;
     }
@@ -230,13 +285,31 @@ export class SchedulerService {
     try {
       const title = post.titleOverride ?? meta.title ?? render.project.name;
       const description = post.descOverride ?? meta.description ?? '';
-      const { videoId, url } = await this.youtube.uploadVideo({
-        videoPath: render.path,
-        title,
-        description,
-        privacyStatus: (post.privacyStatus as PrivacyStatus) ?? 'private',
-        onProgress: progressUpdate,
-      });
+      
+      let videoId = '';
+      let url = '';
+
+      if (platform === 'FACEBOOK') {
+        progressUpdate(10);
+        const fbRes = await this.facebook.uploadVideo({
+          videoPath: render.path,
+          title,
+          description
+        });
+        videoId = fbRes.videoId;
+        url = fbRes.url;
+        progressUpdate(100);
+      } else {
+        const ytRes = await this.youtube.uploadVideo({
+          videoPath: render.path,
+          title,
+          description,
+          privacyStatus: (post.privacyStatus as PrivacyStatus) ?? 'private',
+          onProgress: progressUpdate,
+        });
+        videoId = ytRes.videoId;
+        url = ytRes.url;
+      }
 
       await getPrisma().scheduledPost.update({
         where: { id: post.id },
@@ -255,7 +328,7 @@ export class SchedulerService {
     }
 
     const updatedRender = await findRender(renderId);
-    const updatedPost = await findPostForRender(renderId, 'YOUTUBE');
+    const updatedPost = await findPostForRender(renderId, platform);
     sendToRenderer('scheduler:post-updated', toDTO(updatedRender, updatedPost, meta));
   }
 }

@@ -660,10 +660,24 @@ select:focus {
 }
 .render-options {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: 1fr 1fr minmax(140px, 0.8fr) auto;
   gap: 10px;
   align-items: end;
   margin-top: 14px;
+}
+.subtitle-option > span {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  gap: 8px;
+  color: #d7dbe2;
+  font-size: 13px;
+}
+.subtitle-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #7b8cff;
 }
 .render-result {
   display: grid;
@@ -1573,4 +1587,64 @@ select:focus {
   .post-sched-row {
     grid-template-columns: 1fr;
   }
+}
+
+.thumbnail-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid #2d3748;
+  padding-bottom: 8px;
+}
+.thumbnail-tabs button {
+  background: transparent;
+  border: none;
+  color: #a0aec0;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+.thumbnail-tabs button:hover {
+  color: #e2e8f0;
+  background: #1a202c;
+}
+.thumbnail-tabs button.active {
+  color: #fff;
+  background: #5664d8;
+}
+
+.thumbnail-video-extractor {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+.thumbnail-video-extractor .video-sources {
+  display: grid;
+  gap: 8px;
+}
+.thumbnail-video-extractor .video-source-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #c2c7d0;
+  cursor: pointer;
+}
+.thumbnail-video-extractor .video-source-option input {
+  margin: 0;
+}
+.thumbnail-video-extractor .custom-file-button {
+  justify-self: start;
+}
+.thumbnail-video-extractor .time-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #aeb5c0;
+}
+.thumbnail-video-extractor .time-input-row input {
+  width: 90px;
 }

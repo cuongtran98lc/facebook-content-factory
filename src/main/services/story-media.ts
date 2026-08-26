@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { nativeImage } from 'electron'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, unlink } from 'node:fs/promises'
 import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getPrisma } from './database'
-import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset } from './ffmpeg'
+import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
 import { PublishingMetadataService, type PublishMetadata, type PublishMode, type PublishTarget } from './video-metadata'
+import { createAssSubtitles, SUBTITLE_RENDER_VERSION } from './subtitles'
 
 const TTS_CHUNK_ATTEMPTS = 4
 const STORY_SHORT_MAX_MS = 180_000
@@ -32,6 +34,8 @@ interface StoryVideoPreset extends StoryVideoSegment {
   fitMode: FitMode
   sfxRenderVersion: number
   soundEffect: SoundEffectOptions
+  includeSubtitles: boolean
+  subtitleRenderVersion: number
   scriptId?: string
   audioAssetId?: string
 }
@@ -223,7 +227,8 @@ export class StoryMediaService {
     const payload = parseMeta(job.payload)
     const fitMode: FitMode = payload.fitMode === 'FIT' ? 'FIT' : 'CROP'
     const soundEffect = normalizeSoundEffectOptions(typeof payload.soundEffect === 'object' ? payload.soundEffect as Partial<SoundEffectOptions> : undefined)
-    return this.generateReelVideos(job.projectId, fitMode, soundEffect, onProgress)
+    const includeSubtitles = payload.includeSubtitles !== false
+    return this.generateReelVideos(job.projectId, fitMode, soundEffect, includeSubtitles, onProgress)
   }
 
   async get(projectId: string): Promise<StoryMediaDTO> {
@@ -479,7 +484,7 @@ export class StoryMediaService {
     return this.get(projectId)
   }
 
-  async generateReelVideos(projectId: string, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO> {
+  async generateReelVideos(projectId: string, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
     const soundEffectKey = JSON.stringify(soundEffect)
@@ -492,12 +497,19 @@ export class StoryMediaService {
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
     const savedSoundEffect = normalizeSoundEffectOptions(typeof jobMeta.soundEffect === 'object' ? jobMeta.soundEffect as Partial<SoundEffectOptions> : undefined)
-    const resuming = Boolean(job && jobMeta.voiceId === project.voiceId && jobMeta.sfxRenderVersion === SFX_RENDER_VERSION && JSON.stringify(savedSoundEffect) === soundEffectKey)
+    const resuming = Boolean(
+      job &&
+      jobMeta.voiceId === project.voiceId &&
+      jobMeta.sfxRenderVersion === SFX_RENDER_VERSION &&
+      jobMeta.subtitleRenderVersion === SUBTITLE_RENDER_VERSION &&
+      jobMeta.includeSubtitles !== false === includeSubtitles &&
+      JSON.stringify(savedSoundEffect) === soundEffectKey
+    )
     if (job && !resuming) {
-      await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'Voice hoặc cấu hình SFX đã thay đổi; không resume video cũ.' } })
+      await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'Voice, SFX hoặc cấu hình phụ đề đã thay đổi; không resume video cũ.' } })
       job = null
     }
-    if (!job) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION }) } })
+    if (!job) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION, includeSubtitles, subtitleRenderVersion: SUBTITLE_RENDER_VERSION }) } })
     if (!reels.length) throw new Error('Chưa có Reel scripts để tạo video.')
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi tạo Reel videos.')
     if (!background) throw new Error('Hãy chọn video hoặc ảnh background trước.')
@@ -509,7 +521,7 @@ export class StoryMediaService {
     const report = (current: number, stage: ReelVideoProgress['stage'], message: string, forcePercent?: number) => {
       const progress = forcePercent ?? Math.round((completedUnits / totalUnits) * 100)
       onProgress?.({ current, total: reels.length, percent: progress, stage, message })
-      void prisma.job.update({ where: { id: job.id }, data: { progress, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION, current, stage, message }) } })
+      void prisma.job.update({ where: { id: job.id }, data: { progress, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION, includeSubtitles, subtitleRenderVersion: SUBTITLE_RENDER_VERSION, current, stage, message }) } })
     }
     report(0, 'STARTING', `Đang chuẩn bị ${reels.length} tập...`, 0)
     // Pre-generate CTA once; reuse the same file for every reel
@@ -561,7 +573,7 @@ export class StoryMediaService {
         }
         completedUnits++
         const resolvedSfx = resolveSoundEffectPreset(soundEffect.preset, episode)
-        report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: trộn ${resolvedSfx.toLowerCase()} SFX ${soundEffect.volume}% + render video...`)
+        report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: trộn ${resolvedSfx.toLowerCase()} SFX ${soundEffect.volume}%${includeSubtitles ? ' + phụ đề' : ''} + render video...`)
         const videoPath = await this.storage.getOutputPath(projectId, 'videos', `${slug}.mp4`)
         const existingRender = await prisma.render.findFirst({ where: { projectId, type: 'REEL_VIDEO', preset: reel.id, status: 'DONE' } })
         if (existingRender?.path) {
@@ -569,7 +581,14 @@ export class StoryMediaService {
           if (publishedVideo !== existingRender.path) await prisma.render.update({ where: { id: existingRender.id }, data: { path: publishedVideo } })
         } else {
           const render = await prisma.render.create({ data: { projectId, type: 'REEL_VIDEO', path: videoPath, status: 'RUNNING', preset: reel.id } })
-          await renderLoopedVideo({ backgroundPath: background.path, backgroundKind, audioPath, outputPath: videoPath, format: 'REEL', fitMode, soundEffectSeed: episode, soundEffect })
+          const subtitlePath = includeSubtitles
+            ? await this.storage.writeOutputText(projectId, `subtitles/${slug}.ass`, createAssSubtitles({
+                text: `${reel.content}\n\n${CTA_TEXT}`,
+                totalDuration: await probeDuration(audioPath),
+                format: 'REEL'
+              }))
+            : undefined
+          await renderLoopedVideo({ backgroundPath: background.path, backgroundKind, audioPath, outputPath: videoPath, format: 'REEL', fitMode, soundEffectSeed: episode, soundEffect, subtitlePath })
           await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
         }
         completedUnits++
@@ -624,6 +643,44 @@ export class StoryMediaService {
     } })
     return this.get(projectId)
   }
+
+  async extractThumbnailFromVideo(projectId: string, videoPath: string, timeSeconds: number): Promise<StoryMediaDTO> {
+    const prisma = getPrisma()
+    await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
+    try {
+      await stat(videoPath)
+    } catch {
+      throw new Error(`Video file không tồn tại tại đường dẫn: ${videoPath}`)
+    }
+    const tempPath = join(tmpdir(), `extracted-frame-${randomUUID()}.png`)
+    try {
+      await extractVideoFrame(videoPath, tempPath, timeSeconds)
+      const frameBytes = await readFile(tempPath)
+      const thumbnailBytes = normalizeThumbnail(frameBytes)
+      const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
+      await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
+      await prisma.asset.create({
+        data: {
+          projectId,
+          type: 'THUMBNAIL',
+          path,
+          metadata: JSON.stringify({
+            provider: 'video',
+            model: 'ffmpeg',
+            videoPath,
+            timeSeconds,
+            mimeType: 'image/png',
+            width: 1280,
+            height: 720
+          })
+        }
+      })
+    } finally {
+      await unlink(tempPath).catch(() => undefined)
+    }
+    return this.get(projectId)
+  }
+
 
   async generateStoryAudio(projectId: string, scriptId: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
@@ -704,7 +761,7 @@ export class StoryMediaService {
     return this.get(projectId)
   }
 
-  async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, onProgress?: (progress: StoryVideoProgress) => void): Promise<StoryMediaDTO> {
+  async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: StoryVideoProgress) => void): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
     const [audio, background, thumbnail] = await Promise.all([
@@ -717,6 +774,10 @@ export class StoryMediaService {
     const backgroundKind: BackgroundKind = parseMeta(background.metadata).kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
     const sourceAudioMeta = parseMeta(audio.metadata)
     const sourceScriptId = typeof sourceAudioMeta.scriptId === 'string' ? sourceAudioMeta.scriptId : undefined
+    const sourceScript = sourceScriptId
+      ? await prisma.script.findFirst({ where: { id: sourceScriptId, projectId, type: 'LONG_STORY' } })
+      : await prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: { version: 'desc' } })
+    if (includeSubtitles && !sourceScript) throw new Error('Không tìm thấy Story script để tạo phụ đề.')
     const audioPath = await this.storage.copyToOutput(projectId, 'audio/story.mp3', audio.path)
     if (audioPath !== audio.path) await prisma.asset.update({ where: { id: audio.id }, data: { path: audioPath } })
     if (thumbnail) {
@@ -747,11 +808,20 @@ export class StoryMediaService {
         const output = format === 'REEL'
           ? await this.storage.getOutputPath(projectId, 'videos', `story-reel-short-${String(segment.part).padStart(digits, '0')}-of-${String(segment.totalParts).padStart(digits, '0')}.mp4`)
           : await this.storage.getOutputPath(projectId, 'videos', `story-${format.toLowerCase()}.mp4`)
-        const preset: StoryVideoPreset = { ...segment, kind: 'story-video', schema: STORY_VIDEO_PRESET_SCHEMA, runId, format, fitMode, sfxRenderVersion: SFX_RENDER_VERSION, soundEffect, scriptId: sourceScriptId, audioAssetId: audio.id }
+        const preset: StoryVideoPreset = { ...segment, kind: 'story-video', schema: STORY_VIDEO_PRESET_SCHEMA, runId, format, fitMode, sfxRenderVersion: SFX_RENDER_VERSION, soundEffect, includeSubtitles, subtitleRenderVersion: SUBTITLE_RENDER_VERSION, scriptId: sourceScriptId, audioAssetId: audio.id }
         const render = await prisma.render.create({ data: { projectId, type: 'STORY_VIDEO', path: output, status: 'RUNNING', preset: JSON.stringify(preset) } })
         currentRenderId = render.id
         const label = format === 'REEL' ? `Short ${segment.part}/${segment.totalParts}` : 'Story video'
-        report(segment.part, (index / segments.length) * 92, 'VIDEO', `${label}: render ${Math.round(segment.durationMs / 1000)} giây + SFX...`)
+        report(segment.part, (index / segments.length) * 92, 'VIDEO', `${label}: render ${Math.round(segment.durationMs / 1000)} giây + SFX${includeSubtitles ? ' + phụ đề' : ''}...`)
+        const subtitlePath = includeSubtitles && sourceScript
+          ? await this.storage.writeOutputText(projectId, `subtitles/${basename(output).replace(/\.mp4$/i, '.ass')}`, createAssSubtitles({
+              text: `${sourceScript.content}\n\n${CTA_TEXT}`,
+              totalDuration: audioDuration,
+              format,
+              clipStart: segment.startMs / 1000,
+              clipDuration: segment.durationMs / 1000
+            }))
+          : undefined
         await renderLoopedVideo({
           backgroundPath: background.path,
           backgroundKind,
@@ -763,7 +833,8 @@ export class StoryMediaService {
           soundEffect,
           audioStartSeconds: segment.startMs / 1000,
           audioDurationSeconds: segment.durationMs / 1000,
-          onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 92, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX`)
+          subtitlePath,
+          onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 92, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX${includeSubtitles ? ' + phụ đề' : ''}`)
         })
         const renderedDuration = await probeDuration(output)
         if (Math.abs(renderedDuration - segment.durationMs / 1000) > 1) throw new Error(`${label} có duration không hợp lệ sau khi render.`)

@@ -234,7 +234,7 @@ export interface StoryMediaDTO {
   thumbnailPath: string | null;
   thumbnailUrl: string | null;
   thumbnailPrompt: string | null;
-  thumbnailProvider: AIProviderName | null;
+  thumbnailProvider: string | null;
   audioPath: string | null;
   audioUrl: string | null;
   audioDuration: number | null;
@@ -289,6 +289,11 @@ export interface GenerateThumbnailInput {
   scriptId: string;
   prompt?: string;
 }
+export interface ExtractThumbnailFromVideoInput {
+  projectId: string;
+  videoPath: string;
+  timeSeconds: number;
+}
 export interface GenerateStoryAudioInput {
   projectId: string;
   scriptId: string;
@@ -298,11 +303,13 @@ export interface RenderStoryVideoInput {
   format: VideoFormat;
   fitMode: FitMode;
   soundEffect?: SoundEffectOptions;
+  includeSubtitles?: boolean;
 }
 export interface GenerateReelVideosInput {
   projectId: string;
   fitMode: FitMode;
   soundEffect?: SoundEffectOptions;
+  includeSubtitles?: boolean;
 }
 export interface GeneratePublishMetadataInput {
   projectId: string;
@@ -473,6 +480,8 @@ export interface ContentFactoryAPI {
   storyMedia: {
     get(projectId: string): Promise<StoryMediaDTO>;
     generateThumbnail(input: GenerateThumbnailInput): Promise<StoryMediaDTO>;
+    extractThumbnailFromVideo(input: ExtractThumbnailFromVideoInput): Promise<StoryMediaDTO>;
+    chooseVideoFile(): Promise<string | null>;
     generateReelVideos(input: GenerateReelVideosInput): Promise<StoryMediaDTO>;
     onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void;
     onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void;
@@ -495,7 +504,7 @@ export interface ContentFactoryAPI {
     list(platform?: Platform): Promise<ScheduledPostDTO[]>;
     schedule(input: SchedulePostInput): Promise<ScheduledPostDTO>;
     cancel(id: string): Promise<ScheduledPostDTO>;
-    uploadNow(renderId: string): Promise<ScheduledPostDTO>;
+    uploadNow(renderId: string, platform?: Platform): Promise<ScheduledPostDTO>;
     markManualPosted(renderId: string, platform: Platform): Promise<ScheduledPostDTO>;
     markManualPending(renderId: string, platform: Platform): Promise<ScheduledPostDTO>;
     onUploadProgress(callback: (progress: UploadProgress) => void): () => void;
@@ -506,5 +515,11 @@ export interface ContentFactoryAPI {
     beginAuth(): Promise<YouTubeAuthStatus>;
     getStatus(): Promise<YouTubeAuthStatus>;
     revoke(): Promise<void>;
+  };
+  facebook: {
+    saveCredentials(input: { pageId: string; accessToken: string }): Promise<void>;
+    getStatus(): Promise<{ connected: boolean; pageId: string | null }>;
+    revoke(): Promise<void>;
+    fetchPages(userAccessToken: string): Promise<{ id: string; name: string; accessToken: string }[]>;
   };
 }

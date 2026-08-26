@@ -105,6 +105,7 @@ export default function App() {
   const [videoFormat, setVideoFormat] = useState<VideoFormat>('LANDSCAPE');
   const [fitMode, setFitMode] = useState<FitMode>('CROP');
   const [soundEffect, setSoundEffect] = useState<SoundEffectOptions>({ preset: 'DYNAMIC', volume: 70 });
+  const [includeSubtitles, setIncludeSubtitles] = useState(true);
   const [thumbnailPrompt, setThumbnailPrompt] = useState('');
   const [reelProgress, setReelProgress] = useState<ReelVideoProgress | null>(null);
   const [reelGenerating, setReelGenerating] = useState(false);
@@ -603,6 +604,25 @@ export default function App() {
     }
   }
 
+  async function extractThumbnailFromVideo(videoPath: string, timeSeconds: number) {
+    if (!selected) return;
+    setBusy(true);
+    setMessage('Đang trích xuất thumbnail từ video...');
+    try {
+      const media = await window.contentFactory.storyMedia.extractThumbnailFromVideo({
+        projectId: selected.id,
+        videoPath,
+        timeSeconds,
+      });
+      setStoryMedia(media);
+      setMessage('✓ Thumbnail đã được trích xuất từ video thành công.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function chooseBackground(kind: BackgroundKind) {
     if (!selected) return;
     if (!storyMedia?.audioPath) return setMessage('Hãy hoàn tất bước 1: Generate Story MP3 trước.');
@@ -638,6 +658,7 @@ export default function App() {
         format: videoFormat,
         fitMode,
         soundEffect,
+        includeSubtitles,
       });
       setMessage(
         '✓ Đã xếp vào hàng đợi render — xem tiến độ ở tab 🎞️ Render Queue. Bạn có thể tiếp tục làm việc khác trong lúc chờ.',
@@ -671,6 +692,7 @@ export default function App() {
         projectId: selected.id,
         fitMode,
         soundEffect,
+        includeSubtitles,
       });
       const renderedReels = media.reels.filter(reel => reel.videoPath);
       const metadataDone = Boolean(
@@ -1320,6 +1342,9 @@ export default function App() {
                       prompt={thumbnailPrompt}
                       onPromptChange={setThumbnailPrompt}
                       onGenerate={() => void generateThumbnail()}
+                      onExtractFromVideo={(videoPath, timeSeconds) =>
+                        void extractThumbnailFromVideo(videoPath, timeSeconds)
+                      }
                     />
                   )}
                   {activeScript.type === 'LONG_STORY' && (
@@ -1399,6 +1424,7 @@ export default function App() {
                         videoFormat={videoFormat}
                         fitMode={fitMode}
                         soundEffect={soundEffect}
+                        includeSubtitles={includeSubtitles}
                         reelProgress={reelProgress}
                         onGenerateAudio={() => void generateStoryMp3()}
                         onGenerateReelVideos={() => void generateReelVideos()}
@@ -1408,6 +1434,7 @@ export default function App() {
                         onVideoFormatChange={setVideoFormat}
                         onFitModeChange={setFitMode}
                         onSoundEffectChange={setSoundEffect}
+                        onIncludeSubtitlesChange={setIncludeSubtitles}
                       />
                       <div className="generate-reels">
                         <label>

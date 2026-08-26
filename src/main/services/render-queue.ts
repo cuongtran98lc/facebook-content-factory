@@ -136,7 +136,7 @@ export class RenderQueueService {
         sendToRenderer('render-queue:progress', { jobId, ...progress })
       }
 
-      await this.storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, onProgress)
+      await this.storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, input.includeSubtitles !== false, onProgress)
       await prisma.job.update({ where: { id: jobId }, data: { status: 'DONE', progress: 100 } })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

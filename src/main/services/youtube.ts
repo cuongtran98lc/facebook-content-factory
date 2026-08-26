@@ -8,7 +8,7 @@ const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const API_BASE = 'https://www.googleapis.com/youtube/v3'
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/youtube/v3/videos'
-const SCOPE = 'https://www.googleapis.com/auth/youtube.upload'
+const SCOPE = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly'
 const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB — must be multiple of 256KB
 
 export class YouTubeService {
@@ -67,8 +67,16 @@ export class YouTubeService {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' })
     })
-    const data = await res.json() as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string }
-    if (!res.ok || !data.access_token) throw new Error(`Google token error: ${data.error ?? res.status}`)
+    const text = await res.text()
+    let data: { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string } = {}
+    try {
+      data = JSON.parse(text)
+    } catch {
+      throw new Error(`Google token non-JSON response (HTTP ${res.status}): ${text.slice(0, 300)}`)
+    }
+    if (!res.ok || !data.access_token) {
+      throw new Error(`Google token error: ${data.error ?? res.status} - ${data.error_description ?? ''}`)
+    }
     const expiry = Date.now() + (data.expires_in ?? 3600) * 1000
     this.settings.saveYouTubeTokens(data.access_token, data.refresh_token ?? '', expiry)
     await this.fetchAndSaveChannel(data.access_token)
@@ -111,8 +119,28 @@ export class YouTubeService {
     privacyStatus: string
     onProgress?: (percent: number) => void
   }): Promise<{ videoId: string; url: string }> {
-    const accessToken = await this.getValidAccessToken()
-    const { size: fileSize } = await stat(params.videoPath)
+    const accessToken = await this.getValidAccessToken();
+
+    // Validate token before starting upload
+    try {
+      const testRes = await fetch(`${API_BASE}/channels?part=id&mine=true`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      })
+      if (!testRes.ok) {
+        const txt = await testRes.text()
+        console.error('[YouTube Upload] Token validation failed:', testRes.status, txt)
+        throw new Error(`YouTube token validation failed: ${testRes.status} ${txt}`)
+      }
+      console.log('[YouTube Upload] Token validation succeeded')
+    } catch (e) {
+      console.error('[YouTube Upload] Token validation error:', e)
+      throw e
+    }
+
+    console.log('[YouTube Upload] Starting upload for', params.videoPath);
+    console.log('[YouTube Upload] Obtained access token, size fetching...');
+    const { size: fileSize } = await stat(params.videoPath);
+    console.log('[YouTube Upload] File size:', fileSize);
 
     const initRes = await fetch(`${UPLOAD_BASE}?uploadType=resumable&part=snippet,status`, {
       method: 'POST',
@@ -127,9 +155,17 @@ export class YouTubeService {
         status: { privacyStatus: params.privacyStatus, selfDeclaredMadeForKids: false }
       })
     })
-    if (!initRes.ok) throw new Error(`Upload init failed: ${initRes.status} ${await initRes.text()}`)
+    if (!initRes.ok) {
+      const txt = await initRes.text();
+      console.error('[YouTube Upload] Init failed:', initRes.status, txt);
+      throw new Error(`Upload init failed: ${initRes.status} ${txt}`);
+    }
     const sessionUri = initRes.headers.get('location')
-    if (!sessionUri) throw new Error('No upload session URI from YouTube')
+    if (!sessionUri) {
+      console.error('[YouTube Upload] No session URI returned');
+      throw new Error('No upload session URI from YouTube');
+    }
+    console.log('[YouTube Upload] Session URI obtained');
 
     const handle = await open(params.videoPath, 'r')
     try {
@@ -150,19 +186,27 @@ export class YouTubeService {
           body: buf
         })
 
+        console.log('[YouTube Upload] Chunk response status:', res.status);
         if (res.status === 200 || res.status === 201) {
           const data = await res.json() as { id?: string }
+          console.log('[YouTube Upload] Completed, video ID:', data.id);
           if (!data.id) throw new Error('Upload completed but no video ID received')
           return { videoId: data.id, url: `https://youtu.be/${data.id}` }
         }
-        if (res.status !== 308) throw new Error(`Upload chunk failed: ${res.status}`)
+        if (res.status !== 308) {
+          const txt = await res.text();
+          console.error('[YouTube Upload] Chunk failed:', res.status, txt);
+          throw new Error(`Upload chunk failed: ${res.status}`);
+        }
         const range = res.headers.get('range')
         offset = range ? parseInt(range.split('-')[1]) + 1 : offset + chunkSize
         params.onProgress?.(Math.round((offset / fileSize) * 95))
+        console.log('[YouTube Upload] Progress offset updated to', offset);
       }
     } finally {
       await handle.close()
     }
+    console.error('[YouTube Upload] Loop ended without completion');
     throw new Error('Upload loop ended without completion')
   }
 }

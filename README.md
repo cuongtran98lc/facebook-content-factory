@@ -39,14 +39,16 @@ Generate Story MP3
   ↓
 Select background video / image
   ↓
-Chọn Dynamic / Whoosh / Impact / Chime và mức SFX
+Chọn Dynamic / Whoosh / Impact / Chime, mức SFX và bật/tắt phụ đề
   ↓
-FFmpeg loop background, duck voice và trộn 1 SFX cho mỗi video
+FFmpeg loop background, duck voice, trộn 1 SFX và đốt phụ đề vào video
   ↓
 story-*.mp4 + title/description tương ứng
 ```
 
 SFX chỉ được trộn vào MP4 cuối, không ghi đè file MP3 voice. Preset `Dynamic` luân phiên Whoosh / Impact / Chime và thay đổi thời điểm theo từng tập.
+
+Phụ đề mặc định được bật khi render Story/Short/Reel. App tự chia script thành cụm tối đa 2 dòng, tạo file ASS trong `subtitles/` và đốt chữ trắng viền đen trực tiếp vào MP4; có thể tắt bằng checkbox **Phụ đề** trước khi render.
 
 Khi Output là `9:16`, Story MP3 được chia liên tục thành các file `story-reel-short-XX-of-YY.mp4`. Các phần được cân bằng để không có đoạn cuối quá ngắn và không phần nào dài quá 3 phút. Output `16:9` và `1:1` vẫn tạo một video.
 
@@ -178,5 +180,6 @@ Khi bật CapCut provider, UI hiện tại vẫn dùng cùng flow `Load voices �
 - Chọn một background video từ máy.
 - FFmpeg loop background vô hạn và dừng đúng khi story MP3 kết thúc.
 - Output presets: 16:9, 9:16, 1:1; fit mode crop hoặc pad.
+- Tự tạo và đốt phụ đề tiếng Việt từ đúng Story/Reel script; file nguồn `.ass` được lưu trong thư mục `subtitles` của output.
 - Tự tạo title/description tương ứng cho video dài và từng video ngắn; có nút copy và sidecar `*.metadata.txt`.
-- MP3, thumbnail và video cuối nằm trong `output/<tên-truyện>--<id>/{audio,images,videos}`; bấm **Mở output truyện** trên thanh trên cùng để mở trực tiếp.
+- MP3, thumbnail, phụ đề và video cuối nằm trong `output/<tên-truyện>--<id>/{audio,images,subtitles,videos}`; bấm **Mở output truyện** trên thanh trên cùng để mở trực tiếp.

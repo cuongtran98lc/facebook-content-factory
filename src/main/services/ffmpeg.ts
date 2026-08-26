@@ -140,6 +140,7 @@ export async function renderLoopedVideo(input: {
   soundEffect?: SoundEffectOptions
   audioStartSeconds?: number
   audioDurationSeconds?: number
+  subtitlePath?: string
   onProgress?: (percent: number) => void
 }): Promise<void> {
   const dims = input.format === 'REEL' ? [1080, 1920] : input.format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
@@ -179,6 +180,14 @@ export async function renderLoopedVideo(input: {
     '-i', input.audioPath
   ]
   const progressOutput = input.onProgress ? ['-progress', 'pipe:1', '-nostats'] : []
+  const escapedSubtitlePath = input.subtitlePath
+    ?.replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+    .replace(/,/g, '\\,')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+  const videoFilter = escapedSubtitlePath ? `${filter},ass=filename='${escapedSubtitlePath}'` : filter
 
   await run('ffmpeg', [
     '-y',
@@ -190,7 +199,7 @@ export async function renderLoopedVideo(input: {
     '-filter_complex', audioMix,
     '-map', '0:v:0',
     '-map', '[aout]',
-    '-vf', filter,
+    '-vf', videoFilter,
     '-t', audioDuration.toFixed(3),
     '-c:v', 'libx264',
     '-preset', 'medium',
@@ -204,4 +213,15 @@ export async function renderLoopedVideo(input: {
     input.outputPath
   ], seconds => input.onProgress?.(Math.min(99, Math.max(0, Math.round((seconds / audioDuration) * 100)))))
   input.onProgress?.(100)
+}
+
+export async function extractVideoFrame(videoPath: string, outputPath: string, timeSeconds: number): Promise<void> {
+  await run('ffmpeg', [
+    '-y',
+    '-ss', timeSeconds.toFixed(3),
+    '-i', videoPath,
+    '-vframes', '1',
+    '-f', 'image2',
+    outputPath
+  ])
 }

@@ -79,6 +79,7 @@ export class ProjectStorageService {
     await Promise.all([
       mkdir(join(root, 'audio'), { recursive: true }),
       mkdir(join(root, 'images'), { recursive: true }),
+      mkdir(join(root, 'subtitles'), { recursive: true }),
       mkdir(join(root, 'videos'), { recursive: true })
     ])
     return root

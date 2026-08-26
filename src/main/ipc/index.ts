@@ -11,6 +11,7 @@ import type {
   GenerateStoryAudioInput,
   GenerateStoryInput,
   GenerateThumbnailInput,
+  ExtractThumbnailFromVideoInput,
   ImportStoryInput,
   Platform,
   PreviewVoiceInput,
@@ -44,6 +45,7 @@ import { StoryCrawlerService } from '../services/story-crawler';
 import { StoryMediaService } from '../services/story-media';
 import { VoiceService } from '../services/voices';
 import { YouTubeService } from '../services/youtube';
+import { FacebookService } from '../services/facebook';
 
 const projects = new ProjectService();
 const pipeline = new PipelineService();
@@ -59,7 +61,8 @@ const storyMedia = new StoryMediaService(voices);
 const storage = new ProjectStorageService();
 const crawler = new StoryCrawlerService();
 const youtube = new YouTubeService(settings);
-export const scheduler = new SchedulerService(youtube);
+const facebook = new FacebookService(settings);
+export const scheduler = new SchedulerService(youtube, facebook);
 export const renderQueue = new RenderQueueService(storyMedia);
 
 async function openFolder(path: string, label: string): Promise<void> {
@@ -151,8 +154,20 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('story-media:generate-thumbnail', (_event, input: GenerateThumbnailInput) =>
     storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt),
   );
+  ipcMain.handle('story-media:extract-thumbnail-from-video', (_event, input: ExtractThumbnailFromVideoInput) =>
+    storyMedia.extractThumbnailFromVideo(input.projectId, input.videoPath, input.timeSeconds),
+  );
+  ipcMain.handle('story-media:choose-video-file', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Chọn video để trích xuất thumbnail',
+      properties: ['openFile'],
+      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return result.filePaths[0];
+  });
   ipcMain.handle('story-media:generate-reel-videos', (event, input: GenerateReelVideosInput) =>
-    storyMedia.generateReelVideos(input.projectId, input.fitMode, input.soundEffect, progress => {
+    storyMedia.generateReelVideos(input.projectId, input.fitMode, input.soundEffect, input.includeSubtitles !== false, progress => {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:reel-progress', progress);
     }),
   );
@@ -177,7 +192,7 @@ export function registerIpcHandlers(): void {
     return storyMedia.setBackground(projectId, result.filePaths[0], kind);
   });
   ipcMain.handle('story-media:render', (event, input: RenderStoryVideoInput) =>
-    storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, progress => {
+    storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, input.includeSubtitles !== false, progress => {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress);
     }),
   );
@@ -213,7 +228,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('scheduler:list', (_event, platform?: Platform) => scheduler.list(platform));
   ipcMain.handle('scheduler:schedule', (_event, input: SchedulePostInput) => scheduler.schedule(input));
   ipcMain.handle('scheduler:cancel', (_event, id: string) => scheduler.cancel(id));
-  ipcMain.handle('scheduler:upload-now', (_event, renderId: string) => scheduler.uploadNow(renderId));
+  ipcMain.handle('scheduler:upload-now', (_event, renderId: string, platform?: Platform) =>
+    scheduler.uploadNow(renderId, platform),
+  );
   ipcMain.handle('scheduler:mark-manual-posted', (_event, renderId: string, platform: Platform) =>
     scheduler.markManualPosted(renderId, platform),
   );
@@ -228,4 +245,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('youtube:begin-auth', () => youtube.beginAuth());
   ipcMain.handle('youtube:status', () => youtube.getStatus());
   ipcMain.handle('youtube:revoke', () => youtube.revokeAuth());
+
+  // Facebook Page credentials
+  ipcMain.handle('facebook:save-credentials', (_event, input: { pageId: string; accessToken: string }) => {
+    settings.saveFacebookCredentials(input.pageId, input.accessToken);
+  });
+  ipcMain.handle('facebook:status', () => settings.getFacebookStatus());
+  ipcMain.handle('facebook:revoke', () => settings.clearFacebookCredentials());
+  ipcMain.handle('facebook:fetch-pages', (_event, userAccessToken: string) => {
+    return facebook.fetchPages(userAccessToken);
+  });
 }
