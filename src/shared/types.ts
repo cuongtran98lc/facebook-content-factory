@@ -134,6 +134,8 @@ export interface ScriptDTO {
 }
 export interface GenerateStoryInput {
   projectId: string;
+  targetMinutes?: number;
+  /** @deprecated Giữ lại để tương thích client cũ; UI mới sử dụng targetMinutes. */
   targetWords?: number;
 }
 export interface ImportStoryInput {

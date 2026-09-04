@@ -5,8 +5,33 @@ import type { SoundEffectOptions, SoundEffectPreset } from '../../shared/types'
 
 function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string {
   const configured = name === 'ffmpeg' ? process.env.FFMPEG_PATH : process.env.FFPROBE_PATH
-  const candidates = [configured, `/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`].filter(Boolean) as string[]
+  const configuredFfmpegSibling = name === 'ffprobe' && process.env.FFMPEG_PATH
+    ? process.env.FFMPEG_PATH.replace(/ffmpeg$/, 'ffprobe')
+    : undefined
+  const candidates = [
+    configured,
+    configuredFfmpegSibling,
+    `/opt/homebrew/opt/ffmpeg-full/bin/${name}`,
+    `/usr/local/opt/ffmpeg-full/bin/${name}`,
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`
+  ].filter(Boolean) as string[]
   return candidates.find(candidate => existsSync(candidate)) ?? name
+}
+
+function hasFilter(name: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(resolveBinary('ffmpeg'), ['-hide_banner', '-filters'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let stdout = ''
+    child.stdout?.on('data', chunk => { stdout += chunk.toString() })
+    child.once('error', () => resolve(false))
+    child.once('exit', code => {
+      // FFmpeg 8 prints three capability columns (e.g. "... ass") while
+      // FFmpeg 9 currently prints two (".. ass"). Accept either format.
+      const filterPattern = new RegExp(`^\\s*[TSC.]{2,4}\\s+${name}\\s`, 'm')
+      resolve(code === 0 && filterPattern.test(stdout))
+    })
+  })
 }
 
 function run(command: 'ffmpeg' | 'ffprobe', args: string[], onProgressSeconds?: (seconds: number) => void): Promise<void> {
@@ -143,6 +168,15 @@ export async function renderLoopedVideo(input: {
   subtitlePath?: string
   onProgress?: (percent: number) => void
 }): Promise<void> {
+  if (input.subtitlePath && !await hasFilter('ass')) {
+    const binary = resolveBinary('ffmpeg')
+    throw new Error(
+      `FFmpeg (${binary}) không có filter "ass" cần để đốt phụ đề. ` +
+      'Cài bản có libass (macOS: brew install ffmpeg-full), rồi đặt FFMPEG_PATH=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg và khởi động lại app; ' +
+      'hoặc tắt tùy chọn phụ đề để render bằng FFmpeg hiện tại.'
+    )
+  }
+
   const dims = input.format === 'REEL' ? [1080, 1920] : input.format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
   const [w, h] = dims
   const sourceAudioDuration = await probeDuration(input.audioPath)

@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { nativeImage } from 'electron'
 import { readFile, stat, unlink } from 'node:fs/promises'
+import sharp from 'sharp'
 import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getPrisma } from './database'
 import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
@@ -18,6 +19,7 @@ const STORY_VIDEO_PRESET_SCHEMA = 1
 const CTA_TEXT = 'Hãy nhấn like và đăng ký kênh để mình có thêm động lực làm truyện tiếp cho các bạn nghe nha.'
 const PUBLISH_METADATA_ASSET_TYPE = 'VIDEO_PUBLISH_METADATA'
 const PUBLISH_METADATA_SCHEMA = 1
+const REEL_THUMBNAIL_VERSION = 2
 
 interface StoryVideoSegment {
   part: number
@@ -170,12 +172,23 @@ function normalizeThumbnail(bytes: Buffer): Buffer {
   return cropped.resize({ width: 1280, height: 720, quality: 'best' }).toPNG()
 }
 
-function episodeThumbnail(bytes: Buffer, episode: number): Buffer {
-  const encoded = bytes.toString('base64')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720"><image width="1280" height="720" href="data:image/png;base64,${encoded}" preserveAspectRatio="xMidYMid slice"/><rect x="42" y="42" width="240" height="92" rx="18" fill="#e11d48"/><text x="162" y="108" text-anchor="middle" font-family="Arial, sans-serif" font-size="56" font-weight="900" fill="white">TẬP ${episode}</text></svg>`
-  const result = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
-  if (result.isEmpty()) throw new Error(`Không tạo được thumbnail TẬP ${episode}.`)
-  return result.toPNG()
+async function episodeThumbnail(bytes: Buffer, episode: number): Promise<Buffer> {
+  const width = 1080
+  const height = 1920
+  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect x="54" y="90" width="300" height="112" rx="22" fill="#e11d48"/><text x="204" y="168" text-anchor="middle" font-family="Arial, sans-serif" font-size="66" font-weight="900" fill="white">TẬP ${episode}</text></svg>`)
+  try {
+    const result = await sharp(bytes)
+      // Match the Reel canvas. `cover` preserves the source aspect ratio and
+      // crops overflow, so the image is never stretched or distorted.
+      .resize(width, height, { fit: 'cover', position: 'centre', withoutEnlargement: false })
+      .composite([{ input: overlay, top: 0, left: 0 }])
+      .png()
+      .toBuffer()
+    if (!result.length) throw new Error('Sharp trả ảnh rỗng')
+    return result
+  } catch (error) {
+    throw new Error(`Không tạo được thumbnail TẬP ${episode}: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 export class StoryMediaService {
@@ -240,7 +253,7 @@ export class StoryMediaService {
       prisma.render.findMany({ where: { projectId, type: 'STORY_VIDEO', status: { not: 'STALE' } }, orderBy: { createdAt: 'desc' } }),
       prisma.script.findMany({ where: { projectId, type: 'REEL' }, orderBy: { version: 'asc' } }),
       prisma.render.findMany({ where: { projectId, type: 'REEL_VIDEO', status: 'DONE' }, orderBy: { createdAt: 'asc' } }),
-      prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' }, orderBy: { createdAt: 'asc' } }),
+      prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'asc' } }),
       prisma.asset.findMany({ where: { projectId, type: PUBLISH_METADATA_ASSET_TYPE }, orderBy: { createdAt: 'desc' } })
     ])
@@ -563,13 +576,20 @@ export class StoryMediaService {
         completedUnits++
         report(episode, 'THUMBNAIL', `Tập ${episode}/${reels.length}: đang tạo thumbnail...`)
         const existingThumbs = await prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' } })
-        const existingThumb = existingThumbs.find(row => parseMeta(row.metadata).reelId === reel.id)
+        const existingThumb = existingThumbs.find(row => {
+          const metadata = parseMeta(row.metadata)
+          return metadata.reelId === reel.id && metadata.thumbnailVersion === REEL_THUMBNAIL_VERSION && metadata.width === 1080 && metadata.height === 1920
+        })
         if (existingThumb) {
           const thumbPath = await this.storage.copyToOutput(projectId, `images/${slug}-thumbnail.png`, existingThumb.path)
           if (thumbPath !== existingThumb.path) await prisma.asset.update({ where: { id: existingThumb.id }, data: { path: thumbPath } })
         } else {
-          const thumbPath = await this.storage.writeOutputBuffer(projectId, `images/${slug}-thumbnail.png`, episodeThumbnail(thumbnailBytes, episode))
-          await prisma.asset.create({ data: { projectId, type: 'REEL_THUMBNAIL', path: thumbPath, metadata: JSON.stringify({ reelId: reel.id, episode }) } })
+          const staleThumbIds = existingThumbs
+            .filter(row => parseMeta(row.metadata).reelId === reel.id)
+            .map(row => row.id)
+          if (staleThumbIds.length) await prisma.asset.deleteMany({ where: { id: { in: staleThumbIds } } })
+          const thumbPath = await this.storage.writeOutputBuffer(projectId, `images/${slug}-thumbnail.png`, await episodeThumbnail(thumbnailBytes, episode))
+          await prisma.asset.create({ data: { projectId, type: 'REEL_THUMBNAIL', path: thumbPath, metadata: JSON.stringify({ reelId: reel.id, episode, thumbnailVersion: REEL_THUMBNAIL_VERSION, width: 1080, height: 1920, fit: 'cover' }) } })
         }
         completedUnits++
         const resolvedSfx = resolveSoundEffectPreset(soundEffect.preset, episode)

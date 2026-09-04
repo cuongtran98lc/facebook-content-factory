@@ -247,9 +247,15 @@ export class VoiceService {
       throw new Error(`Không kết nối được local TTS bridge tại ${bridge}. Hãy chạy npm start. ${error instanceof Error ? error.message : String(error)}`)
     }
     const needle = search?.trim().toLocaleLowerCase('vi')
+    const capCutPriority = ['Giọng Nữ Phổ Thông', 'CapCut BV074']
     const voices: VoiceDTO[] = payload
       .filter(v => v.voice_type && v.display_name)
       .filter(v => !needle || `${v.display_name} ${v.voice_type} ${v.lang || ''}`.toLocaleLowerCase('vi').includes(needle))
+      .sort((a, b) => {
+        const aPriority = capCutPriority.indexOf(a.display_name || '')
+        const bPriority = capCutPriority.indexOf(b.display_name || '')
+        return (aPriority < 0 ? Number.MAX_SAFE_INTEGER : aPriority) - (bPriority < 0 ? Number.MAX_SAFE_INTEGER : bPriority)
+      })
       .map(v => ({
         id: encodeCapCutVoice(v.voice_type!, v.resource_id),
         name: v.display_name!,

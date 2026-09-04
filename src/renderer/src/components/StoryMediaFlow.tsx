@@ -116,6 +116,14 @@ export function StoryMediaFlow(props: Props) {
   const hasRenderedVideo = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.url))) || Boolean(props.media?.reels.some(reel => reel.videoUrl))
   const hasPublishMetadata = storyVideoOutputs.some(output => output.parts.some(part => Boolean(part.publishTitle || part.publishDescription))) || Boolean(props.media?.reels.some(reel => reel.publishTitle || reel.publishDescription))
   const renderFeatures = `SFX${props.includeSubtitles ? ' + Sub' : ''}`
+  const reelRequirements = [
+    { label: 'FFmpeg', ready: props.ffmpegReady },
+    { label: 'Voice', ready: props.hasVoice },
+    { label: 'Background', ready: Boolean(props.media?.backgroundPath) },
+    { label: 'Thumbnail truyện', ready: Boolean(props.media?.thumbnailPath) },
+    { label: `${props.media?.reels.length ?? 0} Reel scripts`, ready: Boolean(props.media?.reels.length) }
+  ]
+  const missingReelRequirements = reelRequirements.filter(item => !item.ready).map(item => item.label)
 
   const audioHint = !props.hasVoice
     ? 'Chọn voice trước để tạo MP3.'
@@ -180,7 +188,11 @@ export function StoryMediaFlow(props: Props) {
     </div>
     <div className="reel-render-section">
       <div className="media-flow-title"><div><strong>Final · Reel Videos theo từng tập</strong><span>{props.media?.reels.length ? `${props.media.reels.length} video dọc + thumbnail số tập + 1 SFX riêng/video${props.includeSubtitles ? ' + phụ đề' : ''} · ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ${props.soundEffect.volume}%.` : 'Generate Reel scripts trước.'}</span></div></div>
-      <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy || !props.ffmpegReady || !props.hasVoice || !props.media?.backgroundPath || !props.media?.thumbnailPath || !props.media?.reels.length}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + {renderFeatures}</button>
+      <div className="reel-requirements">
+        {reelRequirements.map(item => <span className={item.ready ? 'ready' : 'missing'} key={item.label}>{item.ready ? '✓' : '○'} {item.label}</span>)}
+      </div>
+      {!!missingReelRequirements.length && <p className="reel-blocker-hint">Còn thiếu: {missingReelRequirements.join(' · ')}. Bạn vẫn có thể bấm nút để xem hướng dẫn tương ứng.</p>}
+      <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + {renderFeatures}</button>
       {props.reelProgress && <div className={`reel-progress ${props.reelProgress.stage === 'DONE' ? 'done' : ''}`}>
         <div><strong>{props.reelProgress.percent}%</strong><span>{props.reelProgress.message}</span></div>
         <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.reelProgress.percent}><i style={{ width: `${props.reelProgress.percent}%` }} /></div>

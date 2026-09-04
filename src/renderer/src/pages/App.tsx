@@ -61,6 +61,28 @@ function rewriteInstruction(script?: ScriptDTO): string {
   }
 }
 
+function ideaDetails(description: string | null): { summary: string; suggestions: string[] } {
+  if (!description) return { summary: '', suggestions: [] };
+  const sections = description.split(/\s*\|\|\s*/).map(section => section.trim()).filter(Boolean);
+  if (sections.length < 2) return { summary: description, suggestions: [] };
+  return {
+    summary: sections[0].replace(/^TÓM TẮT:\s*/i, ''),
+    suggestions: sections.slice(1),
+  };
+}
+
+function hasAIKey(settings: AISettingsDTO, provider: AIProviderName): boolean {
+  if (provider === 'openai') return settings.hasOpenAIKey;
+  if (provider === 'groq') return settings.hasGroqKey;
+  return settings.hasGeminiKey;
+}
+
+function aiModel(settings: AISettingsDTO, provider: AIProviderName): string {
+  if (provider === 'openai') return settings.openaiModel;
+  if (provider === 'groq') return settings.groqModel;
+  return settings.geminiModel;
+}
+
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [projects, setProjects] = useState<ProjectDTO[]>([]);
@@ -74,7 +96,7 @@ export default function App() {
   const [topic, setTopic] = useState('Mẹ chia tài sản cho 3 người con');
   const [niche, setNiche] = useState('family');
   const [ideaCount, setIdeaCount] = useState(10);
-  const [targetWords, setTargetWords] = useState(2200);
+  const [targetMinutes, setTargetMinutes] = useState(15);
   const [importTitle, setImportTitle] = useState('');
   const [importContent, setImportContent] = useState('');
   const [storyUrl, setStoryUrl] = useState('');
@@ -315,12 +337,12 @@ export default function App() {
     setBusy(true);
     setMessage('Đang Generate Story...');
     try {
-      const row = await window.contentFactory.scripts.generateStory({ projectId: selected.id, targetWords });
+      const row = await window.contentFactory.scripts.generateStory({ projectId: selected.id, targetMinutes });
       await loadProjectData(selected.id);
       await reloadProjects();
       setActiveScriptId(row.id);
       setView('scripts');
-      setMessage(`Đã tạo LONG_STORY v${row.version}.`);
+      setMessage(`Đã tạo LONG_STORY v${row.version} với thời lượng mục tiêu khoảng ${targetMinutes} phút.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -503,7 +525,7 @@ export default function App() {
 
   async function loadVoices() {
     setBusy(true);
-    setMessage('Đang tải danh sách voice từ ElevenLabs...');
+    setMessage(`Đang tải danh sách voice từ ${isCapCut ? 'CapCut bridge' : 'ElevenLabs'}...`);
     try {
       const rows = await window.contentFactory.voices.list();
       setVoices(rows);
@@ -519,7 +541,7 @@ export default function App() {
   async function testVoice() {
     if (!voiceId) return setMessage('Hãy chọn voice trước.');
     setBusy(true);
-    setMessage('Đang generate câu test bằng ElevenLabs...');
+    setMessage(`Đang generate câu test bằng ${isCapCut ? 'CapCut' : 'ElevenLabs'}...`);
     setVoiceAudio('');
     try {
       const result = await window.contentFactory.voices.preview({ voiceId, text: voiceTestText });
@@ -673,6 +695,8 @@ export default function App() {
   async function generateReelVideos() {
     if (!selected) return;
     const count = storyMedia?.reels.length ?? 0;
+    if (!health?.ffmpeg) return setMessage('FFmpeg/ffprobe chưa sẵn sàng. Hãy khởi động lại app sau khi cài FFmpeg.');
+    if (!selected.voiceId) return setMessage('Hãy Test voice rồi bấm Use this voice trước khi tạo Reel Videos.');
     if (!count) return setMessage('Hãy Generate Reel scripts trước.');
     if (!storyMedia?.thumbnailPath)
       return setMessage('Hãy Generate Thumbnail Truyện trước; app sẽ thêm số TẬP cho từng Reel.');
@@ -772,6 +796,26 @@ export default function App() {
       setClearGeminiKey(false);
       setClearGroqKey(false);
       setMessage('Đã lưu AI Settings.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeActiveAI(provider: AIProviderName) {
+    if (provider === settings.provider || !hasAIKey(settings, provider)) return;
+    setBusy(true);
+    setMessage(`Đang chuyển AI sang ${provider}...`);
+    try {
+      const saved = await window.contentFactory.settings.saveAI({
+        provider,
+        openaiModel: settings.openaiModel,
+        geminiModel: settings.geminiModel,
+        groqModel: settings.groqModel,
+      });
+      setSettings(saved);
+      setMessage(`✓ Đã chọn ${provider} · ${aiModel(saved, provider)} cho các lần Generate tiếp theo.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -893,7 +937,26 @@ export default function App() {
           <div>
             <span className={health?.ffmpeg ? 'dot ok' : 'dot warn'} /> FFmpeg
           </div>
-          <div className="tiny">AI: {settings.provider}</div>
+          <label className="quick-ai-picker">
+            <span>AI sử dụng</span>
+            <select
+              value={settings.provider}
+              disabled={busy}
+              onChange={event => void changeActiveAI(event.target.value as AIProviderName)}>
+              <option value="groq" disabled={!settings.hasGroqKey}>
+                Groq · {settings.groqModel}{settings.hasGroqKey ? '' : ' · chưa có key'}
+              </option>
+              <option value="gemini" disabled={!settings.hasGeminiKey}>
+                Gemini · {settings.geminiModel}{settings.hasGeminiKey ? '' : ' · chưa có key'}
+              </option>
+              <option value="openai" disabled={!settings.hasOpenAIKey}>
+                OpenAI · {settings.openaiModel}{settings.hasOpenAIKey ? '' : ' · chưa có key'}
+              </option>
+            </select>
+            {!hasAIKey(settings, settings.provider) && (
+              <button type="button" onClick={() => setView('settings')}>Thêm API key →</button>
+            )}
+          </label>
         </div>
       </aside>
 
@@ -969,9 +1032,64 @@ export default function App() {
 
         {view === 'dashboard' && (
           <>
+            <section className="card master-idea-engine">
+              <div className="master-idea-head">
+                <span className="workflow-step-number">1A</span>
+                <div>
+                  <h2>Generate Idea · Master Prompt Story Engine</h2>
+                  <p>Tạo idea storytelling đồng thời cho Facebook Reel 60 giây và Long Video.</p>
+                </div>
+                <span className="master-prompt-badge">MASTER PROMPT ĐANG BẬT</span>
+              </div>
+              {selected ? (
+                <>
+                  <div className="master-idea-inputs">
+                    <div><span>Chủ đề</span><strong>{selected.topic || 'AI tự đề xuất theo ngách'}</strong></div>
+                    <div><span>Ngách</span><strong>{selected.niche || 'Truyện đời sống'}</strong></div>
+                    <div><span>AI / Model</span><strong>{settings.provider} · {aiModel(settings, settings.provider)}</strong></div>
+                    <label>
+                      Số lượng idea
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={ideaCount}
+                        onChange={e => setIdeaCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
+                      />
+                    </label>
+                  </div>
+                  <div className="master-idea-criteria">
+                    <span>Bực tức → Ức chế → Xuống đáy</span>
+                    <span>Twist seed → Lật kèo</span>
+                    <span>Payoff thỏa mãn</span>
+                    <span>Reel timeline 0–60s</span>
+                    <span>Long Video 5–8 nhịp</span>
+                    <span>Hook · Frame · CTA · Hashtag</span>
+                  </div>
+                  <div className="master-idea-action">
+                    <p>Mỗi idea có tóm tắt, hành trình cảm xúc, twist, gợi ý Reel, gợi ý Long Video và điểm chất lượng.</p>
+                    <button
+                      className="primary"
+                      onClick={() => void generateIdeas()}
+                      disabled={busy || !hasAIKey(settings, settings.provider)}>
+                      {ideas.length
+                        ? `Không phù hợp · Generate lại ${ideaCount} Ideas`
+                        : `Generate ${ideaCount} Ideas theo Master Prompt`}
+                    </button>
+                  </div>
+                  {!hasAIKey(settings, settings.provider) && (
+                    <button className="master-key-link" type="button" onClick={() => setView('settings')}>
+                      Chưa có API key cho {settings.provider} · Mở Settings →
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="empty">Hãy tạo hoặc chọn một project để Generate Idea.</div>
+              )}
+            </section>
             <section className="card crawler-first-step">
               <div className="crawler-first-head">
-                <span className="workflow-step-number">1</span>
+                <span className="workflow-step-number">1B</span>
                 <div>
                   <h2>Crawl truyện theo từng chương</h2>
                   <p>
@@ -1085,7 +1203,7 @@ export default function App() {
                         />
                       </label>
                       <button className="primary grow" onClick={generateIdeas} disabled={busy}>
-                        Generate ideas
+                        Generate theo Master Prompt
                       </button>
                     </div>
                   </>
@@ -1134,11 +1252,13 @@ export default function App() {
                 <span>{ideas.length} ideas</span>
               </div>
               <button className="primary" onClick={generateIdeas} disabled={!selected || busy}>
-                Regenerate {ideaCount}
+                Không phù hợp · Generate lại {ideaCount} Ideas bằng Master Prompt
               </button>
             </div>
             <div className="ideas-grid">
-              {ideas.map(idea => (
+              {ideas.map(idea => {
+                const details = ideaDetails(idea.description);
+                return (
                 <article className={`idea-card ${idea.selected ? 'chosen' : ''}`} key={idea.id}>
                   <div className="idea-top">
                     <span className="score">{idea.score?.toFixed(1) ?? '-'}</span>
@@ -1146,7 +1266,20 @@ export default function App() {
                   </div>
                   <h3>{idea.title}</h3>
                   <p className="hook">{idea.hook}</p>
-                  <p>{idea.description}</p>
+                  <p>{details.summary}</p>
+                  {!!details.suggestions.length && (
+                    <details className="idea-suggestions">
+                      <summary>Gợi ý triển khai Reel + Long Video</summary>
+                      <div>
+                        {details.suggestions.map((suggestion, index) => {
+                          const separator = suggestion.indexOf(':');
+                          const label = separator > 0 ? suggestion.slice(0, separator) : `Gợi ý ${index + 1}`;
+                          const value = separator > 0 ? suggestion.slice(separator + 1).trim() : suggestion;
+                          return <section key={`${idea.id}-${index}`}><strong>{label}</strong><p>{value}</p></section>;
+                        })}
+                      </div>
+                    </details>
+                  )}
                   <button
                     className={idea.selected ? 'secondary full' : 'primary full'}
                     disabled={busy || idea.selected}
@@ -1164,7 +1297,8 @@ export default function App() {
                     </button>
                   )}
                 </article>
-              ))}
+                );
+              })}
             </div>
             {selected && !ideas.length && <div className="empty">Chưa có idea.</div>}
           </section>
@@ -1284,14 +1418,16 @@ export default function App() {
                 <div className="empty action-empty">
                   <p>Idea selected: {ideas.find(i => i.selected)?.title ?? 'chưa chọn'}</p>
                   <label>
-                    Target words
+                    Thời lượng truyện (phút)
                     <input
                       type="number"
-                      min={800}
-                      max={4500}
-                      value={targetWords}
-                      onChange={e => setTargetWords(Number(e.target.value))}
+                      min={5}
+                      max={30}
+                      step={1}
+                      value={targetMinutes}
+                      onChange={e => setTargetMinutes(Math.min(30, Math.max(5, Number(e.target.value) || 5)))}
                     />
+                    <small>Ước tính theo giọng kể khoảng 145 từ/phút.</small>
                   </label>
                   <button className="primary" onClick={generateStory} disabled={busy || !ideas.some(i => i.selected)}>
                     Generate Story

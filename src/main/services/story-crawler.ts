@@ -221,26 +221,106 @@ function discoverChapters(html: string, detailUrl: URL): Array<{ title: string; 
   return filtered.map(({ title, url }) => ({ title, url }))
 }
 
+function discoverListingPages(html: string, detailUrl: URL): string[] {
+  const $ = load(html)
+  const urls = new Set<string>()
+  $('a[href]').each((_index, element) => {
+    const anchor = $(element)
+    const href = anchor.attr('href')?.trim()
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return
+    let url: URL
+    try { url = new URL(href, detailUrl) } catch { return }
+    if (url.origin !== detailUrl.origin || !['http:', 'https:'].includes(url.protocol)) return
+    const text = cleanText(anchor.text()).toLocaleLowerCase('vi')
+    const rel = (anchor.attr('rel') || '').toLowerCase()
+    const parent = `${anchor.parent().attr('class') || ''} ${anchor.closest('[class],[id]').attr('class') || ''} ${anchor.closest('[class],[id]').attr('id') || ''}`.toLowerCase()
+    const address = `${url.pathname}${url.search}`.toLowerCase()
+    const pagerContainer = /pagination|paging|phan-trang|page-numbers|pager/.test(parent)
+    const pagedAddress = /[?&](page|paged|p)=\d+/.test(address) || /\/page\/\d+\/?$/.test(url.pathname)
+    const looksLikePager = pagerContainer || pagedAddress ||
+      /^(trang|page)\s*\d+$/i.test(text) ||
+      (/^(tiếp|sau|trước|next|previous|›|»|‹|«)$/i.test(text) && (pagerContainer || pagedAddress)) ||
+      ((rel.includes('next') || rel.includes('prev')) && (pagerContainer || pagedAddress))
+    if (!looksLikePager) return
+    url.hash = ''
+    urls.add(url.toString())
+  })
+  return [...urls]
+}
+
+function discoverNextChapter(html: string, currentUrl: URL): { title: string; url: string } | null {
+  const $ = load(html)
+  const candidates: Array<{ title: string; url: string; score: number }> = []
+  $('a[href]').each((_index, element) => {
+    const anchor = $(element)
+    const href = anchor.attr('href')?.trim()
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return
+    let url: URL
+    try { url = new URL(href, currentUrl) } catch { return }
+    if (url.origin !== currentUrl.origin || !['http:', 'https:'].includes(url.protocol)) return
+    url.hash = ''
+    const current = new URL(currentUrl.toString()); current.hash = ''
+    if (url.toString() === current.toString()) return
+    const title = cleanText(anchor.text()).slice(0, 250)
+    const signal = `${title} ${anchor.attr('title') || ''} ${anchor.attr('aria-label') || ''}`.toLocaleLowerCase('vi')
+    const rel = (anchor.attr('rel') || '').toLowerCase()
+    const classes = `${anchor.attr('class') || ''} ${anchor.parent().attr('class') || ''}`.toLowerCase()
+    let score = 0
+    if (rel.split(/\s+/).includes('next')) score += 5
+    if (/chương\s*(sau|tiếp|kế)|chuong\s*(sau|tiep|ke)|next\s*(chapter|chap)|chapter\s*next/.test(signal)) score += 10
+    if (/next|chapter-next|next-chap|chuong-sau/.test(classes)) score += 4
+    // A generic “next” inside the chapter navigation is useful, but a generic
+    // paginator on the listing/detail page must not be mistaken for a chapter.
+    if (/^(tiếp|sau|next|›|»)$/i.test(title) && /chapter|chap|chuong|reading/.test(classes)) score += 4
+    if (score >= 5) candidates.push({ title: title || 'Chương tiếp theo', url: url.toString(), score })
+  })
+  const result = candidates.sort((a, b) => b.score - a.score)[0]
+  return result ? { title: result.title, url: result.url } : null
+}
+
 function extractChapter(html: string, fallbackTitle: string): { title: string; content: string } {
   const $ = load(html)
-  $('script,style,noscript,iframe,nav,header,footer,form,button,.ads,.advertisement,[class*="comment"],[id*="comment"],[class*="breadcrumb"]').remove()
+  const title = cleanText($('h1').first().text() || $('.chapter-title').first().text() || fallbackTitle).slice(0, 250)
+  $('script,style,noscript,iframe,nav,header,footer,form,button,aside,svg,canvas,' +
+    '.ads,.advertisement,.sidebar,.navigation,.pagination,.pager,.toolbar,.social,.share,' +
+    '[class*="advert"],[id*="advert"],[class*="comment"],[id*="comment"],' +
+    '[class*="breadcrumb"],[class*="related"],[class*="recommend"],[class*="suggest"],' +
+    '[class*="chapter-nav"],[class*="chap-nav"],[class*="menu"],[class*="footer"],[class*="header"]').remove()
   const selectors = [
     '#chapter-content', '.chapter-content', '.reading-content', '.content-chapter',
     '.entry-content', '.post-content', '.story-content', '.novel-content', '.book-content',
     '[id*="chapter-content"]', '[class*="chapter-content"]', '[class*="reading"]',
     '[itemprop="articleBody"]', 'article', 'main', '#content'
   ]
-  let content = ''
-  for (const selector of selectors) {
-    const node = $(selector).first()
-    if (!node.length) continue
-    const clone = node.clone()
-    clone.find('br').replaceWith('\n')
-    clone.find('p,div,li,h2,h3').each((_index, element) => { $(element).append('\n') })
-    const candidate = cleanText(clone.text())
-    if (candidate.length > content.length) content = candidate
-    if (content.length >= 300) break
+  const textCandidates: Array<{ text: string; score: number }> = []
+  for (const [selectorIndex, selector] of selectors.entries()) {
+    $(selector).each((_nodeIndex, element) => {
+      const clone = $(element).clone()
+      clone.find('script,style,noscript,iframe,nav,header,footer,form,button,aside,' +
+        '.ads,.advertisement,.sidebar,.navigation,.pagination,.pager,.toolbar,.social,.share,' +
+        '[class*="advert"],[id*="advert"],[class*="comment"],[id*="comment"],' +
+        '[class*="related"],[class*="recommend"],[class*="suggest"],[class*="chapter-nav"],' +
+        '[class*="chap-nav"],[class*="menu"],[class*="footer"],[class*="header"]').remove()
+      clone.find('a').each((_anchorIndex, anchorElement) => {
+        const anchorText = cleanText($(anchorElement).text())
+        if (/^(trang chủ|mục lục|danh sách chương|chương (trước|sau|tiếp)|next chapter|previous chapter|đăng nhập|đăng ký)$/i.test(anchorText)) {
+          $(anchorElement).remove()
+        }
+      })
+      clone.find('br').replaceWith('\n')
+      clone.find('p,blockquote,li,h2,h3,div').each((_index, child) => { $(child).append('\n') })
+      const candidate = cleanText(clone.text())
+      if (candidate.length < 100) return
+      const paragraphCount = clone.find('p,blockquote').length
+      const linkTextLength = cleanText(clone.find('a').text()).length
+      const linkRatio = linkTextLength / Math.max(candidate.length, 1)
+      const preferredSelector = selectorIndex <= 12 ? 120 : selectorIndex === 13 ? 100 : selectorIndex === 14 ? 40 : -30
+      const score = preferredSelector + Math.min(candidate.length / 100, 50) + Math.min(paragraphCount, 20) - linkRatio * 100
+      textCandidates.push({ text: candidate, score })
+    })
   }
+  textCandidates.sort((a, b) => b.score - a.score)
+  let content = textCandidates[0]?.text ?? ''
   if (content.length < 100) {
     const jsonCandidates: string[] = []
     const collect = (value: unknown, key = '', depth = 0): void => {
@@ -269,7 +349,10 @@ function extractChapter(html: string, fallbackTitle: string): { title: string; c
     jsonCandidates.sort((a, b) => b.length - a.length)
     if (jsonCandidates[0]) content = jsonCandidates[0]
   }
-  const title = cleanText($('h1').first().text() || $('.chapter-title').first().text() || fallbackTitle).slice(0, 250)
+  if (title) {
+    const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    content = content.replace(new RegExp(`^${escapedTitle}\\s*`, 'i'), '').trim()
+  }
   if (content.length < 100) throw new Error(`Không tìm thấy nội dung đủ dài cho “${title}”. Trang có thể cần đăng nhập hoặc render bằng JavaScript.`)
   return { title: title || fallbackTitle, content }
 }
@@ -297,6 +380,27 @@ export class StoryCrawlerService {
         loggerWarning('Không render được trang detail bằng JavaScript', error)
       }
     }
+    // Many story sites paginate their chapter index. Walk those index pages
+    // before crawling chapter bodies, with a conservative cap to avoid loops.
+    const listingQueue = discoverListingPages(detailHtml, detail.url)
+    const visitedListings = new Set<string>([detail.url.toString()])
+    for (let index = 0; index < listingQueue.length && visitedListings.size <= 25 && discovered.length < maxEpisodes; index++) {
+      const listingUrl = listingQueue[index]
+      if (visitedListings.has(listingUrl)) continue
+      visitedListings.add(listingUrl)
+      onProgress?.({ current: 0, total: maxEpisodes, percent: 4, stage: 'DISCOVERING', message: `Đang đọc trang mục lục ${visitedListings.size} để tìm thêm chương...` })
+      try {
+        const page = await fetchHtml(listingUrl)
+        for (const chapter of discoverChapters(page.html, page.url)) {
+          if (!discovered.some(item => item.url === chapter.url)) discovered.push(chapter)
+        }
+        for (const nextPage of discoverListingPages(page.html, page.url)) {
+          if (!visitedListings.has(nextPage) && !listingQueue.includes(nextPage)) listingQueue.push(nextPage)
+        }
+      } catch (error) {
+        loggerWarning(`Không đọc được trang mục lục ${listingUrl}`, error)
+      }
+    }
     const detailKey = new URL(detail.url.toString())
     detailKey.hash = ''
     discovered = discovered.filter(chapter => {
@@ -310,16 +414,19 @@ export class StoryCrawlerService {
     const chapterLinks = discovered.slice(0, maxEpisodes)
     onProgress?.({ current: 0, total: chapterLinks.length, percent: 5, stage: 'DISCOVERING', message: `Tìm thấy ${discovered.length} chương; sẽ crawl chi tiết ${chapterLinks.length} chương theo thứ tự.` })
     const chapters: Array<{ title: string; content: string; sourceUrl: string }> = []
-    for (const [index, chapter] of chapterLinks.entries()) {
+    for (let index = 0; index < chapterLinks.length && index < maxEpisodes; index++) {
+      const chapter = chapterLinks[index]
       onProgress?.({ current: index, total: chapterLinks.length, percent: 5 + Math.round((index / chapterLinks.length) * 78), stage: 'CRAWLING', message: `Đang crawl tập ${index + 1}/${chapterLinks.length}: ${chapter.title}` })
       const page = chapter.url === detail.url.toString() ? { ...detail, html: detailHtml } : await fetchHtml(chapter.url)
       let extracted: { title: string; content: string }
+      let chapterHtml = page.html
       try {
         extracted = extractChapter(page.html, chapter.title)
       } catch (staticError) {
         onProgress?.({ current: index, total: chapterLinks.length, percent: 5 + Math.round((index / chapterLinks.length) * 78), stage: 'CRAWLING', message: `Tập ${index + 1}/${chapterLinks.length}: đang render JavaScript để lấy nội dung...` })
         try {
           const rendered = await renderDynamicHtml(page.url.toString())
+          chapterHtml = rendered.html
           extracted = extractChapter(rendered.html, chapter.title)
         } catch (dynamicError) {
           const staticMessage = staticError instanceof Error ? staticError.message : String(staticError)
@@ -328,6 +435,12 @@ export class StoryCrawlerService {
         }
       }
       chapters.push({ ...extracted, sourceUrl: page.url.toString() })
+      // Some sites expose only the first/latest chapter on the detail page.
+      // Continue through the chapter navigation when the index was incomplete.
+      const nextChapter = discoverNextChapter(chapterHtml, page.url)
+      if (nextChapter && chapterLinks.length < maxEpisodes && !chapterLinks.some(item => item.url === nextChapter.url)) {
+        chapterLinks.push(nextChapter)
+      }
       if (index < chapterLinks.length - 1) await new Promise(resolve => setTimeout(resolve, 250))
     }
     if (!chapters.length) throw new Error('Không crawl được tập nào từ link này.')
@@ -342,8 +455,11 @@ export class StoryCrawlerService {
       prisma.asset.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_AUDIO', 'THUMBNAIL', 'REEL_AUDIO', 'REEL_THUMBNAIL', 'VIDEO_PUBLISH_METADATA'] } } }),
       prisma.render.deleteMany({ where: { projectId: project.id, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } } })
     ])
+    // LONG_STORY is narration-ready: only chapter body text, without page or
+    // chapter headings. Chapter names remain metadata on the child scripts.
+    const fullStoryContent = chapters.map(chapter => chapter.content).join('\n\n')
     const parent = await prisma.script.create({
-      data: { projectId: project.id, type: 'LONG_STORY', title: storyTitle, content: chapters[0].content, version: (latest?.version ?? 0) + 1, review: JSON.stringify({ sourceUrl: detail.url.toString(), crawledEpisodes: chapters.length }) }
+      data: { projectId: project.id, type: 'LONG_STORY', title: storyTitle, content: fullStoryContent, version: (latest?.version ?? 0) + 1, review: JSON.stringify({ sourceUrl: detail.url.toString(), crawledEpisodes: chapters.length, combinedChapterContent: true }) }
     })
     const episodes: ScriptDTO[] = []
     for (const [index, chapter] of chapters.entries()) {

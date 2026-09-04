@@ -1,6 +1,7 @@
 import type { GenerateIdeasInput, IdeaDTO } from '../../shared/types';
 import { AIService } from './ai';
 import { getPrisma } from './database';
+import { buildIdeasPrompt, STORY_ENGINE_SYSTEM_PROMPT } from './story-prompts';
 
 function toDTO(row: {
   id: string;
@@ -59,9 +60,12 @@ export class IdeaService {
       const provider = this.ai.provider();
       const text = await provider.generateText({
         json: true,
-        system:
-          'Bạn là content strategist Facebook chuyên tạo ý tưởng video nguyên bản, có hook mạnh nhưng không giật tít sai sự thật.',
-        prompt: `Tạo ${count} ý tưởng content bằng tiếng Việt cho Facebook.\nNiche: ${project.niche ?? 'general'}\nTopic gốc: ${project.topic ?? 'tự đề xuất theo niche'}\n\nTrả về JSON thuần theo cấu trúc:\n{"ideas":[{"title":"...","hook":"...","description":"...","score":8.5}]}\n\nYêu cầu score từ 1-10, ý tưởng khác nhau rõ ràng, ưu tiên storytelling và khả năng giữ người xem.`,
+        system: STORY_ENGINE_SYSTEM_PROMPT,
+        prompt: buildIdeasPrompt({
+          count,
+          niche: project.niche ?? 'tự chọn ngách truyện đời sống phù hợp',
+          topic: project.topic ?? 'tự đề xuất theo ngách'
+        }),
       });
 
       const parsed = extractJson(text) as { ideas?: unknown[] } | unknown[];

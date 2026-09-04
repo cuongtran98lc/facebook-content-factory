@@ -9,6 +9,7 @@ import type {
 } from '../../shared/types'
 import { AIService } from './ai'
 import { getPrisma } from './database'
+import { LONG_STORY_RULES, REEL_SCRIPT_RULES, STORY_ENGINE_SYSTEM_PROMPT } from './story-prompts'
 
 function toDTO(row: {
   id: string
@@ -96,7 +97,12 @@ export class ScriptService {
     const idea = project.ideas[0]
     if (!idea) throw new Error('Hãy chọn một idea trước khi Generate Story.')
 
-    const targetWords = Math.min(Math.max(input.targetWords ?? 2200, 800), 4500)
+    const wordsPerMinute = 145
+    const legacyWords = Math.min(Math.max(input.targetWords ?? 2200, 800), 4500)
+    const targetMinutes = input.targetMinutes == null
+      ? Math.round(legacyWords / wordsPerMinute)
+      : Math.min(Math.max(input.targetMinutes, 5), 30)
+    const targetWords = Math.min(Math.max(Math.round(targetMinutes * wordsPerMinute), 800), 4500)
     const job = await prisma.job.create({
       data: { type: 'GENERATE_STORY', projectId: project.id, status: 'RUNNING', progress: 10 }
     })
@@ -105,24 +111,17 @@ export class ScriptService {
     try {
       const provider = this.ai.provider()
       const content = await provider.generateText({
-        system: [
-          'Bạn là biên kịch Facebook storytelling bằng tiếng Việt.',
-          'Nội dung phải nguyên bản, tự nhiên, tránh câu chữ sáo rỗng và không sao chép tác phẩm có bản quyền.',
-          'Ưu tiên retention: hook sớm, xung đột rõ, diễn biến mới liên tục, twist hợp lý và kết thúc có payoff.'
-        ].join(' '),
+        system: STORY_ENGINE_SYSTEM_PROMPT,
         prompt: [
-          `Viết một câu chuyện dài khoảng ${targetWords} từ.`,
+          `Viết một câu chuyện có thời lượng kể mục tiêu khoảng ${targetMinutes} phút.`,
+          `Ngân sách độ dài tham chiếu: khoảng ${targetWords} từ (ước tính ${wordsPerMinute} từ/phút); ưu tiên đủ diễn biến và nhịp kể hơn việc khớp số từ tuyệt đối.`,
           `Niche: ${project.niche ?? 'general'}`,
           `Idea: ${idea.title}`,
           `Hook gợi ý: ${idea.hook ?? 'tự tạo hook mạnh'}`,
           `Mô tả: ${idea.description ?? ''}`,
           '',
-          'Yêu cầu:',
-          '- 2 câu đầu phải tạo tò mò.',
-          '- Xung đột chính xuất hiện sớm.',
-          '- Chia nhịp bằng các đoạn ngắn, phù hợp đọc TTS.',
-          '- Có ít nhất một twist nhưng phải logic.',
-          '- Kết thúc có cảm xúc và một bài học ngắn.',
+          'Yêu cầu cho LONG VIDEO:',
+          ...LONG_STORY_RULES.map(rule => `- ${rule}`),
           '- Không thêm markdown heading kiểu #, không giải thích ngoài câu chuyện.'
         ].join('\n')
       })
@@ -330,12 +329,12 @@ export class ScriptService {
     try {
       const text = await this.ai.provider().generateText({
         json: true,
-        system: 'Bạn là editor chuyên cắt Facebook Reel từ long-form storytelling. Mỗi reel phải đứng độc lập và có hook ngay lập tức.',
+        system: STORY_ENGINE_SYSTEM_PROMPT,
         prompt: [
           `Tạo ${count} Reel scripts khác nhau từ story dưới đây.`,
           'Trả JSON thuần: {"reels":[{"title":"...","hook":"...","content":"..."}]}',
-          'Mỗi reel khoảng 130-260 từ, đọc được trong khoảng 45-100 giây tùy tốc độ voice.',
-          'Không dùng CTA ép tương tác. Không viết "phần 1/phần 2" nếu reel không tự đứng độc lập.',
+          'Mỗi Reel khoảng 130–180 từ, ưu tiên đọc trong khoảng 60 giây.',
+          ...REEL_SCRIPT_RULES.map(rule => `- ${rule}`),
           '',
           story.content
         ].join('\n')

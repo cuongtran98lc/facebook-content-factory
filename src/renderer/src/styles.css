@@ -93,6 +93,34 @@ button {
   color: #9aa0aa;
   font-size: 13px;
 }
+.quick-ai-picker {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+.quick-ai-picker span {
+  color: #c4c8d0;
+  font-size: 12px;
+  font-weight: 700;
+}
+.quick-ai-picker select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #343842;
+  background: #14171c;
+  color: #eef1f5;
+  font-size: 11px;
+}
+.quick-ai-picker button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #aebcff;
+  font-size: 11px;
+  text-align: left;
+}
 .dot {
   display: inline-block;
   width: 8px;
@@ -358,6 +386,36 @@ select:focus {
 }
 .idea-card .hook {
   color: #d5d9e0;
+}
+.idea-suggestions {
+  margin: 14px 0;
+  border: 1px solid #303744;
+  border-radius: 10px;
+  background: #151922;
+  overflow: hidden;
+}
+.idea-suggestions summary {
+  padding: 11px 12px;
+  color: #aebcff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.idea-suggestions > div {
+  padding: 0 12px 10px;
+}
+.idea-suggestions section {
+  padding: 9px 0;
+  border-top: 1px solid #292f3a;
+}
+.idea-suggestions strong {
+  color: #d9dde6;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.idea-suggestions section p {
+  margin: 4px 0 0;
 }
 .idea-top {
   display: flex;
@@ -1189,6 +1247,96 @@ select:focus {
   border-color: #356b61;
   background: linear-gradient(145deg, #101d1b, #15171c);
 }
+.master-idea-engine {
+  margin-bottom: 18px;
+  border-color: #4b5187;
+  background: linear-gradient(145deg, #15182b, #15171c);
+}
+.master-idea-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 13px;
+}
+.master-idea-head h2 {
+  margin: 1px 0 5px;
+  color: #cbd0ff;
+}
+.master-idea-head p,
+.master-idea-action p {
+  margin: 0;
+  color: #9299bd;
+  font-size: 12px;
+}
+.master-prompt-badge {
+  padding: 6px 9px;
+  border: 1px solid #5963a2;
+  border-radius: 999px;
+  background: #20264a;
+  color: #bdc5ff;
+  font-size: 10px;
+  font-weight: 800;
+}
+.master-idea-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(130px, 0.7fr) minmax(180px, 1fr) 110px;
+  gap: 10px;
+  margin-top: 17px;
+}
+.master-idea-inputs > div {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid #303652;
+  border-radius: 9px;
+  background: #111522;
+}
+.master-idea-inputs span,
+.master-idea-inputs label {
+  color: #858da9;
+  font-size: 11px;
+}
+.master-idea-inputs strong {
+  overflow: hidden;
+  color: #d8dcf1;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.master-idea-criteria {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+.master-idea-criteria span {
+  padding: 5px 8px;
+  border: 1px solid #353b5a;
+  border-radius: 999px;
+  color: #aab1d5;
+  background: #181d30;
+  font-size: 10px;
+}
+.master-idea-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-top: 14px;
+}
+.master-idea-action button {
+  white-space: nowrap;
+}
+.master-key-link {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #e0a5a5;
+  font-size: 11px;
+}
 .crawler-first-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1257,6 +1405,16 @@ select:focus {
   padding: 18px 0 0;
 }
 @media (max-width: 1100px) {
+  .master-idea-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .master-prompt-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .master-idea-inputs {
+    grid-template-columns: 1fr 1fr;
+  }
   .crawler-first-head {
     grid-template-columns: auto minmax(0, 1fr);
   }
@@ -1268,6 +1426,15 @@ select:focus {
   }
   .crawler-first-form button {
     grid-column: 1/-1;
+  }
+}
+@media (max-width: 700px) {
+  .master-idea-inputs {
+    grid-template-columns: 1fr;
+  }
+  .master-idea-action {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 .story-long-output {
@@ -1296,6 +1463,32 @@ select:focus {
 }
 .publish-metadata-toolbar button {
   flex: 0 0 auto;
+}
+.reel-requirements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0;
+}
+.reel-requirements span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.reel-requirements .ready {
+  border: 1px solid #315f4b;
+  background: #10251c;
+  color: #7ed9aa;
+}
+.reel-requirements .missing {
+  border: 1px solid #6c4b3b;
+  background: #281a15;
+  color: #e3a083;
+}
+.reel-blocker-hint {
+  margin: 0 0 10px;
+  color: #d69a7f;
+  font-size: 11px;
 }
 .publish-copy {
   display: grid !important;
