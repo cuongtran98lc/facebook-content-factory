@@ -59,6 +59,8 @@ function toDTO(row: {
 export class RenderQueueService {
   private timer: ReturnType<typeof setInterval> | null = null
   private isProcessing = false
+  private activeJobId: string | null = null
+  private activeAbort: AbortController | null = null
 
   constructor(private readonly storyMedia: StoryMediaService) {}
 
@@ -76,6 +78,7 @@ export class RenderQueueService {
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null }
+    this.activeAbort?.abort()
   }
 
   async enqueue(input: RenderStoryVideoInput): Promise<RenderQueueItemDTO> {
@@ -104,7 +107,7 @@ export class RenderQueueService {
         type: JOB_TYPE,
         OR: [
           { status: { in: ['PENDING', 'RUNNING'] } },
-          { status: { in: ['DONE', 'FAILED'] }, updatedAt: { gte: cutoff } }
+          { status: { in: ['DONE', 'FAILED', 'CANCELED'] }, updatedAt: { gte: cutoff } }
         ]
       },
       include: { project: true },
@@ -114,9 +117,38 @@ export class RenderQueueService {
   }
 
   async cancel(jobId: string): Promise<void> {
-    const job = await getPrisma().job.findUniqueOrThrow({ where: { id: jobId } })
-    if (job.status !== 'PENDING') throw new Error('Chỉ huỷ được job đang chờ (chưa bắt đầu render).')
-    await getPrisma().job.delete({ where: { id: jobId } })
+    const prisma = getPrisma()
+    const job = await prisma.job.findUniqueOrThrow({ where: { id: jobId } })
+    if (job.type !== JOB_TYPE) throw new Error('Job không thuộc Render Queue.')
+    if (!['PENDING', 'RUNNING'].includes(job.status)) throw new Error('Chỉ hủy được job đang chờ hoặc đang render.')
+    await prisma.job.update({ where: { id: jobId }, data: { status: 'CANCELED', error: null } })
+    if (this.activeJobId === jobId) this.activeAbort?.abort()
+    sendToRenderer('render-queue:updated', null)
+  }
+
+  async resume(jobId: string): Promise<void> {
+    const prisma = getPrisma()
+    const job = await prisma.job.findUniqueOrThrow({ where: { id: jobId } })
+    if (job.type !== JOB_TYPE) throw new Error('Job không thuộc Render Queue.')
+    if (!['FAILED', 'CANCELED'].includes(job.status)) throw new Error('Chỉ resume được job bị lỗi hoặc đã hủy.')
+    const active = await prisma.job.findFirst({
+      where: { type: JOB_TYPE, projectId: job.projectId, status: { in: ['PENDING', 'RUNNING'] }, id: { not: jobId } }
+    })
+    if (active) throw new Error('Project này đã có một job khác trong hàng đợi.')
+    await prisma.job.update({ where: { id: jobId }, data: { status: 'PENDING', progress: 0, error: null } })
+    sendToRenderer('render-queue:updated', null)
+    void this.tick()
+  }
+
+  async remove(jobId: string): Promise<void> {
+    const prisma = getPrisma()
+    const job = await prisma.job.findUniqueOrThrow({ where: { id: jobId } })
+    if (job.type !== JOB_TYPE) throw new Error('Job không thuộc Render Queue.')
+    // Delete is intentionally available for every status. If this is the
+    // active job, stop FFmpeg first; worker callbacks tolerate a missing row.
+    if (this.activeJobId === jobId) this.activeAbort?.abort()
+    await prisma.job.delete({ where: { id: jobId } })
+    sendToRenderer('render-queue:updated', null)
   }
 
   private async tick(): Promise<void> {
@@ -127,21 +159,29 @@ export class RenderQueueService {
 
     this.isProcessing = true
     const jobId = next.id
+    const abortController = new AbortController()
+    this.activeJobId = jobId
+    this.activeAbort = abortController
     try {
       const input = JSON.parse(next.payload) as RenderStoryVideoInput
-      await prisma.job.update({ where: { id: jobId }, data: { status: 'RUNNING', progress: 0, error: null } })
+      const claimed = await prisma.job.updateMany({ where: { id: jobId, status: 'PENDING' }, data: { status: 'RUNNING', progress: 0, error: null } })
+      if (claimed.count !== 1) return
 
       const onProgress = (progress: StoryVideoProgress): void => {
-        void prisma.job.update({ where: { id: jobId }, data: { progress: progress.percent } }).catch(() => {})
+        void prisma.job.updateMany({ where: { id: jobId, status: 'RUNNING' }, data: { progress: progress.percent } }).catch(() => {})
         sendToRenderer('render-queue:progress', { jobId, ...progress })
       }
 
-      await this.storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, input.includeSubtitles !== false, onProgress)
-      await prisma.job.update({ where: { id: jobId }, data: { status: 'DONE', progress: 100 } })
+      await this.storyMedia.render(input.projectId, input.format, input.fitMode, input.soundEffect, input.includeSubtitles !== false, onProgress, abortController.signal)
+      const current = await prisma.job.findUnique({ where: { id: jobId } })
+      if (current?.status === 'RUNNING') await prisma.job.update({ where: { id: jobId }, data: { status: 'DONE', progress: 100 } })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await prisma.job.update({ where: { id: jobId }, data: { status: 'FAILED', error: message } }).catch(() => {})
+      const current = await prisma.job.findUnique({ where: { id: jobId } }).catch(() => null)
+      if (current?.status === 'RUNNING') await prisma.job.update({ where: { id: jobId }, data: { status: 'FAILED', error: message } }).catch(() => {})
     } finally {
+      this.activeJobId = null
+      this.activeAbort = null
       this.isProcessing = false
       sendToRenderer('render-queue:updated', null)
     }

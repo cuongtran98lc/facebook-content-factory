@@ -237,6 +237,8 @@ export interface StoryMediaDTO {
   thumbnailUrl: string | null;
   thumbnailPrompt: string | null;
   thumbnailProvider: string | null;
+  thumbnailSourceVideoPath: string | null;
+  thumbnailSourceTimeSeconds: number | null;
   audioPath: string | null;
   audioUrl: string | null;
   audioDuration: number | null;
@@ -333,7 +335,7 @@ export interface StoryVideoProgress {
 }
 
 // --- Render Queue (giải quyết nút thắt FFmpeg render — xem docs/designs/render-queue.md) ---
-export type RenderQueueJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
+export type RenderQueueJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELED';
 export interface RenderQueueItemDTO {
   jobId: string;
   projectId: string;
@@ -456,6 +458,8 @@ export interface ContentFactoryAPI {
     enqueue(input: RenderStoryVideoInput): Promise<RenderQueueItemDTO>;
     list(): Promise<RenderQueueItemDTO[]>;
     cancel(jobId: string): Promise<void>;
+    resume(jobId: string): Promise<void>;
+    remove(jobId: string): Promise<void>;
     onProgress(callback: (progress: StoryVideoProgress & { jobId: string }) => void): () => void;
     onUpdated(callback: () => void): () => void;
   };
@@ -485,6 +489,7 @@ export interface ContentFactoryAPI {
     extractThumbnailFromVideo(input: ExtractThumbnailFromVideoInput): Promise<StoryMediaDTO>;
     chooseVideoFile(): Promise<string | null>;
     generateReelVideos(input: GenerateReelVideosInput): Promise<StoryMediaDTO>;
+    regenerateReelThumbnails(projectId: string): Promise<StoryMediaDTO>;
     onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void;
     onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void;
     resumePending(): Promise<StoryMediaDTO | null>;

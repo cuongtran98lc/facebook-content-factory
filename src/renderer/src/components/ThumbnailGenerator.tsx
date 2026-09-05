@@ -30,6 +30,19 @@ export function ThumbnailGenerator({
 
   // Sync default video source when media updates
   useEffect(() => {
+    if (media?.thumbnailProvider === 'video' && media.thumbnailSourceVideoPath) {
+      setMode('video')
+      setCustomVideoPath(media.thumbnailSourceVideoPath)
+      setVideoSource(
+        media.thumbnailSourceVideoPath === media.backgroundPath
+          ? 'background'
+          : media.thumbnailSourceVideoPath === media.renderPath
+            ? 'rendered'
+            : 'custom'
+      )
+      setTimeSeconds(media.thumbnailSourceTimeSeconds ?? 0)
+      return
+    }
     if (hasBgVideo) {
       setVideoSource('background')
     } else if (hasRenderedVideo) {
@@ -37,7 +50,7 @@ export function ThumbnailGenerator({
     } else {
       setVideoSource('custom')
     }
-  }, [hasBgVideo, hasRenderedVideo])
+  }, [hasBgVideo, hasRenderedVideo, media?.backgroundPath, media?.renderPath, media?.thumbnailProvider, media?.thumbnailSourceTimeSeconds, media?.thumbnailSourceVideoPath])
 
   async function handleSelectCustomVideo() {
     try {
@@ -189,7 +202,7 @@ export function ThumbnailGenerator({
             onClick={handleExtract}
             disabled={busy || (videoSource === 'custom' && !customVideoPath)}
           >
-            {busy ? 'Đang trích xuất...' : 'Trích xuất Thumbnail từ Video'}
+            {busy ? 'Đang trích xuất...' : media?.thumbnailProvider === 'video' ? 'Trích xuất lại Thumbnail theo thiết lập trước' : 'Trích xuất Thumbnail từ Video'}
           </button>
         </div>
       )}

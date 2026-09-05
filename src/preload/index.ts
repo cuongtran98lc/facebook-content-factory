@@ -40,6 +40,8 @@ const api: ContentFactoryAPI = {
     enqueue: input => ipcRenderer.invoke('render-queue:enqueue', input),
     list: () => ipcRenderer.invoke('render-queue:list'),
     cancel: jobId => ipcRenderer.invoke('render-queue:cancel', jobId),
+    resume: jobId => ipcRenderer.invoke('render-queue:resume', jobId),
+    remove: jobId => ipcRenderer.invoke('render-queue:remove', jobId),
     onProgress: callback => {
       const listener = (_event: Electron.IpcRendererEvent, progress: unknown) =>
         callback(progress as Parameters<typeof callback>[0]);
@@ -82,6 +84,7 @@ const api: ContentFactoryAPI = {
     extractThumbnailFromVideo: input => ipcRenderer.invoke('story-media:extract-thumbnail-from-video', input),
     chooseVideoFile: () => ipcRenderer.invoke('story-media:choose-video-file'),
     generateReelVideos: input => ipcRenderer.invoke('story-media:generate-reel-videos', input),
+    regenerateReelThumbnails: projectId => ipcRenderer.invoke('story-media:regenerate-reel-thumbnails', projectId),
     onReelVideoProgress: callback => {
       const listener = (_event: Electron.IpcRendererEvent, progress: ReelVideoProgress) => callback(progress);
       ipcRenderer.on('story-media:reel-progress', listener);

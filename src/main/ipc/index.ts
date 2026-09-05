@@ -129,6 +129,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('render-queue:enqueue', (_event, input: RenderStoryVideoInput) => renderQueue.enqueue(input));
   ipcMain.handle('render-queue:list', () => renderQueue.list());
   ipcMain.handle('render-queue:cancel', (_event, jobId: string) => renderQueue.cancel(jobId));
+  ipcMain.handle('render-queue:resume', (_event, jobId: string) => renderQueue.resume(jobId));
+  ipcMain.handle('render-queue:remove', (_event, jobId: string) => renderQueue.remove(jobId));
 
   ipcMain.handle('scripts:list', (_event, projectId: string) => scripts.list(projectId));
   ipcMain.handle('scripts:generate-story', (_event, input: GenerateStoryInput) => scripts.generateStory(input));
@@ -170,6 +172,9 @@ export function registerIpcHandlers(): void {
     storyMedia.generateReelVideos(input.projectId, input.fitMode, input.soundEffect, input.includeSubtitles !== false, progress => {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:reel-progress', progress);
     }),
+  );
+  ipcMain.handle('story-media:regenerate-reel-thumbnails', (_event, projectId: string) =>
+    storyMedia.regenerateReelThumbnails(projectId),
   );
   ipcMain.handle('story-media:resume-pending', event =>
     storyMedia.resumePending(progress => {

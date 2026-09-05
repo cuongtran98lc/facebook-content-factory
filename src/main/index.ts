@@ -64,5 +64,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  renderQueue.stop();
   void closePrisma();
 });

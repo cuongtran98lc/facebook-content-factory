@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react'
 import type { RenderQueueItemDTO } from '../../../shared/types'
 
 const STATUS_LABELS: Record<string, string> = {
-  PENDING: '⏳ Đang chờ', RUNNING: '🎬 Đang render', DONE: '✅ Xong', FAILED: '❌ Lỗi'
+  PENDING: '⏳ Đang chờ', RUNNING: '🎬 Đang render', DONE: '✅ Xong', FAILED: '❌ Lỗi', CANCELED: '⛔ Đã hủy'
 }
 const STATUS_COLORS: Record<string, string> = {
-  PENDING: '#e4ae5a', RUNNING: '#7b8cff', DONE: '#56d58a', FAILED: '#e05555'
+  PENDING: '#e4ae5a', RUNNING: '#7b8cff', DONE: '#56d58a', FAILED: '#e05555', CANCELED: '#777d88'
 }
 
 export function RenderQueueView() {
   const [items, setItems] = useState<RenderQueueItemDTO[]>([])
   const [msg, setMsg] = useState('')
+  const [actionJobId, setActionJobId] = useState<string | null>(null)
 
   async function load() {
     setItems(await window.contentFactory.renderQueue.list())
@@ -21,7 +22,7 @@ export function RenderQueueView() {
     // Progress cập nhật trực tiếp qua jobId — không cần đợi poll để mượt.
     const unsubProgress = window.contentFactory.renderQueue.onProgress((progress) => {
       setItems((prev) => prev.map((item) => (
-        item.jobId === progress.jobId ? { ...item, progress: progress.percent, status: 'RUNNING' } : item
+        item.jobId === progress.jobId && item.status === 'RUNNING' ? { ...item, progress: progress.percent } : item
       )))
     })
     const unsubUpdated = window.contentFactory.renderQueue.onUpdated(() => void load())
@@ -30,11 +31,44 @@ export function RenderQueueView() {
   }, [])
 
   async function cancel(jobId: string) {
+    setActionJobId(jobId)
     try {
       await window.contentFactory.renderQueue.cancel(jobId)
+      setMsg('✓ Đã hủy job. Bạn có thể Resume hoặc Xóa.')
       await load()
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActionJobId(null)
+    }
+  }
+
+  async function resume(jobId: string) {
+    setActionJobId(jobId)
+    try {
+      await window.contentFactory.renderQueue.resume(jobId)
+      setMsg('✓ Đã đưa job trở lại hàng đợi.')
+      await load()
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActionJobId(null)
+    }
+  }
+
+  async function remove(jobId: string) {
+    const item = items.find(row => row.jobId === jobId)
+    const runningNote = item?.status === 'RUNNING' ? ' FFmpeg đang chạy sẽ được dừng.' : ''
+    if (!window.confirm(`Xóa job này khỏi Render Queue?${runningNote} Video đã render xong (nếu có) vẫn được giữ lại.`)) return
+    setActionJobId(jobId)
+    try {
+      await window.contentFactory.renderQueue.remove(jobId)
+      setMsg('✓ Đã xóa job khỏi hàng đợi.')
+      await load()
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setActionJobId(null)
     }
   }
 
@@ -65,11 +99,15 @@ export function RenderQueueView() {
               </div>
             )}
             {item.status === 'FAILED' && item.error && <div className="post-error">❌ {item.error}</div>}
-            {item.status === 'PENDING' && (
-              <div className="button-row" style={{ marginTop: '8px' }}>
-                <button className="secondary" style={{ color: '#d48080' }} onClick={() => void cancel(item.jobId)}>Huỷ</button>
-              </div>
-            )}
+            <div className="button-row" style={{ marginTop: '8px' }}>
+              {['PENDING', 'RUNNING'].includes(item.status) && (
+                <button className="secondary" disabled={actionJobId === item.jobId} style={{ color: '#d48080' }} onClick={() => void cancel(item.jobId)}>Hủy</button>
+              )}
+              {['FAILED', 'CANCELED'].includes(item.status) && (
+                <button className="secondary" disabled={actionJobId === item.jobId} onClick={() => void resume(item.jobId)}>Resume</button>
+              )}
+              <button className="secondary" disabled={actionJobId === item.jobId} style={{ color: '#d48080' }} onClick={() => void remove(item.jobId)}>Xóa</button>
+            </div>
           </div>
         ))}
       </div>

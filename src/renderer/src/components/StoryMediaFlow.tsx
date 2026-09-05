@@ -13,6 +13,7 @@ type Props = {
   reelProgress: ReelVideoProgress | null
   onGenerateAudio(): void
   onGenerateReelVideos(): void
+  onRegenerateReelThumbnails(): void
   onGenerateMetadata(): void
   onChooseBackground(kind: BackgroundKind): void
   onRender(): void
@@ -120,7 +121,7 @@ export function StoryMediaFlow(props: Props) {
     { label: 'FFmpeg', ready: props.ffmpegReady },
     { label: 'Voice', ready: props.hasVoice },
     { label: 'Background', ready: Boolean(props.media?.backgroundPath) },
-    { label: 'Thumbnail truyện', ready: Boolean(props.media?.thumbnailPath) },
+    { label: props.media?.thumbnailPath ? 'Thumbnail truyện' : 'Thumbnail tự lấy từ background', ready: Boolean(props.media?.thumbnailPath || props.media?.backgroundPath) },
     { label: `${props.media?.reels.length ?? 0} Reel scripts`, ready: Boolean(props.media?.reels.length) }
   ]
   const missingReelRequirements = reelRequirements.filter(item => !item.ready).map(item => item.label)
@@ -193,6 +194,7 @@ export function StoryMediaFlow(props: Props) {
       </div>
       {!!missingReelRequirements.length && <p className="reel-blocker-hint">Còn thiếu: {missingReelRequirements.join(' · ')}. Bạn vẫn có thể bấm nút để xem hướng dẫn tương ứng.</p>}
       <button className="primary full" onClick={props.onGenerateReelVideos} disabled={props.busy}>{hasReelVideos ? 'Regenerate' : 'Generate'} {props.media?.reels.length ?? 0} Reel Videos + {renderFeatures}</button>
+      {hasReelVideos && <button className="secondary full" onClick={props.onRegenerateReelThumbnails} disabled={props.busy}>Generate lại Thumbnail Reel từ video đã tạo</button>}
       {props.reelProgress && <div className={`reel-progress ${props.reelProgress.stage === 'DONE' ? 'done' : ''}`}>
         <div><strong>{props.reelProgress.percent}%</strong><span>{props.reelProgress.message}</span></div>
         <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={props.reelProgress.percent}><i style={{ width: `${props.reelProgress.percent}%` }} /></div>

@@ -19,7 +19,7 @@ const STORY_VIDEO_PRESET_SCHEMA = 1
 const CTA_TEXT = 'Hãy nhấn like và đăng ký kênh để mình có thêm động lực làm truyện tiếp cho các bạn nghe nha.'
 const PUBLISH_METADATA_ASSET_TYPE = 'VIDEO_PUBLISH_METADATA'
 const PUBLISH_METADATA_SCHEMA = 1
-const REEL_THUMBNAIL_VERSION = 2
+const REEL_THUMBNAIL_VERSION = 7
 
 interface StoryVideoSegment {
   part: number
@@ -172,10 +172,35 @@ function normalizeThumbnail(bytes: Buffer): Buffer {
   return cropped.resize({ width: 1280, height: 720, quality: 'best' }).toPNG()
 }
 
-async function episodeThumbnail(bytes: Buffer, episode: number): Promise<Buffer> {
+function escapeSvgText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+}
+
+function thumbnailTitleLines(value: string): string[] {
+  const words = value.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  const lines: string[] = []
+  for (const word of words) {
+    const current = lines[lines.length - 1]
+    if (!current || (current.length + word.length + 1 > 21 && lines.length < 3)) lines.push(word)
+    else lines[lines.length - 1] = `${current} ${word}`
+  }
+  if (lines.length > 3) lines.splice(3)
+  if (lines[2]?.length > 24) lines[2] = `${lines[2].slice(0, 23).trimEnd()}…`
+  return lines.length ? lines : ['TRUYỆN MỚI']
+}
+
+async function episodeThumbnail(bytes: Buffer, episode: number, storyTitle: string): Promise<Buffer> {
   const width = 1080
   const height = 1920
-  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect x="54" y="90" width="300" height="112" rx="22" fill="#e11d48"/><text x="204" y="168" text-anchor="middle" font-family="Arial, sans-serif" font-size="66" font-weight="900" fill="white">TẬP ${episode}</text></svg>`)
+  const lines = thumbnailTitleLines(`#${episode}: ${storyTitle}`)
+  const frameX = 34
+  const frameWidth = 996
+  const lineHeight = 94
+  const frameHeight = 82 + lines.length * lineHeight
+  // Center the complete title box vertically on the TikTok thumbnail.
+  const frameY = Math.round((height - frameHeight) / 2)
+  const titleSpans = lines.map((line, index) => `<tspan x="${frameX + 46}" dy="${index === 0 ? 0 : lineHeight}">${escapeSvgText(line)}</tspan>`).join('')
+  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect x="${frameX + 18}" y="${frameY + 20}" width="${frameWidth}" height="${frameHeight}" fill="#111827"/><rect x="${frameX}" y="${frameY}" width="${frameWidth}" height="${frameHeight}" fill="#e91e4d" stroke="#ffffff" stroke-width="8"/><rect x="${frameX + 14}" y="${frameY + 14}" width="${frameWidth - 28}" height="${frameHeight - 28}" fill="none" stroke="#ffffff" stroke-opacity="0.42" stroke-width="3"/><text x="${frameX + 46}" y="${frameY + 108}" text-anchor="start" font-family="Arial, sans-serif" font-size="76" font-weight="900" fill="white">${titleSpans}</text></svg>`)
   try {
     const result = await sharp(bytes)
       // Match the Reel canvas. `cover` preserves the source aspect ratio and
@@ -193,6 +218,7 @@ async function episodeThumbnail(bytes: Buffer, episode: number): Promise<Buffer>
 
 export class StoryMediaService {
   private readonly storage = new ProjectStorageService()
+  private readonly activeReelProjects = new Set<string>()
   constructor(
     private readonly voices = new VoiceService(),
     private readonly thumbnails = new ThumbnailService(),
@@ -309,7 +335,9 @@ export class StoryMediaService {
       thumbnailPath: thumbnail?.path ?? null,
       thumbnailUrl: mediaUrl(thumbnail?.path, thumbnail?.createdAt),
       thumbnailPrompt: typeof thumbnailMeta.prompt === 'string' ? thumbnailMeta.prompt : null,
-      thumbnailProvider: thumbnailMeta.provider === 'openai' || thumbnailMeta.provider === 'gemini' ? thumbnailMeta.provider : null,
+      thumbnailProvider: typeof thumbnailMeta.provider === 'string' ? thumbnailMeta.provider : null,
+      thumbnailSourceVideoPath: typeof thumbnailMeta.videoPath === 'string' ? thumbnailMeta.videoPath : null,
+      thumbnailSourceTimeSeconds: typeof thumbnailMeta.timeSeconds === 'number' ? thumbnailMeta.timeSeconds : null,
       audioPath: audio?.path ?? null,
       audioUrl: mediaUrl(audio?.path, audio?.createdAt),
       audioDuration: typeof audioMeta.duration === 'number' ? audioMeta.duration : null,
@@ -498,14 +526,68 @@ export class StoryMediaService {
   }
 
   async generateReelVideos(projectId: string, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO> {
+    if (this.activeReelProjects.has(projectId)) {
+      throw new Error('Dự án này đang tạo Reel videos. Vui lòng chờ tiến trình hiện tại hoàn tất hoặc hủy trong Render Queue.')
+    }
+    this.activeReelProjects.add(projectId)
+    try {
+      return await this.generateReelVideosInternal(projectId, fitMode, soundEffectInput, includeSubtitles, onProgress)
+    } finally {
+      this.activeReelProjects.delete(projectId)
+    }
+  }
+
+  async regenerateReelThumbnails(projectId: string): Promise<StoryMediaDTO> {
+    const prisma = getPrisma()
+    const [project, story, reels, renders] = await Promise.all([
+      prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
+      prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: [{ approved: 'desc' }, { version: 'desc' }] }),
+      prisma.script.findMany({ where: { projectId, type: 'REEL' }, orderBy: { version: 'asc' } }),
+      prisma.render.findMany({ where: { projectId, type: 'REEL_VIDEO', status: 'DONE', path: { not: null } } })
+    ])
+    if (!reels.length) throw new Error('Chưa có Reel scripts để tạo thumbnail.')
+    const storyTitle = story?.title?.trim() || project.name
+    let generated = 0
+    for (const [index, reel] of reels.entries()) {
+      const render = renders.find(row => row.preset === reel.id)
+      if (!render?.path) continue
+      const videoFile = await stat(render.path).catch(() => null)
+      if (!videoFile?.isFile() || videoFile.size === 0) continue
+      const episode = index + 1
+      const slug = `reel-${String(episode).padStart(2, '0')}`
+      const tempFrame = join(tmpdir(), `reel-thumb-frame-${randomUUID()}.png`)
+      try {
+        await extractVideoFrame(render.path, tempFrame, 0.5)
+        const frameBytes = await readFile(tempFrame)
+        const thumbPath = await this.storage.writeOutputBuffer(projectId, `images/${slug}-thumbnail.png`, await episodeThumbnail(frameBytes, episode, storyTitle))
+        const oldThumbs = await prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' } })
+        const oldIds = oldThumbs.filter(row => parseMeta(row.metadata).reelId === reel.id).map(row => row.id)
+        if (oldIds.length) await prisma.asset.deleteMany({ where: { id: { in: oldIds } } })
+        await prisma.asset.create({ data: {
+          projectId,
+          type: 'REEL_THUMBNAIL',
+          path: thumbPath,
+          metadata: JSON.stringify({ reelId: reel.id, episode, storyTitle, thumbnailSourceKey: `video:${render.id}:${render.updatedAt.toISOString()}`, sourceVideoPath: render.path, sourceTimeSeconds: 0.5, thumbnailVersion: REEL_THUMBNAIL_VERSION, width: 1080, height: 1920, fit: 'cover' })
+        } })
+        generated++
+      } finally {
+        await unlink(tempFrame).catch(() => undefined)
+      }
+    }
+    if (!generated) throw new Error('Không tìm thấy Reel video đã hoàn tất để trích thumbnail.')
+    return this.get(projectId)
+  }
+
+  private async generateReelVideosInternal(projectId: string, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
     const soundEffectKey = JSON.stringify(soundEffect)
-    const [project, reels, background, baseThumbnail] = await Promise.all([
+    const [project, reels, background, baseThumbnail, story] = await Promise.all([
       prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
       prisma.script.findMany({ where: { projectId, type: 'REEL' }, orderBy: { version: 'asc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'BACKGROUND_VIDEO' }, orderBy: { createdAt: 'desc' } }),
-      prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } })
+      prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
+      prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: [{ approved: 'desc' }, { version: 'desc' }] })
     ])
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
@@ -526,9 +608,9 @@ export class StoryMediaService {
     if (!reels.length) throw new Error('Chưa có Reel scripts để tạo video.')
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi tạo Reel videos.')
     if (!background) throw new Error('Hãy chọn video hoặc ảnh background trước.')
-    if (!baseThumbnail) throw new Error('Hãy Generate Thumbnail Truyện trước để tạo thumbnail từng tập.')
     const backgroundKind: BackgroundKind = parseMeta(background.metadata).kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
-    if (!resuming) await prisma.render.deleteMany({ where: { projectId, type: 'REEL_VIDEO' } })
+    // Do not discard completed render records on every button press. Each reel
+    // below already decides whether its DONE render can be reused.
     const totalUnits = reels.length * 4
     let completedUnits = 0
     const report = (current: number, stage: ReelVideoProgress['stage'], message: string, forcePercent?: number) => {
@@ -537,18 +619,58 @@ export class StoryMediaService {
       void prisma.job.update({ where: { id: job.id }, data: { progress, payload: JSON.stringify({ projectId, fitMode, voiceId: project.voiceId, soundEffect, sfxRenderVersion: SFX_RENDER_VERSION, includeSubtitles, subtitleRenderVersion: SUBTITLE_RENDER_VERSION, current, stage, message }) } })
     }
     report(0, 'STARTING', `Đang chuẩn bị ${reels.length} tập...`, 0)
-    // Pre-generate CTA once; reuse the same file for every reel
-    const ctaPath = await this.makeCta(project.voiceId, projectId, !resuming)
-    const publishedBaseThumbnail = await this.storage.copyToOutput(projectId, 'images/thumbnail.png', baseThumbnail.path)
-    if (publishedBaseThumbnail !== baseThumbnail.path) {
-      await prisma.asset.update({ where: { id: baseThumbnail.id }, data: { path: publishedBaseThumbnail } })
+    // CTA is loaded lazily only when at least one reel is actually missing its
+    // audio. A completed project must not contact the TTS provider again.
+    let ctaPath: string | undefined
+    let thumbnailBytes!: Buffer
+    let baseThumbnailAvailable = false
+    if (baseThumbnail) {
+      try {
+        const publishedBaseThumbnail = await this.storage.copyToOutput(projectId, 'images/thumbnail.png', baseThumbnail.path)
+        if (publishedBaseThumbnail !== baseThumbnail.path) {
+          await prisma.asset.update({ where: { id: baseThumbnail.id }, data: { path: publishedBaseThumbnail } })
+        }
+        thumbnailBytes = await readFile(publishedBaseThumbnail)
+        baseThumbnailAvailable = true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        console.warn(`[story-media] Thumbnail asset bị mất tại ${baseThumbnail.path}; tự lấy từ background.`)
+      }
     }
-    const thumbnailBytes = await readFile(publishedBaseThumbnail)
+    if (!baseThumbnailAvailable) {
+      let sourceBytes: Buffer
+      if (backgroundKind === 'IMAGE') {
+        sourceBytes = await readFile(background.path)
+      } else {
+        const tempFrame = join(tmpdir(), `reel-thumbnail-source-${randomUUID()}.png`)
+        try {
+          await extractVideoFrame(background.path, tempFrame, 0)
+          sourceBytes = await readFile(tempFrame)
+        } finally {
+          await unlink(tempFrame).catch(() => undefined)
+        }
+      }
+      thumbnailBytes = await sharp(sourceBytes).png().toBuffer()
+      const recoveredPath = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
+      await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
+      await prisma.asset.create({ data: {
+        projectId,
+        type: 'THUMBNAIL',
+        path: recoveredPath,
+        metadata: JSON.stringify({ provider: 'background', model: 'auto-recovery', sourcePath: background.path, mimeType: 'image/png' })
+      } })
+      report(0, 'THUMBNAIL', 'Thumbnail gốc bị thiếu; đã tự khôi phục từ background.', 1)
+    }
     await prisma.project.update({ where: { id: projectId }, data: { status: 'RENDERING' } })
     try {
       for (const [index, reel] of reels.entries()) {
         const episode = index + 1
         const slug = `reel-${String(episode).padStart(2, '0')}`
+        const storyTitle = story?.title?.trim() || project.name
+        const thumbnailSourceKey = baseThumbnail
+          ? `${baseThumbnail.id}:${baseThumbnail.createdAt.toISOString()}`
+          : `${background.id}:${background.createdAt.toISOString()}`
+        const expectedAudioPath = await this.storage.getOutputPath(projectId, 'audio', 'reels', `${slug}.mp3`)
         const existingAudio = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' } }).then(rows => rows.find(row => {
           const meta = parseMeta(row.metadata)
           return meta.reelId === reel.id && meta.voiceId === project.voiceId
@@ -558,7 +680,19 @@ export class StoryMediaService {
           audioPath = await this.storage.copyToOutput(projectId, `audio/reels/${slug}.mp3`, existingAudio.path)
           if (audioPath !== existingAudio.path) await prisma.asset.update({ where: { id: existingAudio.id }, data: { path: audioPath } })
         }
+        // Older runs could leave valid output files behind after their database
+        // records were removed. Recover a file only when it is newer than the
+        // current reel script, so regenerated scripts still trigger fresh TTS.
         if (!audioPath) {
+          const recovered = await stat(expectedAudioPath).catch(() => null)
+          if (recovered?.isFile() && recovered.size > 0 && recovered.mtime >= reel.createdAt) {
+            const duration = await probeDuration(expectedAudioPath)
+            audioPath = expectedAudioPath
+            await prisma.asset.create({ data: { projectId, type: 'REEL_AUDIO', path: audioPath, metadata: JSON.stringify({ reelId: reel.id, episode, duration, voiceId: project.voiceId, recoveredFromOutput: true }) } })
+          }
+        }
+        if (!audioPath) {
+          ctaPath ??= await this.makeCta(project.voiceId, projectId)
           const reelChunks = chunks(reel.content, this.voices.getMaxTextLength())
           if (!reelChunks.length) throw new Error(`Reel ${episode} đang trống.`)
           const partPaths: string[] = []
@@ -568,7 +702,7 @@ export class StoryMediaService {
             partPaths.push(await this.storage.writeBuffer(projectId, `audio/reels/.parts/${slug}-${String(chunkIndex + 1).padStart(2, '0')}.mp3`, audioBytes))
           }
           partPaths.push(ctaPath)
-          audioPath = await this.storage.getOutputPath(projectId, 'audio', 'reels', `${slug}.mp3`)
+          audioPath = expectedAudioPath
           await concatMp3Parts(partPaths, audioPath, this.storage.getProjectPath(projectId, 'audio', 'reels', '.parts', `${slug}-concat.txt`))
           const duration = await probeDuration(audioPath)
           await prisma.asset.create({ data: { projectId, type: 'REEL_AUDIO', path: audioPath, metadata: JSON.stringify({ reelId: reel.id, episode, duration, voiceId: project.voiceId }) } })
@@ -578,7 +712,12 @@ export class StoryMediaService {
         const existingThumbs = await prisma.asset.findMany({ where: { projectId, type: 'REEL_THUMBNAIL' } })
         const existingThumb = existingThumbs.find(row => {
           const metadata = parseMeta(row.metadata)
-          return metadata.reelId === reel.id && metadata.thumbnailVersion === REEL_THUMBNAIL_VERSION && metadata.width === 1080 && metadata.height === 1920
+          return metadata.reelId === reel.id &&
+            metadata.thumbnailVersion === REEL_THUMBNAIL_VERSION &&
+            metadata.width === 1080 &&
+            metadata.height === 1920 &&
+            metadata.storyTitle === storyTitle &&
+            metadata.thumbnailSourceKey === thumbnailSourceKey
         })
         if (existingThumb) {
           const thumbPath = await this.storage.copyToOutput(projectId, `images/${slug}-thumbnail.png`, existingThumb.path)
@@ -588,14 +727,23 @@ export class StoryMediaService {
             .filter(row => parseMeta(row.metadata).reelId === reel.id)
             .map(row => row.id)
           if (staleThumbIds.length) await prisma.asset.deleteMany({ where: { id: { in: staleThumbIds } } })
-          const thumbPath = await this.storage.writeOutputBuffer(projectId, `images/${slug}-thumbnail.png`, await episodeThumbnail(thumbnailBytes, episode))
-          await prisma.asset.create({ data: { projectId, type: 'REEL_THUMBNAIL', path: thumbPath, metadata: JSON.stringify({ reelId: reel.id, episode, thumbnailVersion: REEL_THUMBNAIL_VERSION, width: 1080, height: 1920, fit: 'cover' }) } })
+          const thumbPath = await this.storage.writeOutputBuffer(projectId, `images/${slug}-thumbnail.png`, await episodeThumbnail(thumbnailBytes, episode, storyTitle))
+          await prisma.asset.create({ data: { projectId, type: 'REEL_THUMBNAIL', path: thumbPath, metadata: JSON.stringify({ reelId: reel.id, episode, storyTitle, thumbnailSourceKey, thumbnailVersion: REEL_THUMBNAIL_VERSION, width: 1080, height: 1920, fit: 'cover' }) } })
         }
         completedUnits++
         const resolvedSfx = resolveSoundEffectPreset(soundEffect.preset, episode)
         report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: trộn ${resolvedSfx.toLowerCase()} SFX ${soundEffect.volume}%${includeSubtitles ? ' + phụ đề' : ''} + render video...`)
         const videoPath = await this.storage.getOutputPath(projectId, 'videos', `${slug}.mp4`)
-        const existingRender = await prisma.render.findFirst({ where: { projectId, type: 'REEL_VIDEO', preset: reel.id, status: 'DONE' } })
+        let existingRender = await prisma.render.findFirst({ where: { projectId, type: 'REEL_VIDEO', preset: reel.id, status: 'DONE' } })
+        if (!existingRender) {
+          const [videoFile, audioFile] = await Promise.all([
+            stat(videoPath).catch(() => null),
+            stat(audioPath).catch(() => null)
+          ])
+          if (videoFile?.isFile() && videoFile.size > 0 && audioFile && videoFile.mtime >= audioFile.mtime && videoFile.mtime >= reel.createdAt) {
+            existingRender = await prisma.render.create({ data: { projectId, type: 'REEL_VIDEO', path: videoPath, status: 'DONE', preset: reel.id } })
+          }
+        }
         if (existingRender?.path) {
           const publishedVideo = await this.storage.copyToOutput(projectId, `videos/${slug}.mp4`, existingRender.path)
           if (publishedVideo !== existingRender.path) await prisma.render.update({ where: { id: existingRender.id }, data: { path: publishedVideo } })
@@ -676,7 +824,13 @@ export class StoryMediaService {
     try {
       await extractVideoFrame(videoPath, tempPath, timeSeconds)
       const frameBytes = await readFile(tempPath)
-      const thumbnailBytes = normalizeThumbnail(frameBytes)
+      // A frame extracted from a video already has the video's native aspect
+      // ratio. Keep it intact instead of routing it through the 16:9
+      // normalizer used for AI-generated landscape thumbnails.
+      const frame = sharp(frameBytes)
+      const frameMetadata = await frame.metadata()
+      if (!frameMetadata.width || !frameMetadata.height) throw new Error('Không đọc được kích thước frame trích xuất từ video.')
+      const thumbnailBytes = await frame.png().toBuffer()
       const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
       await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
       await prisma.asset.create({
@@ -690,8 +844,10 @@ export class StoryMediaService {
             videoPath,
             timeSeconds,
             mimeType: 'image/png',
-            width: 1280,
-            height: 720
+            width: frameMetadata.width,
+            height: frameMetadata.height,
+            sourceAspectRatio: frameMetadata.width / frameMetadata.height,
+            preserveSourceRatio: true
           })
         }
       })
@@ -781,7 +937,7 @@ export class StoryMediaService {
     return this.get(projectId)
   }
 
-  async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: StoryVideoProgress) => void): Promise<StoryMediaDTO> {
+  async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: StoryVideoProgress) => void, signal?: AbortSignal): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
     const [audio, background, thumbnail] = await Promise.all([
@@ -825,6 +981,7 @@ export class StoryMediaService {
     let currentRenderId: string | null = null
     try {
       for (const [index, segment] of segments.entries()) {
+        if (signal?.aborted) throw new Error('Render đã bị hủy.')
         const output = format === 'REEL'
           ? await this.storage.getOutputPath(projectId, 'videos', `story-reel-short-${String(segment.part).padStart(digits, '0')}-of-${String(segment.totalParts).padStart(digits, '0')}.mp4`)
           : await this.storage.getOutputPath(projectId, 'videos', `story-${format.toLowerCase()}.mp4`)
@@ -854,6 +1011,7 @@ export class StoryMediaService {
           audioStartSeconds: segment.startMs / 1000,
           audioDurationSeconds: segment.durationMs / 1000,
           subtitlePath,
+          signal,
           onProgress: partPercent => report(segment.part, ((index + partPercent / 100) / segments.length) * 92, 'VIDEO', `${label}: ${partPercent}% · ${Math.round(segment.durationMs / 1000)} giây + SFX${includeSubtitles ? ' + phụ đề' : ''}`)
         })
         const renderedDuration = await probeDuration(output)

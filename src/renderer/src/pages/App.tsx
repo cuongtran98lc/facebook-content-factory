@@ -139,6 +139,9 @@ export default function App() {
     () => projects.find(project => project.id === selectedId) ?? projects[0],
     [projects, selectedId],
   );
+  useEffect(() => {
+    setThumbnailPrompt(storyMedia?.thumbnailPrompt ?? '');
+  }, [selected?.id, storyMedia?.thumbnailPrompt]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const stories = useMemo(
@@ -698,9 +701,7 @@ export default function App() {
     if (!health?.ffmpeg) return setMessage('FFmpeg/ffprobe chưa sẵn sàng. Hãy khởi động lại app sau khi cài FFmpeg.');
     if (!selected.voiceId) return setMessage('Hãy Test voice rồi bấm Use this voice trước khi tạo Reel Videos.');
     if (!count) return setMessage('Hãy Generate Reel scripts trước.');
-    if (!storyMedia?.thumbnailPath)
-      return setMessage('Hãy Generate Thumbnail Truyện trước; app sẽ thêm số TẬP cho từng Reel.');
-    if (!storyMedia.backgroundPath) return setMessage('Hãy chọn Video hoặc Ảnh background trước.');
+    if (!storyMedia?.backgroundPath) return setMessage('Hãy chọn Video hoặc Ảnh background trước.');
     setReelProgress({
       current: 0,
       total: count,
@@ -733,6 +734,25 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setReelGenerating(false);
+      setBusy(false);
+    }
+  }
+
+  async function regenerateReelThumbnails() {
+    if (!selected) return;
+    if (typeof window.contentFactory.storyMedia.regenerateReelThumbnails !== 'function') {
+      setMessage('Preload Electron đang là bản cũ. Hãy thoát hoàn toàn ứng dụng và chạy lại npm start để dùng Generate lại Thumbnail Reel.');
+      return;
+    }
+    setBusy(true);
+    setMessage('Đang trích frame và tạo lại thumbnail cho từng Reel...');
+    try {
+      const media = await window.contentFactory.storyMedia.regenerateReelThumbnails(selected.id);
+      setStoryMedia(media);
+      setMessage(`✓ Đã tạo lại ${media.reels.filter(reel => reel.thumbnailPath).length} thumbnail từ video Reel.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
       setBusy(false);
     }
   }
@@ -1564,6 +1584,7 @@ export default function App() {
                         reelProgress={reelProgress}
                         onGenerateAudio={() => void generateStoryMp3()}
                         onGenerateReelVideos={() => void generateReelVideos()}
+                        onRegenerateReelThumbnails={() => void regenerateReelThumbnails()}
                         onGenerateMetadata={() => void generateVideoMetadata()}
                         onChooseBackground={kind => void chooseBackground(kind)}
                         onRender={() => void renderStoryVideo()}

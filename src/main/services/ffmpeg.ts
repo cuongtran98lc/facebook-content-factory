@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { rename, stat, unlink, writeFile } from 'node:fs/promises'
 import type { SoundEffectOptions, SoundEffectPreset } from '../../shared/types'
 
 function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string {
@@ -9,10 +9,13 @@ function resolveBinary(name: 'ffmpeg' | 'ffprobe'): string {
     ? process.env.FFMPEG_PATH.replace(/ffmpeg$/, 'ffprobe')
     : undefined
   const candidates = [
-    configured,
-    configuredFfmpegSibling,
+    // Prefer the libass-enabled Homebrew build when it exists. Some launch
+    // environments retain an old FFMPEG_PATH=/opt/homebrew/bin/ffmpeg; that
+    // standard build can render video but cannot burn ASS subtitles.
     `/opt/homebrew/opt/ffmpeg-full/bin/${name}`,
     `/usr/local/opt/ffmpeg-full/bin/${name}`,
+    configured,
+    configuredFfmpegSibling,
     `/opt/homebrew/bin/${name}`,
     `/usr/local/bin/${name}`
   ].filter(Boolean) as string[]
@@ -34,12 +37,27 @@ function hasFilter(name: string): Promise<boolean> {
   })
 }
 
-function run(command: 'ffmpeg' | 'ffprobe', args: string[], onProgressSeconds?: (seconds: number) => void): Promise<void> {
+function run(command: 'ffmpeg' | 'ffprobe', args: string[], onProgressSeconds?: (seconds: number) => void, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Render đã bị hủy.'))
     const binary = resolveBinary(command)
     const child = spawn(binary, args, { stdio: ['ignore', onProgressSeconds ? 'pipe' : 'ignore', 'pipe'] })
     let errorText = ''
     let progressText = ''
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', abort)
+      error ? reject(error) : resolve()
+    }
+    const abort = () => {
+      child.kill('SIGTERM')
+      const forceTimer = setTimeout(() => child.kill('SIGKILL'), 2_000)
+      forceTimer.unref()
+      finish(new Error('Render đã bị hủy.'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
     child.stdout?.on('data', chunk => {
       progressText += chunk.toString()
       const lines = progressText.split(/\r?\n/)
@@ -50,8 +68,8 @@ function run(command: 'ffmpeg' | 'ffprobe', args: string[], onProgressSeconds?: 
       }
     })
     child.stderr?.on('data', chunk => { errorText += chunk.toString() })
-    child.once('error', reject)
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${binary} failed (${code}): ${errorText.slice(-2500)}`)))
+    child.once('error', error => finish(error))
+    child.once('exit', code => code === 0 ? finish() : finish(new Error(`${binary} failed (${code}): ${errorText.slice(-2500)}`)))
   })
 }
 
@@ -86,20 +104,37 @@ export async function concatMp3Parts(parts: string[], output: string, listFile: 
   const escaped = parts.map(path => `file '${path.replace(/'/g, "'\\''")}'`).join('\n')
   await writeFile(listFile, escaped, 'utf8')
 
-  // Re-encode once after concat. CapCut can return MP3 chunks with slightly different
-  // timestamps/headers, and stream-copying them may create incorrect duration or seeking.
-  await run('ffmpeg', [
-    '-y',
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', listFile,
-    '-vn',
-    '-c:a', 'libmp3lame',
-    '-b:a', '192k',
-    '-ar', '44100',
-    '-ac', '2',
-    output
-  ])
+  // Write beside the destination and publish only after FFmpeg has completely
+  // closed a non-empty file. This prevents ffprobe (or another resume attempt)
+  // from observing a missing/half-written reel audio file.
+  const temporaryOutput = `${output}.partial-${process.pid}-${Date.now()}.mp3`
+  try {
+    // Re-encode once after concat. CapCut can return MP3 chunks with slightly different
+    // timestamps/headers, and stream-copying them may create incorrect duration or seeking.
+    await run('ffmpeg', [
+      '-y',
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', listFile,
+      '-vn',
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-ar', '44100',
+      '-ac', '2',
+      temporaryOutput
+    ])
+    const result = await stat(temporaryOutput).catch(() => null)
+    if (!result?.isFile() || result.size === 0) {
+      throw new Error(`FFmpeg kết thúc nhưng không tạo được file audio: ${output}`)
+    }
+    await rename(temporaryOutput, output)
+    const published = await stat(output).catch(() => null)
+    if (!published?.isFile() || published.size === 0) {
+      throw new Error(`Không thể xuất bản file audio sau khi ghép: ${output}`)
+    }
+  } finally {
+    await unlink(temporaryOutput).catch(() => undefined)
+  }
 }
 
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE'
@@ -166,6 +201,7 @@ export async function renderLoopedVideo(input: {
   audioStartSeconds?: number
   audioDurationSeconds?: number
   subtitlePath?: string
+  signal?: AbortSignal
   onProgress?: (percent: number) => void
 }): Promise<void> {
   if (input.subtitlePath && !await hasFilter('ass')) {
@@ -245,7 +281,7 @@ export async function renderLoopedVideo(input: {
     '-shortest',
     '-movflags', '+faststart',
     input.outputPath
-  ], seconds => input.onProgress?.(Math.min(99, Math.max(0, Math.round((seconds / audioDuration) * 100)))))
+  ], seconds => input.onProgress?.(Math.min(99, Math.max(0, Math.round((seconds / audioDuration) * 100)))), input.signal)
   input.onProgress?.(100)
 }
 
