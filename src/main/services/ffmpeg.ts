@@ -199,6 +199,8 @@ export async function renderLoopedVideo(input: {
   soundEffectSeed?: number
   soundEffect?: SoundEffectOptions
   audioStartSeconds?: number
+  backgroundStartSeconds?: number
+  frameRate?: 30 | 60
   audioDurationSeconds?: number
   subtitlePath?: string
   signal?: AbortSignal
@@ -222,8 +224,8 @@ export async function renderLoopedVideo(input: {
   const audioDuration = Math.min(Math.max(0.001, input.audioDurationSeconds ?? availableDuration), availableDuration)
 
   const filter = input.fitMode === 'FIT'
-    ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=30`
-    : `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=30`
+    ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=${input.frameRate === 60 ? 60 : 30}`
+    : `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=${input.frameRate === 60 ? 60 : 30}`
 
   const seed = Math.abs(Math.trunc(input.soundEffectSeed ?? 0))
   const soundEffect = normalizeSoundEffectOptions(input.soundEffect)
@@ -243,7 +245,7 @@ export async function renderLoopedVideo(input: {
 
   const backgroundInput = input.backgroundKind === 'IMAGE'
     ? ['-loop', '1', '-framerate', '30', '-i', input.backgroundPath]
-    : ['-stream_loop', '-1', '-i', input.backgroundPath]
+    : ['-stream_loop', '-1', ...(input.backgroundStartSeconds ? ['-ss', input.backgroundStartSeconds.toFixed(3)] : []), '-i', input.backgroundPath]
   const audioInput = [
     ...(audioStart > 0 ? ['-ss', audioStart.toFixed(3)] : []),
     '-t', audioDuration.toFixed(3),
@@ -294,4 +296,20 @@ export async function extractVideoFrame(videoPath: string, outputPath: string, t
     '-f', 'image2',
     outputPath
   ])
+}
+
+export async function renderAnimationCycle(pattern: string, output: string, duration: number): Promise<void> {
+  await run('ffmpeg', ['-y', '-loop', '1', '-framerate', '60', '-i', pattern,
+    '-t', duration.toFixed(6), '-an', '-c:v', 'libx264', '-preset', 'veryfast',
+    '-crf', '20', '-pix_fmt', 'yuv420p', output])
+}
+
+export async function concatAnimationScenes(listFile: string, output: string): Promise<void> {
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+    '-c', 'copy', '-movflags', '+faststart', output])
+}
+
+export async function addAnimationNarration(video: string, audio: string, output: string): Promise<void> {
+  await run('ffmpeg', ['-y', '-i', video, '-i', audio, '-map', '0:v:0', '-map', '1:a:0',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', output])
 }

@@ -183,3 +183,33 @@ Khi bật CapCut provider, UI hiện tại vẫn dùng cùng flow `Load voices �
 - Tự tạo và đốt phụ đề tiếng Việt từ đúng Story/Reel script; file nguồn `.ass` được lưu trong thư mục `subtitles` của output.
 - Tự tạo title/description tương ứng cho video dài và từng video ngắn; có nút copy và sidecar `*.metadata.txt`.
 - MP3, thumbnail, phụ đề và video cuối nằm trong `output/<tên-truyện>--<id>/{audio,images,subtitles,videos}`; bấm **Mở output truyện** trên thanh trên cùng để mở trực tiếp.
+
+### Hoạt hình người que theo truyện
+
+Sau khi generate và chọn idea, tạo Full Story rồi làm trong phần media:
+
+1. **Generate Story MP3** từ bản truyện hiện tại.
+2. Chọn **Output** (16:9, 9:16 hoặc 1:1), rồi bấm **Tạo hoạt hình người que** ở bước 2. Chọn nguồn chia cảnh: **Codex CLI trên máy** (mặc định) hoặc **AI API trong Settings**. Sharp và FFmpeg dựng hoạt hình trên máy.
+3. Xem trước video nền, chọn SFX/phụ đề rồi bấm **Generate Story Video** để xuất MP4 có lời đọc. Output 9:16 tự chia Short nối tiếp đúng vị trí trong hoạt hình.
+
+Bản đầu dùng các bối cảnh và động tác 2D có sẵn (đi, chạy, nói, khóc, vui, giận, ngồi, vẫy tay). Nhân vật được phân biệt bằng tên và màu xuyên suốt các cảnh. Thời điểm chuyển cảnh ước lượng theo số từ và tổng thời lượng MP3, chưa căn từng câu bằng nhận dạng giọng nói. Storyboard JSON được lưu cạnh video hoạt hình trong thư mục `background` của output dự án.
+
+Khi sửa truyện, tạo lại MP3 và hoạt hình; khi đổi Output, tạo lại hoạt hình theo tỉ lệ mới. MP3 tạo từ phiên bản cũ cần generate lại một lần để lưu thông tin đối chiếu nội dung. Hoạt hình Full Story dùng cho **Render Story**, bao gồm Short 9:16; không dùng làm nền cho các Reel scripts đã viết lại riêng.
+
+Kiểm tra tính năng: `node tools/test-stick-animation.cjs`; thêm `--render` để chạy kiểm tra MP4 thực bằng FFmpeg/ffprobe, gồm ghép âm thanh và cắt đúng cảnh.
+
+#### Dùng Codex CLI khi Gemini quá tải
+
+Ở bước 2, chọn **Nguồn chia cảnh → Codex CLI trên máy**, rồi **Tạo hoạt hình người que**. CLI dùng phiên đăng nhập riêng; nếu chưa đăng nhập, chạy `codex login` trong Terminal. CLI vẫn cần kết nối dịch vụ AI. Tùy chọn này áp dụng cho storyboard người que, các bước AI khác vẫn dùng provider trong Settings.
+
+App tìm `codex` trong `~/.local/bin`, Homebrew hoặc PATH; có thể đặt `CODEX_CLI_PATH` thành đường dẫn executable nếu cài ở vị trí khác. Cần bản CLI hỗ trợ `exec --ignore-user-config --ephemeral`. App dùng cấu hình mặc định CLI và phiên đăng nhập hiện có, không nạp cấu hình cá nhân; gửi truyện qua stdin trong thư mục tạm, chạy sandbox read-only và đọc câu trả lời cuối qua file. Mỗi lần gọi giới hạn 5 phút. Tham khảo [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive/).
+
+Kiểm tra adapter không gọi AI thật: `node tools/test-codex-cli.cjs` (stdin, dọn file tạm, lỗi CLI, timeout, kết quả rỗng).
+
+Hoạt hình hiện dùng phong cách doodle nền trắng, đầu tròn lớn, nét đen và điểm nhấn màu. Khung hình chuyển động được dựng ở 60 fps; Render Story cũng giữ 60 fps. Bản xem trước tạo mới được ghép sẵn lời đọc và không bật mute mặc định. Video đã tạo trước cập nhật cần bấm **Tạo hoạt hình người que** lại để có hình mới và tiếng; bản xuất cuối cần render lại. Phần chuyển động hiện dùng chu kỳ động tác 2 giây trong từng cảnh.
+
+Storyboard chi tiết: mỗi cảnh có thể chọn tóc (ngắn/dài/búi), độ tuổi, trang phục, biểu cảm độc lập với động tác, vị trí và hướng nhìn. Tóc và độ tuổi của nhân vật cùng tên được giữ nhất quán; trang phục và đạo cụ thay đổi theo đoạn truyện. Các động tác đọc, dùng điện thoại, mang đồ và chỉ tay đã được bổ sung. Đạo cụ cầm tay gồm sách, điện thoại, túi, thư, cốc và hoa; bối cảnh có thể thêm bàn, ghế, giường, cửa, cây và kệ sách. App chia đoạn ngắn hơn (mục tiêu 140 ký tự, điều chỉnh theo độ dài truyện, khoảng tối đa 100 đoạn) để tạo nhiều cảnh hơn. Đây vẫn là bộ dựng theo mẫu; chi tiết ngoài danh sách chưa được vẽ tự do. Tạo lại hoạt hình để áp dụng storyboard mới.
+
+Generate Ideas dùng 10 pillar theo tài liệu Stickman do người dùng cung cấp, gồm cả What if, trường học và developer life. Tạo ít nhất 10 idea để đủ nhóm. Xem [bản tổng hợp và cách áp dụng](docs/stickman-content-engine.md).
+
+Bộ nhân vật cố định trong storyboard mới: MAIN hoodie xanh dương, GIRLFRIEND hoodie hồng, BEST_FRIEND hoodie vàng; đầu trắng, body đen, mắt đơn giản. Vai trò được giữ theo tên qua các cảnh và màu áo được áp dụng ở renderer. Nhân vật phụ vẫn dùng chi tiết tóc/trang phục riêng. Generate lại idea và hoạt hình để áp dụng.

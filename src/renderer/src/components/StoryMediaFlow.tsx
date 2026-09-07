@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
-import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+import type { AIProviderName, BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+
+export type StickSource = 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI'
 
 type Props = {
   busy: boolean
@@ -11,6 +13,11 @@ type Props = {
   soundEffect: SoundEffectOptions
   includeSubtitles: boolean
   reelProgress: ReelVideoProgress | null
+  sceneImages?: StickmanSceneImageDTO[]
+  aiProvider?: AIProviderName
+  onGenerateStickVideo(source: StickSource): void
+  onGenerateStickmanSceneImages?(source: StickSource): void
+  onGenerateVideoThumbnail(): void
   onGenerateAudio(): void
   onGenerateReelVideos(): void
   onRegenerateReelThumbnails(): void
@@ -100,6 +107,7 @@ function StoryVideoResult({ output }: { output: StoryVideoOutputDTO }) {
 }
 
 export function StoryMediaFlow(props: Props) {
+  const [stickSource, setStickSource] = useState<StickSource>('CLAUDE_CLI')
   const audioDone = Boolean(props.media?.audioPath)
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
@@ -120,7 +128,7 @@ export function StoryMediaFlow(props: Props) {
   const reelRequirements = [
     { label: 'FFmpeg', ready: props.ffmpegReady },
     { label: 'Voice', ready: props.hasVoice },
-    { label: 'Background', ready: Boolean(props.media?.backgroundPath) },
+    { label: 'Nền cho Reel scripts riêng (không dùng hoạt hình Full Story)', ready: Boolean(props.media?.backgroundPath) && props.media?.backgroundStyle !== 'STICK_FIGURE' },
     { label: props.media?.thumbnailPath ? 'Thumbnail truyện' : 'Thumbnail tự lấy từ background', ready: Boolean(props.media?.thumbnailPath || props.media?.backgroundPath) },
     { label: `${props.media?.reels.length ?? 0} Reel scripts`, ready: Boolean(props.media?.reels.length) }
   ]
@@ -137,7 +145,7 @@ export function StoryMediaFlow(props: Props) {
 
   return <div className="story-media-box">
     <div className="media-flow-title">
-      <div><strong>Full Story MP3 + Loop Video</strong><span>Story → MP3 → video nền → tự trộn dynamic sound effect → video hoàn chỉnh.</span></div>
+      <div><strong>Video truyện · Người que / nền tùy chọn</strong><span>Idea → Story → MP3 → hoạt hình người que hoặc nền tùy chọn → video hoàn chỉnh.</span></div>
       <div className="media-flow-progress">
         <span className={audioDone ? 'done' : 'active'}>1</span>
         <i />
@@ -158,10 +166,54 @@ export function StoryMediaFlow(props: Props) {
     {props.media?.audioUrl && <div className="media-preview compact"><audio className="voice-player" src={props.media.audioUrl} controls /><span>Duration: {formatDuration(props.media.audioDuration)}</span></div>}
 
     <div className="media-step">
-      <div><b>2</b><div><strong>Background video / ảnh</strong><span>{videoHint}</span></div></div>
-      <div className="background-actions"><button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button><button className="secondary" onClick={()=>props.onChooseBackground('IMAGE')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'IMAGE' ? 'Đổi Ảnh' : 'Chọn Ảnh'}</button></div>
+      <div><b>2</b><div><strong>Hoạt hình người que / Background</strong><span>{videoHint}</span></div></div>
+      <div className="background-actions">
+        <label className="stick-source-label">
+          NGUỒN CHIA CẢNH
+          <select value={stickSource} disabled={props.busy} onChange={event => setStickSource(event.target.value as StickSource)}>
+            <option value="CLAUDE_CLI">Claude Code (CLI local)</option>
+            <option value="ANTIGRAVITY_CLI">Antigravity (Agent CLI)</option>
+            <option value="CODEX_CLI">Codex (CLI local)</option>
+            <option value="API">Gemini API Key (Settings)</option>
+          </select>
+        </label>
+        <button className="secondary" onClick={() => props.onGenerateStickVideo(stickSource)} disabled={props.busy || !audioDone || !props.ffmpegReady}>Tạo hoạt hình người que</button>
+        {props.onGenerateStickmanSceneImages && (
+          <button className="secondary" onClick={() => props.onGenerateStickmanSceneImages?.(stickSource)} disabled={props.busy}>
+            🖼️ Tạo bộ ảnh phân đoạn
+          </button>
+        )}
+        <button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button>
+        <button className="secondary" onClick={()=>props.onChooseBackground('IMAGE')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'IMAGE' ? 'Đổi Ảnh' : 'Chọn Ảnh'}</button>
+      </div>
     </div>
-    {props.media?.backgroundUrl && <div className="media-preview">{props.media.backgroundKind === 'IMAGE' ? <img src={props.media.backgroundUrl} alt="Background" /> : <video src={props.media.backgroundUrl} controls muted />}<span>{props.media.backgroundKind === 'IMAGE' ? 'Ảnh tĩnh · tự kéo dài theo voice' : `Duration: ${formatDuration(props.media.backgroundDuration)}`}</span></div>}
+    <p className="sfx-note">Nguồn chia cảnh hỗ trợ Claude Code (CLI local), Codex (CLI local), hoặc Gemini API Key trong Settings. AI chọn tóc, trang phục, biểu cảm, vị trí và tự động đặt tên nhân vật tiếng Việt cụ thể (An, Mai, Bình, Dũng...) dựng hình doodle 2D 60 fps theo đúng lời đọc. Chọn Output bên dưới trước khi tạo; sau đó Render Story Video để thêm SFX và phụ đề.</p>
+    
+    {props.sceneImages && props.sceneImages.length > 0 && (
+      <div className="scene-images-gallery">
+        <h4>🖼️ Thư viện Ảnh Người Que theo Phân đoạn Truyện ({props.sceneImages.length} cảnh)</h4>
+        <div className="scene-images-grid">
+          {props.sceneImages.map(scene => (
+            <div key={scene.index} className="scene-image-card">
+              <div className="scene-image-header">
+                <span className="scene-number">Cảnh {scene.index}</span>
+                <span className="scene-setting-tag">{scene.setting}</span>
+              </div>
+              <img src={scene.fileUrl} alt={`Scene ${scene.index}`} />
+              <p className="scene-text">{scene.sectionText}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {props.media?.backgroundUrl && <div className="media-preview">{props.media.backgroundKind === 'IMAGE' ? <img src={props.media.backgroundUrl} alt="Background" /> : <video src={props.media.backgroundUrl} controls muted={props.media.backgroundStyle !== 'STICK_FIGURE'} />}<span>{props.media.backgroundKind === 'IMAGE' ? 'Ảnh tĩnh · tự kéo dài theo voice' : `${props.media.backgroundStyle === 'STICK_FIGURE' ? 'Doodle · Bản tạo mới: 60 fps + lời đọc · ' : ''}Duration: ${formatDuration(props.media.backgroundDuration)}`}</span></div>}
+
+    {props.media?.backgroundStyle === 'STICK_FIGURE' && <div className="media-step">
+      <div><strong>Thumbnail hoạt hình</strong><span>Lấy ảnh từ video đã tạo, giữ đúng tỉ lệ khung hình.</span></div>
+      <button className="secondary" disabled={props.busy || !props.ffmpegReady} onClick={props.onGenerateVideoThumbnail}>Tạo thumbnail từ video</button>
+    </div>}
+    {props.media?.backgroundStyle === 'STICK_FIGURE' && props.media.thumbnailUrl && <div className="media-preview"><img src={props.media.thumbnailUrl} alt="Thumbnail video hoạt hình" /></div>}
 
     <div className="media-step sound-effect-step">
       <div><b>3</b><div><strong>Sound effect cho mỗi video</strong><span>SFX chỉ được trộn vào MP4 cuối; MP3 voice gốc không bị thay đổi.</span></div></div>
@@ -177,7 +229,7 @@ export function StoryMediaFlow(props: Props) {
       <div><b>4</b><div><strong>{props.videoFormat === 'REEL' ? `Render các Short 9:16 + ${renderFeatures}` : `Render Story video + ${renderFeatures}`}</strong><span>{!props.ffmpegReady ? 'Cần FFmpeg để render.' : !backgroundDone ? 'Chọn video hoặc ảnh background trước.' : props.videoFormat === 'REEL' ? `Tự chia liên tục thành các phần cân bằng, tối đa 3:00/phần; mỗi Short có ${SOUND_EFFECT_LABELS[props.soundEffect.preset]}${props.includeSubtitles ? ' và phụ đề tự động' : ''}.` : `Sẽ trộn ${SOUND_EFFECT_LABELS[props.soundEffect.preset]} ở mức ${props.soundEffect.volume}%${props.includeSubtitles ? ' và đốt phụ đề vào video' : ''}, có ducking để không lấn giọng.`}</span></div></div>
     </div>
     <div className="render-options">
-      <label>Output<select value={props.videoFormat} onChange={(event) => props.onVideoFormatChange(event.target.value as VideoFormat)}><option value="LANDSCAPE">16:9 · 1920x1080 · 1 video</option><option value="REEL">9:16 · tự chia Short ≈2:30–3:00</option><option value="SQUARE">1:1 · 1080x1080 · 1 video</option></select></label>
+      <label>Output<select value={props.videoFormat} disabled={props.busy} onChange={(event) => props.onVideoFormatChange(event.target.value as VideoFormat)}><option value="LANDSCAPE">16:9 · 1920x1080 · 1 video</option><option value="REEL">9:16 · tự chia Short ≈2:30–3:00</option><option value="SQUARE">1:1 · 1080x1080 · 1 video</option></select></label>
       <label>Fit<select value={props.fitMode} onChange={(event) => props.onFitModeChange(event.target.value as FitMode)}><option value="CROP">Fill / Crop</option><option value="FIT">Fit / Pad</option></select></label>
       <label className="subtitle-option">Phụ đề<span><input type="checkbox" checked={props.includeSubtitles} disabled={props.busy} onChange={(event) => props.onIncludeSubtitlesChange(event.target.checked)} />Đốt vào video</span></label>
       <button className="primary" onClick={props.onRender} disabled={props.busy || !canRender}>{props.videoFormat === 'REEL' ? `${renderDone ? 'Regenerate' : 'Generate'} Short Videos + ${renderFeatures}` : `${renderDone ? 'Regenerate' : 'Generate'} Story Video + ${renderFeatures}`}</button>

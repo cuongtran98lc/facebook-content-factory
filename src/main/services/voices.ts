@@ -281,6 +281,10 @@ export class VoiceService {
       })
     }
     const edgeVoices: VoiceDTO[] = [
+      ...[
+        { voice: 'en-US-JennyNeural', name: 'Jenny · Tiếng Anh Mỹ', lang: 'en-US' },
+        { voice: 'en-GB-SoniaNeural', name: 'Sonia · Tiếng Anh Anh', lang: 'en-GB' }
+      ].map(item => ({ id: `edge::${item.voice}`, name: item.name, category: 'Microsoft Edge TTS', description: `English narration · ${item.lang}`, previewUrl: null, labels: { provider: 'edge-tts', gender: 'female', lang: item.lang } })),
       { id: EDGE_HOAIMY_VOICE_ID, name: 'Hoài My Neural · Nữ Việt Nam', category: 'Microsoft Edge TTS', description: 'Giọng nữ neural tiếng Việt, rõ và tự nhiên cho narration.', previewUrl: null, labels: { provider: 'edge-tts', gender: 'female', lang: 'vi-VN' } },
       { id: EDGE_NAMMINH_VOICE_ID, name: 'Nam Minh Neural · Nam Việt Nam', category: 'Microsoft Edge TTS', description: 'Giọng nam neural tiếng Việt.', previewUrl: null, labels: { provider: 'edge-tts', gender: 'male', lang: 'vi-VN' } }
     ].filter(voice => !needle || `${voice.name} ${voice.description}`.toLocaleLowerCase('vi').includes(needle))

@@ -24,7 +24,12 @@ export class GeminiProvider implements AIProvider {
       body.generationConfig = { responseMimeType: 'application/json' }
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`
+    // gemini-2.0-flash đã bị Google deprecate (models/gemini-2.0-flash is no
+    // longer available) — dùng đúng model đã cấu hình trong Settings, mặc định
+    // gemini-3.6-flash nếu chưa cấu hình gì.
+    const apiModel = (this.model || 'gemini-3.6-flash').trim();
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(apiModel)}:generateContent`
     const response = await fetch(url, {
       method: 'POST',
       headers: {

@@ -104,6 +104,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('projects:list', () => projects.list());
   ipcMain.handle('projects:create', (_event, input) => projects.create(input));
+  ipcMain.handle('projects:update', (_event, id: string, input) => projects.update(id, input));
   ipcMain.handle('projects:remove', (_event, id: string) => projects.remove(id));
 
   ipcMain.handle('ideas:list', (_event, projectId: string) => ideas.list(projectId));
@@ -180,6 +181,14 @@ export function registerIpcHandlers(): void {
     storyMedia.resumePending(progress => {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:reel-progress', progress);
     }),
+  );
+  ipcMain.handle('story-media:generate-stick-video', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickVideo']>[0]) =>
+    storyMedia.generateStickVideo(input.projectId, input.scriptId, input.format, progress => {
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress);
+    }, input.source),
+  );
+  ipcMain.handle('story-media:generate-stickman-scene-images', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickmanSceneImages']>[0]) =>
+    storyMedia.generateStickmanSceneImages(input.projectId, input.scriptId, input.format, input.source),
   );
   ipcMain.handle('story-media:generate-audio', (_event, input: GenerateStoryAudioInput) =>
     storyMedia.generateStoryAudio(input.projectId, input.scriptId),

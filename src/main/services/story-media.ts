@@ -1,10 +1,12 @@
-import { randomUUID } from 'node:crypto'
+import { audiencePrompt } from '../../shared/audience'
+import { createHash, randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { nativeImage } from 'electron'
 import { readFile, stat, unlink } from 'node:fs/promises'
 import sharp from 'sharp'
-import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
+import { pathToFileURL } from 'node:url'
+import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getPrisma } from './database'
 import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
@@ -13,6 +15,13 @@ import { ThumbnailService } from './thumbnails'
 import { PublishingMetadataService, type PublishMetadata, type PublishMode, type PublishTarget } from './video-metadata'
 import { createAssSubtitles, SUBTITLE_RENDER_VERSION } from './subtitles'
 
+import { AIService } from './ai'
+import { CodexCliService } from './ai/codex-cli'
+import { ClaudeCliService } from './ai/claude-cli'
+import { AntigravityCliService } from './ai/antigravity-cli'
+import { parseStickScenes, renderStickAnimation, stickFrame, stickPrompt, storySections } from './stick-animation'
+
+const scriptHash = (text: string) => createHash('sha256').update(text).digest('hex')
 const TTS_CHUNK_ATTEMPTS = 4
 const STORY_SHORT_MAX_MS = 180_000
 const STORY_VIDEO_PRESET_SCHEMA = 1
@@ -345,6 +354,7 @@ export class StoryMediaService {
       backgroundUrl: mediaUrl(background?.path, background?.createdAt),
       backgroundName: background?.path ? basename(background.path) : null,
       backgroundDuration: typeof bgMeta.duration === 'number' ? bgMeta.duration : null,
+      backgroundStyle: bgMeta.style === 'STICK_FIGURE' ? 'STICK_FIGURE' : 'CUSTOM',
       backgroundKind: bgMeta.kind === 'IMAGE' ? 'IMAGE' : background ? 'VIDEO' : null,
       renderPath: firstStoryVideo?.path ?? null,
       renderUrl: firstStoryVideo?.url ?? null,
@@ -475,7 +485,7 @@ export class StoryMediaService {
     if (!targets.length) throw new Error('Chưa có video hoàn chỉnh để tạo title và description.')
     const reportMetadata = (current: number, percent: number, message: string) => onProgress?.({ current, total: targets.length, percent: Math.round(percent), stage: 'METADATA', message })
     reportMetadata(0, 5, `Đang phân tích nội dung của ${targets.length} video...`)
-    const generated = new Map((await this.publishing.generate(targets.map(target => target.input))).map(item => [item.key, item]))
+    const generated = new Map((await this.publishing.generate(targets.map(target => ({ ...target.input, targetMarket: project.targetMarket, contentLanguage: project.contentLanguage })))).map(item => [item.key, item]))
     reportMetadata(0, 60, 'Đã tạo nội dung, đang lưu metadata cạnh từng video...')
     const oldAssets = await prisma.asset.findMany({ where: { projectId, type: PUBLISH_METADATA_ASSET_TYPE } })
 
@@ -589,6 +599,7 @@ export class StoryMediaService {
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
       prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: [{ approved: 'desc' }, { version: 'desc' }] })
     ])
+    if (parseMeta(background?.metadata).style === 'STICK_FIGURE') throw new Error('Hoạt hình này theo Full Story. Chọn Render Story với định dạng 9:16 để chia Short; Reel scripts riêng cần nền khác.')
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
     const savedSoundEffect = normalizeSoundEffectOptions(typeof jobMeta.soundEffect === 'object' ? jobMeta.soundEffect as Partial<SoundEffectOptions> : undefined)
@@ -790,6 +801,7 @@ export class StoryMediaService {
     const context = script.content.replace(/\s+/g, ' ').trim().slice(0, 3500)
     if (!context) throw new Error('Story đang trống, không thể tạo thumbnail.')
     const prompt = [
+      audiencePrompt(project),
       'Create a cinematic, emotionally compelling YouTube/Facebook story thumbnail in 16:9 landscape format.',
       'Use one clear focal subject, expressive emotion, dramatic lighting, strong color contrast, and uncluttered composition.',
       'Leave intentional negative space for a title overlay. Do not render any words, captions, logos, watermarks, borders, or UI.',
@@ -866,11 +878,11 @@ export class StoryMediaService {
     ])
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
-    const resuming = Boolean(job && jobMeta.scriptId === scriptId && jobMeta.voiceId === project.voiceId)
+    const resuming = Boolean(job && jobMeta.scriptId === scriptId && jobMeta.scriptHash === scriptHash(script.content) && jobMeta.voiceId === project.voiceId)
     if (job && !resuming) {
       await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'Script hoặc voice đã thay đổi; không resume chunk audio cũ.' } })
     }
-    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, voiceId: project.voiceId }) } })
+    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, scriptHash: scriptHash(script.content), voiceId: project.voiceId }) } })
     if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ cho Story MP3.')
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
 
@@ -908,7 +920,7 @@ export class StoryMediaService {
 
       await prisma.asset.deleteMany({ where: { projectId, type: 'STORY_AUDIO' } })
       await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
-      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: output, metadata: JSON.stringify({ duration, scriptId, voiceId: project.voiceId, chunks: pieces.length, chunkSize }) } })
+      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: output, metadata: JSON.stringify({ duration, scriptId, scriptHash: scriptHash(script.content), voiceId: project.voiceId, chunks: pieces.length, chunkSize }) } })
       await prisma.project.update({ where: { id: projectId }, data: { status: 'MEDIA_READY' } })
       await prisma.job.update({ where: { id: job!.id }, data: { status: 'DONE', progress: 100 } })
       return this.get(projectId)
@@ -917,6 +929,109 @@ export class StoryMediaService {
       await prisma.project.update({ where: { id: projectId }, data: { status: 'FAILED' } })
       throw error
     }
+  }
+
+  private readonly stickRuns = new Set<string>()
+
+  async generateStickVideo(projectId: string, scriptId: string, format: VideoFormat, onProgress?: (progress: StoryVideoProgress) => void, source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API'): Promise<StoryMediaDTO> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video không hợp lệ.')
+    if (!['API', 'CODEX_CLI', 'CLAUDE_CLI', 'ANTIGRAVITY_CLI'].includes(source)) throw new Error('Nguồn tạo storyboard không hợp lệ.')
+    if (this.stickRuns.has(projectId)) throw new Error('Dự án đang tạo hoạt hình người que.')
+    this.stickRuns.add(projectId)
+    const prisma = getPrisma()
+    let output: string | undefined
+    let published = false
+    const report = (percent: number, message: string) => onProgress?.({ current: 0, total: 1, percent, stage: 'VIDEO', message })
+    try {
+      const [script, audio] = await Promise.all([
+        prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+        prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+      ])
+      if (!script || !audio) throw new Error('Hãy tạo truyện và Story MP3 trước.')
+      const audioMeta = parseMeta(audio.metadata)
+      if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content)) throw new Error('Hãy Generate Story MP3 lại từ truyện hiện tại trước khi tạo hoạt hình.')
+      const duration = await probeDuration(audio.path)
+      const sections = storySections(script.content)
+      const sourceLabel = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : 'AI API'
+      report(2, `${sourceLabel} đang phân tích ${sections.length} cảnh từ truyện...`)
+      const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
+      const response = await generator.generateText({ json: true, prompt: stickPrompt(sections) })
+      const scenes = parseStickScenes(response, sections.length)
+      // Narration ends with the app CTA. Give it a separate scene and timing weight.
+      scenes.push({ setting: scenes[scenes.length - 1].setting, actors: [{ ...scenes[scenes.length - 1].actors[0], action: 'wave' }] })
+      sections.push(CTA_TEXT)
+      const runId = randomUUID()
+      output = await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.mp4`)
+      await renderStickAnimation(scenes, sections, duration, format, output, percent => report(5 + Math.round(percent * .9), `Đang dựng hoạt hình người que: ${percent}%`), audio.path)
+      const measured = await probeDuration(output)
+      if (Math.abs(measured - duration) > .2) throw new Error('Thời lượng hoạt hình không khớp lời đọc.')
+      const latestAudio = await prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+      const latestScript = await prisma.script.findUnique({ where: { id: scriptId } })
+      if (latestAudio?.id !== audio.id || latestScript?.content !== script.content) throw new Error('Truyện hoặc lời đọc đã thay đổi. Hãy tạo lại hoạt hình.')
+      const storyboardPath = await this.storage.writeOutputText(projectId, `background/stick-${runId}.json`, JSON.stringify({ scriptId, audioAssetId: audio.id, format, duration, timing: 'word-weighted', scenes: scenes.map((scene, index) => ({ ...scene, text: sections[index] })) }, null, 2))
+      await prisma.$transaction([
+        prisma.asset.deleteMany({ where: { projectId, type: 'BACKGROUND_VIDEO' } }),
+        prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: output, metadata: JSON.stringify({ kind: 'VIDEO', style: 'STICK_FIGURE', format, duration: measured, audioAssetId: audio.id, scriptHash: scriptHash(script.content), storyboardPath }) } }),
+        prisma.render.updateMany({ where: { projectId, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } }, data: { status: 'STALE' } })
+      ])
+      published = true
+      report(97, 'Đang lấy thumbnail từ video hoạt hình...')
+      const media = await this.extractThumbnailFromVideo(projectId, output, Math.min(1, measured / 2))
+      report(100, 'Hoạt hình có lời đọc và thumbnail đã sẵn sàng. Render Story Video để thêm SFX và phụ đề.')
+      return media
+    } finally {
+      this.stickRuns.delete(projectId)
+      if (output && !published) await unlink(output).catch(() => undefined)
+    }
+  }
+
+  async generateStickmanSceneImages(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat = 'LANDSCAPE',
+    source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API',
+  ): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }> {
+    const prisma = getPrisma()
+    const script = await prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } })
+    if (!script) throw new Error('Hãy chọn kịch bản truyện LONG_STORY để tạo bộ ảnh phân đoạn.')
+
+    const sections = storySections(script.content)
+    const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
+    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections) })
+    const scenes = parseStickScenes(response, sections.length)
+
+    const colors = new Map<string, string>()
+    const palette = ['#334155', '#c45b50', '#397b86', '#8961a5', '#a27025', '#487c46']
+    for (const scene of scenes) {
+      for (const actor of scene.actors) {
+        if (!colors.has(actor.name)) colors.set(actor.name, palette[colors.size % palette.length])
+      }
+    }
+
+    const sceneImages: StickmanSceneImageDTO[] = []
+    const timestamp = Date.now()
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i]
+      const sectionText = sections[i]
+      const fileName = `scene_${String(i + 1).padStart(2, '0')}_${scene.setting}.png`
+      const svgText = stickFrame(scene, 0, format, colors)
+      const pngBuffer = await sharp(Buffer.from(svgText)).png().toBuffer()
+      const relativePath = `images/scenes/${timestamp}/${fileName}`
+      const filePath = await this.storage.writeOutputBuffer(projectId, relativePath, pngBuffer)
+      const fileUrl = pathToFileURL(filePath).href
+
+      sceneImages.push({
+        index: i + 1,
+        setting: scene.setting,
+        sectionText,
+        fileName,
+        filePath,
+        fileUrl,
+      })
+    }
+
+    const outputDir = this.storage.getProjectPath(projectId, `images/scenes/${timestamp}`)
+    return { sceneImages, outputDir }
   }
 
   async setBackground(projectId: string, sourcePath: string, kind: BackgroundKind = 'VIDEO'): Promise<StoryMediaDTO> {
@@ -954,6 +1069,9 @@ export class StoryMediaService {
       ? await prisma.script.findFirst({ where: { id: sourceScriptId, projectId, type: 'LONG_STORY' } })
       : await prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: { version: 'desc' } })
     if (includeSubtitles && !sourceScript) throw new Error('Không tìm thấy Story script để tạo phụ đề.')
+    const stickBackground = parseMeta(background.metadata).style === 'STICK_FIGURE'
+    if (stickBackground && (parseMeta(background.metadata).audioAssetId !== audio.id || !sourceScript || parseMeta(background.metadata).scriptHash !== scriptHash(sourceScript.content))) throw new Error('Truyện hoặc lời đọc đã đổi. Hãy tạo lại hoạt hình người que.')
+    if (stickBackground && parseMeta(background.metadata).format !== format) throw new Error('Hãy tạo lại hoạt hình theo định dạng output đã chọn.')
     const audioPath = await this.storage.copyToOutput(projectId, 'audio/story.mp3', audio.path)
     if (audioPath !== audio.path) await prisma.asset.update({ where: { id: audio.id }, data: { path: audioPath } })
     if (thumbnail) {
@@ -1001,6 +1119,8 @@ export class StoryMediaService {
           : undefined
         await renderLoopedVideo({
           backgroundPath: background.path,
+          frameRate: stickBackground ? 60 : 30,
+          backgroundStartSeconds: stickBackground ? segment.startMs / 1000 : undefined,
           backgroundKind,
           audioPath,
           outputPath: output,

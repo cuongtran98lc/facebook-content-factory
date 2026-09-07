@@ -12,6 +12,8 @@ model Project {
   name      String
   niche     String?
   topic     String?
+  targetMarket String @default("VN")
+  contentLanguage String @default("vi-VN")
   status    String   @default("DRAFT")
   voiceId   String?
   voiceName String?

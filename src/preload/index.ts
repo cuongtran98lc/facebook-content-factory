@@ -12,6 +12,7 @@ const api: ContentFactoryAPI = {
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     create: input => ipcRenderer.invoke('projects:create', input),
+    update: (id, input) => ipcRenderer.invoke('projects:update', id, input),
     remove: id => ipcRenderer.invoke('projects:remove', id),
   },
   ideas: {
@@ -96,6 +97,8 @@ const api: ContentFactoryAPI = {
       return () => ipcRenderer.removeListener('story-media:story-progress', listener);
     },
     resumePending: () => ipcRenderer.invoke('story-media:resume-pending'),
+    generateStickVideo: input => ipcRenderer.invoke('story-media:generate-stick-video', input),
+    generateStickmanSceneImages: input => ipcRenderer.invoke('story-media:generate-stickman-scene-images', input),
     generateAudio: input => ipcRenderer.invoke('story-media:generate-audio', input),
     chooseBackground: (projectId, kind) => ipcRenderer.invoke('story-media:choose-background', projectId, kind),
     render: input => ipcRenderer.invoke('story-media:render', input),

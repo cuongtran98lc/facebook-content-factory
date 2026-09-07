@@ -1,3 +1,4 @@
+import { MARKETS, LANGUAGES } from '../../../shared/audience';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AIProviderName,
@@ -11,12 +12,14 @@ import type {
   ReelVideoProgress,
   ScriptDTO,
   SoundEffectOptions,
+  StickmanSceneImageDTO,
   StoryMediaDTO,
   StoryVideoProgress,
   VideoFormat,
   VoiceDTO,
   VoiceSettingsDTO,
 } from '../../../shared/types';
+import { COMPILED_TOPICS, CompiledTopic } from '../../../shared/topics';
 import { ExportQueueView } from '../components/ExportQueueView';
 import { MetricsDashboardView } from '../components/MetricsDashboardView';
 import { RenderQueueView } from '../components/RenderQueueView';
@@ -71,7 +74,13 @@ function ideaDetails(description: string | null): { summary: string; suggestions
   };
 }
 
+function isCliProvider(provider: AIProviderName): boolean {
+  return provider === 'claude-cli' || provider === 'codex-cli' || provider === 'antigravity-cli';
+}
+
 function hasAIKey(settings: AISettingsDTO, provider: AIProviderName): boolean {
+  // CLI providers dùng binary CLI đã đăng nhập sẵn trên máy, không cần API key.
+  if (isCliProvider(provider)) return true;
   if (provider === 'openai') return settings.hasOpenAIKey;
   if (provider === 'groq') return settings.hasGroqKey;
   return settings.hasGeminiKey;
@@ -80,7 +89,8 @@ function hasAIKey(settings: AISettingsDTO, provider: AIProviderName): boolean {
 function aiModel(settings: AISettingsDTO, provider: AIProviderName): string {
   if (provider === 'openai') return settings.openaiModel;
   if (provider === 'groq') return settings.groqModel;
-  return settings.geminiModel;
+  if (provider === 'gemini') return settings.geminiModel;
+  return 'CLI local';
 }
 
 export default function App() {
@@ -93,8 +103,11 @@ export default function App() {
   const [editorContent, setEditorContent] = useState('');
   const [health, setHealth] = useState<AppHealth | null>(null);
   const [name, setName] = useState('Story 001');
-  const [topic, setTopic] = useState('Mẹ chia tài sản cho 3 người con');
+  const [selectedTopicId, setSelectedTopicId] = useState<string>('family_inheritance');
+  const [topic, setTopic] = useState('Mẹ chia tài sản cho các con, thử lòng con cái, mâu thuẫn anh chị em, con nuôi vs con ruột, di chúc bí mật và bài học lòng hiếu thảo');
   const [niche, setNiche] = useState('family');
+  const [targetMarket, setTargetMarket] = useState('VN');
+  const [contentLanguage, setContentLanguage] = useState('vi-VN');
   const [ideaCount, setIdeaCount] = useState(10);
   const [targetMinutes, setTargetMinutes] = useState(15);
   const [importTitle, setImportTitle] = useState('');
@@ -134,6 +147,7 @@ export default function App() {
   const [storyVideoProgress, setStoryVideoProgress] = useState<StoryVideoProgress | null>(null);
   const [storyVideoGenerating, setStoryVideoGenerating] = useState(false);
   const [estimatedProgress, setEstimatedProgress] = useState(0);
+  const [sceneImages, setSceneImages] = useState<StickmanSceneImageDTO[]>([]);
 
   const selected = useMemo(
     () => projects.find(project => project.id === selectedId) ?? projects[0],
@@ -225,6 +239,11 @@ export default function App() {
     setRewriteNote(rewriteInstruction(activeScript));
   }, [activeScript?.id]);
   useEffect(() => {
+    setTargetMarket(selected?.targetMarket ?? 'VN');
+    setContentLanguage(selected?.contentLanguage ?? 'vi-VN');
+    setVoiceTestText(selected?.contentLanguage?.startsWith('en') ? 'That day, I returned to the old house, unaware of what awaited me behind the door.' : 'Ngày hôm đó, tôi trở về căn nhà cũ và không ngờ điều đang chờ mình phía sau cánh cửa.');
+  }, [selected?.id, selected?.targetMarket, selected?.contentLanguage]);
+  useEffect(() => {
     setVoiceId(selected?.voiceId ?? '');
   }, [selected?.id, selected?.voiceId]);
   useEffect(() => window.contentFactory.storyMedia.onReelVideoProgress(setReelProgress), []);
@@ -288,12 +307,49 @@ export default function App() {
     setBusy(true);
     setMessage('');
     try {
-      const created = await window.contentFactory.projects.create({ name, topic, niche });
+      const created = await window.contentFactory.projects.create({ name, topic, niche, targetMarket, contentLanguage });
       setSelectedId(created.id);
       await reloadProjects();
       setIdeas([]);
       setScripts([]);
       setMessage('Đã tạo project local.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleSelectCompiledTopic(compiled: CompiledTopic) {
+    setSelectedTopicId(compiled.id);
+    setTopic(compiled.prompt);
+    setNiche(compiled.niche);
+  }
+
+  async function handleGenerateWithTopic() {
+    setBusy(true);
+    try {
+      let targetProjectId = selected?.id;
+      const currentTopicText = topic.trim() || COMPILED_TOPICS.find(t => t.id === selectedTopicId)?.prompt || 'Chuyện gia đình';
+      const currentNiche = niche.trim() || 'family';
+
+      if (targetProjectId) {
+        setMessage(`Đang cập nhật chủ đề & tạo ${ideaCount} ideas bằng ${settings.provider}...`);
+        await window.contentFactory.projects.update(targetProjectId, { topic: currentTopicText, niche: currentNiche, targetMarket, contentLanguage });
+      } else {
+        setMessage(`Đang tạo project mới & ${ideaCount} ideas bằng ${settings.provider}...`);
+        const topicObj = COMPILED_TOPICS.find(t => t.id === selectedTopicId);
+        const projName = name.trim() || `${topicObj ? topicObj.title : 'Project'} ${new Date().toLocaleDateString('vi-VN')}`;
+        const created = await window.contentFactory.projects.create({ name: projName, topic: currentTopicText, niche: currentNiche, targetMarket, contentLanguage });
+        targetProjectId = created.id;
+        setSelectedId(created.id);
+      }
+      await reloadProjects();
+      const rows = await window.contentFactory.ideas.generate({ projectId: targetProjectId, count: ideaCount });
+      setIdeas(rows);
+      await reloadProjects();
+      setView('ideas');
+      setMessage(`Đã tạo thành công ${rows.length} ideas cho chủ đề đã chọn!`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -588,13 +644,14 @@ export default function App() {
         title: activeScript.title ?? undefined,
         content: editorContent,
       });
+      setScripts(current => current.map(script => script.id === saved.id ? saved : script));
       const media = await window.contentFactory.storyMedia.generateAudio({
         projectId: selected.id,
         scriptId: saved.id,
       });
       setStoryMedia(media);
       await reloadProjects();
-      setMessage('✓ Bước 1/4 hoàn tất: Story MP3 đã sẵn sàng. Tiếp theo hãy chọn Video hoặc Ảnh background.');
+      setMessage('✓ Bước 1/4 hoàn tất: Story MP3 đã sẵn sàng. Tiếp theo hãy tạo hoạt hình người que hoặc chọn Video / Ảnh background.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -641,6 +698,66 @@ export default function App() {
       });
       setStoryMedia(media);
       setMessage('✓ Thumbnail đã được trích xuất từ video thành công.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateVideoThumbnail() {
+    if (!selected || !storyMedia?.backgroundPath) return;
+    setBusy(true);
+    setMessage('Đang tạo thumbnail từ video hoạt hình...');
+    try {
+      setStoryMedia(await window.contentFactory.storyMedia.extractThumbnailFromVideo({
+        projectId: selected.id,
+        videoPath: storyMedia.backgroundPath,
+        timeSeconds: Math.min(1, (storyMedia.backgroundDuration ?? 2) / 2),
+      }));
+      setMessage('✓ Đã lưu thumbnail của video vào images/thumbnail.png.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateStickVideo(source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI') {
+    if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') return;
+    if (!storyMedia?.audioPath) return setMessage('Hãy Generate Story MP3 trước.');
+    if (editorContent !== activeScript.content) return setMessage('Truyện có chỉnh sửa. Hãy Generate Story MP3 lại trước để hoạt hình khớp lời đọc.');
+    setBusy(true);
+    setStoryVideoGenerating(true);
+    setStoryVideoProgress({ current: 0, total: 1, percent: 0, stage: 'VIDEO', message: 'Đang chuẩn bị storyboard người que...' });
+    setMessage('Đang tạo hoạt hình theo nội dung truyện...');
+    try {
+      setStoryMedia(await window.contentFactory.storyMedia.generateStickVideo({ projectId: selected.id, scriptId: activeScript.id, format: videoFormat, source }));
+      setMessage('✓ Doodle 60 fps có lời đọc và thumbnail đã sẵn sàng. Bấm Generate Story Video để thêm SFX và phụ đề.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStoryVideoGenerating(false);
+      setBusy(false);
+    }
+  }
+
+  async function generateStickmanSceneImages(source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API') {
+    if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
+      return setMessage('Hãy chọn kịch bản truyện LONG_STORY trước.');
+    }
+    setBusy(true);
+    const sourceName = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude Code CLI' : 'AI API (Gemini)';
+    setMessage(`Đang tự động chia phân đoạn và vẽ bộ ảnh người que bằng ${sourceName}...`);
+    try {
+      const res = await window.contentFactory.storyMedia.generateStickmanSceneImages({
+        projectId: selected.id,
+        scriptId: activeScript.id,
+        format: videoFormat,
+        source,
+      });
+      setSceneImages(res.sceneImages);
+      setMessage(`✓ Đã tạo thành công ${res.sceneImages.length} bức ảnh người que theo từng phân đoạn trong truyện!`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -972,6 +1089,9 @@ export default function App() {
               <option value="openai" disabled={!settings.hasOpenAIKey}>
                 OpenAI · {settings.openaiModel}{settings.hasOpenAIKey ? '' : ' · chưa có key'}
               </option>
+              <option value="claude-cli">Claude CLI (local)</option>
+              <option value="codex-cli">Codex CLI (local)</option>
+              <option value="antigravity-cli">Antigravity CLI (local)</option>
             </select>
             {!hasAIKey(settings, settings.provider) && (
               <button type="button" onClick={() => setView('settings')}>Thêm API key →</button>
@@ -1052,125 +1172,154 @@ export default function App() {
 
         {view === 'dashboard' && (
           <>
-            <section className="card master-idea-engine">
-              <div className="master-idea-head">
-                <span className="workflow-step-number">1A</span>
-                <div>
-                  <h2>Generate Idea · Master Prompt Story Engine</h2>
-                  <p>Tạo idea storytelling đồng thời cho Facebook Reel 60 giây và Long Video.</p>
-                </div>
-                <span className="master-prompt-badge">MASTER PROMPT ĐANG BẬT</span>
+            <section className="card">
+              <h2>Khán giả YouTube</h2>
+              <div className="topic-generator-fields">
+                <label>Thị trường
+                  <select disabled={busy} value={targetMarket} onChange={e => { setTargetMarket(e.target.value); setContentLanguage(e.target.value === 'VN' ? 'vi-VN' : e.target.value === 'GB' ? 'en-GB' : 'en-US'); }}>
+                    {MARKETS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label>Ngôn ngữ nội dung
+                  <select disabled={busy} value={contentLanguage} onChange={e => setContentLanguage(e.target.value)}>
+                    {LANGUAGES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                {selected && <button disabled={busy} onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await window.contentFactory.projects.update(selected.id, { targetMarket, contentLanguage });
+                    await reloadProjects();
+                    setMessage('Đã lưu khán giả mục tiêu. Cấu hình áp dụng cho lần generate tiếp theo.');
+                  } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+                  finally { setBusy(false); }
+                }}>Lưu cho project hiện tại</button>}
               </div>
-              {selected ? (
-                <>
-                  <div className="master-idea-inputs">
-                    <div><span>Chủ đề</span><strong>{selected.topic || 'AI tự đề xuất theo ngách'}</strong></div>
-                    <div><span>Ngách</span><strong>{selected.niche || 'Truyện đời sống'}</strong></div>
-                    <div><span>AI / Model</span><strong>{settings.provider} · {aiModel(settings, settings.provider)}</strong></div>
-                    <label>
-                      Số lượng idea
-                      <input
-                        type="number"
-                        min={1}
-                        max={30}
-                        value={ideaCount}
-                        onChange={e => setIdeaCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
-                      />
-                    </label>
-                  </div>
-                  <div className="master-idea-criteria">
-                    <span>Bực tức → Ức chế → Xuống đáy</span>
-                    <span>Twist seed → Lật kèo</span>
-                    <span>Payoff thỏa mãn</span>
-                    <span>Reel timeline 0–60s</span>
-                    <span>Long Video 5–8 nhịp</span>
-                    <span>Hook · Frame · CTA · Hashtag</span>
-                  </div>
-                  <div className="master-idea-action">
-                    <p>Mỗi idea có tóm tắt, hành trình cảm xúc, twist, gợi ý Reel, gợi ý Long Video và điểm chất lượng.</p>
-                    <button
-                      className="primary"
-                      onClick={() => void generateIdeas()}
-                      disabled={busy || !hasAIKey(settings, settings.provider)}>
-                      {ideas.length
-                        ? `Không phù hợp · Generate lại ${ideaCount} Ideas`
-                        : `Generate ${ideaCount} Ideas theo Master Prompt`}
-                    </button>
-                  </div>
-                  {!hasAIKey(settings, settings.provider) && (
-                    <button className="master-key-link" type="button" onClick={() => setView('settings')}>
-                      Chưa có API key cho {settings.provider} · Mở Settings →
-                    </button>
-                  )}
-                </>
-              ) : (
-                <div className="empty">Hãy tạo hoặc chọn một project để Generate Idea.</div>
-              )}
+              <p className="muted">Áp dụng khi tạo project hoặc generate chủ đề. Với project hiện tại, bấm Lưu trước khi tạo nội dung. Nội dung đã tạo không tự dịch; hãy generate lại và chọn giọng đọc phù hợp ngôn ngữ.</p>
             </section>
-            <section className="card crawler-first-step">
-              <div className="crawler-first-head">
-                <span className="workflow-step-number">1B</span>
+            <section className="card compiled-topics-section">
+              <div className="topics-gallery-header">
                 <div>
-                  <h2>Crawl truyện theo từng chương</h2>
+                  <h2>
+                    <span>✨</span> Kho Chủ đề đã Tổng hợp
+                  </h2>
                   <p>
-                    Dán link truyện; hệ thống sẽ tìm danh sách chương, mở chi tiết từng chương và tạo mỗi chương thành
-                    một tập.
+                    Chọn một chủ đề đã biên soạn bên dưới. Bạn có thể tự chỉnh sửa nội dung và bấm <strong>Generate Ideas</strong> bất cứ lúc nào.
                   </p>
                 </div>
-                <span className="crawler-project-chip">{selected ? selected.name : 'Chưa chọn project'}</span>
+                <span className="master-prompt-badge">AI MASTER PROMPT READY</span>
               </div>
-              {selected ? (
-                <>
-                  <div className="crawler-first-form">
-                    <label className="grow">
-                      Link trang danh sách / chi tiết truyện
-                      <input
-                        type="url"
-                        value={storyUrl}
-                        onChange={e => setStoryUrl(e.target.value)}
-                        placeholder="https://website.com/ten-truyen"
-                      />
-                    </label>
-                    <label>
-                      Số chương tối đa
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={crawlEpisodeLimit}
-                        onChange={e => setCrawlEpisodeLimit(Math.min(100, Math.max(1, Number(e.target.value) || 1)))}
-                      />
-                    </label>
+
+              <div className="topics-grid">
+                {COMPILED_TOPICS.map(item => {
+                  const isActive = selectedTopicId === item.id || (topic && topic.includes(item.title.split('&')[0].trim()));
+                  return (
                     <button
-                      className="primary"
-                      onClick={() => void crawlStory()}
-                      disabled={busy || !/^https?:\/\//i.test(storyUrl.trim())}>
-                      Tìm chương & crawl
+                      type="button"
+                      key={item.id}
+                      className={`topic-card ${isActive ? 'active' : ''}`}
+                      onClick={() => handleSelectCompiledTopic(item)}>
+                      <div className="topic-card-top">
+                        <div className="topic-icon-title">
+                          <span className="topic-icon">{item.icon}</span>
+                          <span>{item.title}</span>
+                        </div>
+                        <span className="topic-badge">{isActive ? '✓ Đã chọn' : item.badge}</span>
+                      </div>
+                      <p className="topic-description">{item.description}</p>
+                      <div className="topic-subtopics">
+                        {item.subtopics.slice(0, 3).map((sub, idx) => (
+                          <span className="subtopic-chip" key={idx}>
+                            #{sub}
+                          </span>
+                        ))}
+                      </div>
                     </button>
+                  );
+                })}
+              </div>
+
+              <div className="topic-generator-box">
+                <div className="topic-generator-head">
+                  <div className="topic-generator-title">
+                    <span>🚀</span>
+                    <span>Chủ đề đang chọn:</span>
+                    <strong style={{ color: '#818cf8' }}>
+                      {COMPILED_TOPICS.find(t => t.id === selectedTopicId)?.title || 'Chủ đề tùy chỉnh'}
+                    </strong>
                   </div>
-                  <p className="crawler-note">
-                    Trang tổng không được dùng làm tập. Mỗi link chương tạo đúng một script/video tập; xong sẽ tự chuyển
-                    sang bước Scripts.
-                  </p>
-                  {crawlProgress && (
-                    <div className={`reel-progress ${crawlProgress.stage === 'DONE' ? 'done' : ''}`}>
-                      <div>
-                        <strong>{crawlProgress.percent}%</strong>
-                        <span>{crawlProgress.message}</span>
-                      </div>
-                      <div className="progress-track">
-                        <i style={{ width: `${crawlProgress.percent}%` }} />
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="empty crawler-empty">Hãy tạo hoặc chọn project bên dưới trước khi crawl.</div>
-              )}
+                  {selected && <span className="crawler-project-chip">Project: {selected.name}</span>}
+                </div>
+
+                <div className="topic-generator-fields">
+                  <label className="grow">
+                    Nội dung prompt chủ đề (có thể chỉnh sửa)
+                    <textarea
+                      rows={2}
+                      value={topic}
+                      onChange={e => setTopic(e.target.value)}
+                      placeholder="Nhập hoặc chọn chủ đề..."
+                    />
+                  </label>
+                  <label>
+                    Ngách (Niche)
+                    <select value={niche} onChange={e => setNiche(e.target.value)}>
+                      <option value="family">Family (Gia đình)</option>
+                      <option value="love">Love (Tình yêu)</option>
+                      <option value="karma">Karma (Báo ứng)</option>
+                      <option value="life">Life (Đời sống)</option>
+                      <option value="money">Money (Tiền bạc)</option>
+                      <option value="social">Social (Xã hội)</option>
+                      <option value="work">Work / Dev (Công sở/IT)</option>
+                      <option value="mystery">Mystery (Bí ẩn/Twist)</option>
+                      <option value="scifi">What If (Giả định)</option>
+                    </select>
+                  </label>
+                  <label>
+                    Số lượng idea
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={ideaCount}
+                      onChange={e => setIdeaCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
+                    />
+                  </label>
+                </div>
+
+                <div className="topic-generator-actions">
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    <span>AI Model: </span>
+                    <strong style={{ color: '#cbd5e1' }}>
+                      {settings.provider.toUpperCase()} · {aiModel(settings, settings.provider)}
+                    </strong>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="generate-btn-large"
+                    onClick={() => void handleGenerateWithTopic()}
+                    disabled={busy || !hasAIKey(settings, settings.provider)}>
+                    <span>⚡</span>
+                    <span>
+                      {selected
+                        ? `Generate ${ideaCount} Ideas cho "${selected.name}"`
+                        : `Tạo Project mới & Generate ${ideaCount} Ideas`}
+                    </span>
+                  </button>
+                </div>
+
+                {!hasAIKey(settings, settings.provider) && (
+                  <button className="master-key-link" type="button" onClick={() => setView('settings')}>
+                    ⚠️ Chưa có API key cho {settings.provider} · Mở Settings →
+                  </button>
+                )}
+              </div>
             </section>
+
             <section className="grid">
               <div className="card">
-                <h2>Create project</h2>
+                <h2>Tạo Project thủ công</h2>
                 <form onSubmit={createProject} className="form">
                   <label>
                     Project name
@@ -1178,7 +1327,7 @@ export default function App() {
                   </label>
                   <label>
                     Topic
-                    <textarea value={topic} onChange={e => setTopic(e.target.value)} rows={4} />
+                    <textarea value={topic} onChange={e => setTopic(e.target.value)} rows={3} />
                   </label>
                   <label>
                     Niche
@@ -1186,25 +1335,26 @@ export default function App() {
                       <option value="family">Family</option>
                       <option value="life">Life</option>
                       <option value="love">Love</option>
-                      <option value="knowledge">Knowledge</option>
+                      <option value="karma">Karma</option>
+                      <option value="social">Social</option>
                     </select>
                   </label>
                   <button className="primary" disabled={busy}>
-                    Create project
+                    Tạo Project
                   </button>
                 </form>
               </div>
               <div className="card project-card">
-                <h2>Current project</h2>
+                <h2>Project hiện tại</h2>
                 {selected ? (
                   <>
                     <div className="project-title">{selected.name}</div>
                     <div className="meta">
-                      {selected.niche ?? 'general'} · {selected.status}
+                      {selected.niche ?? 'general'} · {selected.status} · {selected.targetMarket ?? 'VN'} / {selected.contentLanguage ?? 'vi-VN'}
                     </div>
                     <div className="topic">{selected.topic ?? 'No topic'}</div>
                     <div className="steps">
-                      {['Project', 'Crawl / Ideas', 'Story', 'Reels', 'Media', 'Render'].map((step, index) => (
+                      {['Project', 'Chủ đề / Ideas', 'Story', 'Reels', 'Media', 'Render'].map((step, index) => (
                         <div className="step" key={step}>
                           <span className={index < stepsDone ? 'step-dot done' : 'step-dot'} />
                           {step}
@@ -1228,13 +1378,13 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <div className="empty">Chưa có project.</div>
+                  <div className="empty">Chưa chọn project nào.</div>
                 )}
               </div>
             </section>
             <section className="card list-card">
               <div className="section-title">
-                <h2>Projects</h2>
+                <h2>Danh sách Projects</h2>
                 <span>{projects.length} items</span>
               </div>
               <div className="project-list">
@@ -1258,7 +1408,7 @@ export default function App() {
                     </span>
                   </button>
                 ))}
-                {!projects.length && <div className="empty">Create project đầu tiên để bắt đầu.</div>}
+                {!projects.length && <div className="empty">Chưa có project nào. Chọn chủ đề ở trên để bắt đầu!</div>}
               </div>
             </section>
           </>
@@ -1441,13 +1591,13 @@ export default function App() {
                     Thời lượng truyện (phút)
                     <input
                       type="number"
-                      min={5}
+                      min={0.25}
                       max={30}
-                      step={1}
+                      step={0.25}
                       value={targetMinutes}
-                      onChange={e => setTargetMinutes(Math.min(30, Math.max(5, Number(e.target.value) || 5)))}
+                      onChange={e => setTargetMinutes(Math.min(30, Math.max(0.25, Number(e.target.value) || 0.25)))}
                     />
-                    <small>Ước tính theo giọng kể khoảng 145 từ/phút.</small>
+                    <small>0.25–1 phút: Short · trên 1–dưới 5: video vừa · từ 5: video dài. Ước tính 145 từ/phút.</small>
                   </label>
                   <button className="primary" onClick={generateStory} disabled={busy || !ideas.some(i => i.selected)}>
                     Generate Story
@@ -1582,10 +1732,14 @@ export default function App() {
                         soundEffect={soundEffect}
                         includeSubtitles={includeSubtitles}
                         reelProgress={reelProgress}
+                        sceneImages={sceneImages}
                         onGenerateAudio={() => void generateStoryMp3()}
                         onGenerateReelVideos={() => void generateReelVideos()}
                         onRegenerateReelThumbnails={() => void regenerateReelThumbnails()}
                         onGenerateMetadata={() => void generateVideoMetadata()}
+                        onGenerateVideoThumbnail={() => void generateVideoThumbnail()}
+                        onGenerateStickVideo={source => void generateStickVideo(source)}
+                        onGenerateStickmanSceneImages={source => void generateStickmanSceneImages(source)}
                         onChooseBackground={kind => void chooseBackground(kind)}
                         onRender={() => void renderStoryVideo()}
                         onVideoFormatChange={setVideoFormat}
@@ -1647,6 +1801,9 @@ export default function App() {
                   <option value="gemini">Gemini</option>
                   <option value="openai">OpenAI</option>
                   <option value="groq">Groq (free)</option>
+                  <option value="claude-cli">Claude CLI (local)</option>
+                  <option value="codex-cli">Codex CLI (local)</option>
+                  <option value="antigravity-cli">Antigravity CLI (local)</option>
                 </select>
               </label>
               <label>
@@ -1721,6 +1878,19 @@ export default function App() {
               </label>
               <button type="button" className="secondary" disabled={busy} onClick={() => testAI('openai')}>
                 Test OpenAI
+              </button>
+              <p className="hint">
+                CLI providers dùng Claude Code / Codex / Antigravity CLI đã đăng nhập sẵn trên máy (không cần API
+                key). Cần cài đặt CLI tương ứng và đăng nhập trước ở Terminal.
+              </p>
+              <button type="button" className="secondary" disabled={busy} onClick={() => testAI('claude-cli')}>
+                Test Claude CLI
+              </button>
+              <button type="button" className="secondary" disabled={busy} onClick={() => testAI('codex-cli')}>
+                Test Codex CLI
+              </button>
+              <button type="button" className="secondary" disabled={busy} onClick={() => testAI('antigravity-cli')}>
+                Test Antigravity CLI
               </button>
               <button className="primary" disabled={busy}>
                 Save settings

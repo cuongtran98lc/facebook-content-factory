@@ -1,3 +1,5 @@
+import { audiencePrompt } from '../../shared/audience'
+import { rulesForDuration } from './stickman-knowledge'
 import type {
   GenerateReelsInput,
   ImportStoryInput,
@@ -9,7 +11,7 @@ import type {
 } from '../../shared/types'
 import { AIService } from './ai'
 import { getPrisma } from './database'
-import { LONG_STORY_RULES, REEL_SCRIPT_RULES, STORY_ENGINE_SYSTEM_PROMPT } from './story-prompts'
+import { REEL_SCRIPT_RULES, STORY_ENGINE_SYSTEM_PROMPT } from './story-prompts'
 
 function toDTO(row: {
   id: string
@@ -101,8 +103,8 @@ export class ScriptService {
     const legacyWords = Math.min(Math.max(input.targetWords ?? 2200, 800), 4500)
     const targetMinutes = input.targetMinutes == null
       ? Math.round(legacyWords / wordsPerMinute)
-      : Math.min(Math.max(input.targetMinutes, 5), 30)
-    const targetWords = Math.min(Math.max(Math.round(targetMinutes * wordsPerMinute), 800), 4500)
+      : Math.min(Math.max(input.targetMinutes, 0.25), 30)
+    const targetWords = Math.min(Math.max(Math.round(targetMinutes * wordsPerMinute), 35), 4500)
     const job = await prisma.job.create({
       data: { type: 'GENERATE_STORY', projectId: project.id, status: 'RUNNING', progress: 10 }
     })
@@ -111,7 +113,7 @@ export class ScriptService {
     try {
       const provider = this.ai.provider()
       const content = await provider.generateText({
-        system: STORY_ENGINE_SYSTEM_PROMPT,
+        system: STORY_ENGINE_SYSTEM_PROMPT + '\n' + audiencePrompt(project),
         prompt: [
           `Viết một câu chuyện có thời lượng kể mục tiêu khoảng ${targetMinutes} phút.`,
           `Ngân sách độ dài tham chiếu: khoảng ${targetWords} từ (ước tính ${wordsPerMinute} từ/phút); ưu tiên đủ diễn biến và nhịp kể hơn việc khớp số từ tuyệt đối.`,
@@ -120,8 +122,8 @@ export class ScriptService {
           `Hook gợi ý: ${idea.hook ?? 'tự tạo hook mạnh'}`,
           `Mô tả: ${idea.description ?? ''}`,
           '',
-          'Yêu cầu cho LONG VIDEO:',
-          ...LONG_STORY_RULES.map(rule => `- ${rule}`),
+          'Thời lượng người dùng đã chọn ưu tiên hơn format gợi ý trong idea. Áp dụng cấu trúc sau:',
+          ...rulesForDuration(targetMinutes).map(rule => `- ${rule}`),
           '- Không thêm markdown heading kiểu #, không giải thích ngoài câu chuyện.'
         ].join('\n')
       })
@@ -157,7 +159,7 @@ export class ScriptService {
 
     const text = await this.ai.provider().generateText({
       json: true,
-      system: 'Bạn là editor chuyên đánh giá Facebook storytelling. Chấm thực tế, không tâng bốc.',
+      system: STORY_ENGINE_SYSTEM_PROMPT + '\nFor this review only, override prose-only output and return the requested JSON schema. Judge visual clarity and format-appropriate payoff, not mandatory revenge. Bạn là editor chuyên đánh giá Facebook storytelling. Chấm thực tế, không tâng bốc.',
       prompt: [
         'Đánh giá story dưới đây và trả JSON thuần:',
         '{"score":8.2,"summary":"...","strengths":["..."],"issues":["..."],"rewriteInstruction":"..."}',
@@ -183,6 +185,7 @@ export class ScriptService {
     const script = await prisma.script.findUniqueOrThrow({ where: { id: input.scriptId } })
     if (script.type !== 'LONG_STORY') throw new Error('Rewrite hiện chỉ áp dụng cho LONG_STORY.')
 
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: script.projectId } })
     let reviewInstruction = input.instruction?.trim() ?? ''
     if (!reviewInstruction && script.review) {
       try {
@@ -193,7 +196,7 @@ export class ScriptService {
     if (!reviewInstruction) reviewInstruction = 'Tăng sức mạnh hook, retention và logic nhưng giữ nguyên tinh thần câu chuyện.'
 
     const rewritten = await this.ai.provider().generateText({
-      system: 'Bạn là senior editor. Viết lại toàn bộ story theo feedback, giữ tiếng Việt tự nhiên và chỉ trả nội dung story hoàn chỉnh.',
+      system: STORY_ENGINE_SYSTEM_PROMPT + '\nBạn là senior editor. Viết lại toàn bộ story theo feedback, giữ ngôn ngữ mục tiêu tự nhiên và chỉ trả nội dung story hoàn chỉnh.' + '\n' + audiencePrompt(project),
       prompt: `Feedback:\n${reviewInstruction}\n\nSTORY HIỆN TẠI:\n${script.content}`
     })
 
@@ -318,6 +321,7 @@ export class ScriptService {
 
   async generateReels(input: GenerateReelsInput): Promise<ScriptDTO[]> {
     const prisma = getPrisma()
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: input.projectId } })
     const count = Math.min(Math.max(input.count ?? 5, 1), 10)
     const story = await prisma.script.findFirst({
       where: { projectId: input.projectId, type: 'LONG_STORY', approved: true },
@@ -329,7 +333,7 @@ export class ScriptService {
     try {
       const text = await this.ai.provider().generateText({
         json: true,
-        system: STORY_ENGINE_SYSTEM_PROMPT,
+        system: STORY_ENGINE_SYSTEM_PROMPT + '\n' + audiencePrompt(project),
         prompt: [
           `Tạo ${count} Reel scripts khác nhau từ story dưới đây.`,
           'Trả JSON thuần: {"reels":[{"title":"...","hook":"...","content":"..."}]}',

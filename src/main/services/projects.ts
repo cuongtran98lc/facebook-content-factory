@@ -1,4 +1,5 @@
-import type { CreateProjectInput, ProjectDTO } from '../../shared/types'
+import { audiencePrompt } from '../../shared/audience'
+import type { CreateProjectInput, ProjectDTO, UpdateProjectInput } from '../../shared/types'
 import { getPrisma } from './database'
 import { ProjectStorageService } from './storage'
 
@@ -19,10 +20,26 @@ export class ProjectService {
   }
 
   async create(input: CreateProjectInput): Promise<ProjectDTO> {
+    audiencePrompt(input)
     const project = await getPrisma().project.create({
-      data: { name: input.name.trim(), niche: input.niche?.trim() || null, topic: input.topic?.trim() || null }
+      data: { targetMarket: input.targetMarket, contentLanguage: input.contentLanguage, name: input.name.trim(), niche: input.niche?.trim() || null, topic: input.topic?.trim() || null }
     })
     await storage.ensureProject(project.id)
+    return projectToDTO(project)
+  }
+
+  async update(id: string, input: UpdateProjectInput): Promise<ProjectDTO> {
+    audiencePrompt(input)
+    const project = await getPrisma().project.update({
+      where: { id },
+      data: {
+        targetMarket: input.targetMarket,
+        contentLanguage: input.contentLanguage,
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.niche !== undefined ? { niche: input.niche ? input.niche.trim() : null } : {}),
+        ...(input.topic !== undefined ? { topic: input.topic ? input.topic.trim() : null } : {}),
+      }
+    })
     return projectToDTO(project)
   }
 

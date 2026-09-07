@@ -1,7 +1,8 @@
+import { audiencePrompt } from '../../shared/audience'
 import type { GenerateIdeasInput, IdeaDTO } from '../../shared/types';
 import { AIService } from './ai';
 import { getPrisma } from './database';
-import { buildIdeasPrompt, STORY_ENGINE_SYSTEM_PROMPT } from './story-prompts';
+import { buildIdeasPrompt, IDEA_SYSTEM_PROMPT, IDEA_THEMES } from './story-prompts';
 
 function toDTO(row: {
   id: string;
@@ -57,12 +58,14 @@ export class IdeaService {
     await prisma.project.update({ where: { id: project.id }, data: { status: 'GENERATING_IDEAS' } });
 
     try {
+      const previousIdeas = await prisma.idea.findMany({ where: { projectId: project.id }, orderBy: { createdAt: 'desc' }, take: 30, select: { title: true } });
       const provider = this.ai.provider();
       const text = await provider.generateText({
         json: true,
-        system: STORY_ENGINE_SYSTEM_PROMPT,
+        system: IDEA_SYSTEM_PROMPT + '\n' + audiencePrompt(project),
         prompt: buildIdeasPrompt({
           count,
+          previousIdeas: previousIdeas.map(idea => idea.title),
           niche: project.niche ?? 'tự chọn ngách truyện đời sống phù hợp',
           topic: project.topic ?? 'tự đề xuất theo ngách'
         }),
@@ -72,6 +75,7 @@ export class IdeaService {
       const items = Array.isArray(parsed) ? parsed : parsed.ideas;
       if (!Array.isArray(items) || !items.length) throw new Error('AI không trả về danh sách idea.');
 
+      if (items.length !== count || items.some((raw, index) => !raw || typeof raw !== 'object' || (raw as Record<string, unknown>).category !== IDEA_THEMES[index % IDEA_THEMES.length] || !String((raw as Record<string, unknown>).title ?? '').trim())) throw new Error('AI chưa trả đủ idea theo 10 nhóm yêu cầu. Hãy generate lại; idea cũ vẫn được giữ.');
       await prisma.idea.deleteMany({ where: { projectId: project.id, selected: false } });
       for (const raw of items.slice(0, count)) {
         const item = raw as Record<string, unknown>;
@@ -83,7 +87,7 @@ export class IdeaService {
             projectId: project.id,
             title,
             hook: String(item.hook ?? '').trim() || null,
-            description: String(item.description ?? '').trim() || null,
+            description: `NHÓM: ${item.category} || ${String(item.description ?? '').trim()}`,
             score: Number.isFinite(scoreValue) ? Math.max(1, Math.min(10, scoreValue)) : null,
           },
         });

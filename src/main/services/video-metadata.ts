@@ -1,3 +1,4 @@
+import { audiencePrompt, type Audience } from '../../shared/audience'
 import { AIService } from './ai'
 
 export type PublishMode =
@@ -6,7 +7,7 @@ export type PublishMode =
   | 'REEL_SHORT_9_16'
   | 'STORY_LONG_1_1'
 
-export interface PublishTarget {
+export interface PublishTarget extends Audience {
   key: string
   mode: PublishMode
   storyTitle: string
@@ -36,7 +37,7 @@ const MAX_BATCH_TARGETS = 6
 const MAX_TITLE_CHARS = 100
 
 const SYSTEM_PROMPT = [
-  'Bạn là biên tập viên metadata video tiếng Việt cho YouTube và Facebook.',
+  'Bạn là biên tập viên metadata video theo ngôn ngữ mục tiêu cho YouTube và Facebook.',
   'Viết đúng nội dung được cung cấp, không bịa tình tiết, không tiết lộ twist hoặc kết thúc, không clickbait sai sự thật và không viết toàn bộ bằng chữ hoa.',
   'Chỉ trả JSON hợp lệ, không markdown và không giải thích thêm.'
 ].join(' ')
@@ -126,7 +127,8 @@ function partSuffix(target: PublishTarget): string {
   const part = Number(target.part)
   if (!Number.isFinite(part) || part < 1) return ''
   const total = Number(target.totalParts)
-  const label = target.mode === 'STORY_SHORT_9_16' ? 'Phần' : 'Tập'
+  const english = target.contentLanguage?.startsWith('en')
+  const label = target.mode === 'STORY_SHORT_9_16' ? (english ? 'Part' : 'Phần') : (english ? 'Episode' : 'Tập')
   return Number.isFinite(total) && total >= part
     ? ` — ${label} ${Math.floor(part)}/${Math.floor(total)}`
     : ` — ${label} ${Math.floor(part)}`
@@ -135,7 +137,7 @@ function partSuffix(target: PublishTarget): string {
 function titleWithSuffix(title: string, suffix: string): string {
   if (!suffix) return clipAtWord(title, MAX_TITLE_CHARS)
   const withoutWrongPart = title
-    .replace(/\b(?:tập|phần)\s*\d+(?:\s*\/\s*\d+)?\b/giu, ' ')
+    .replace(/\b(?:tập|phần|part|episode)\s*\d+(?:\s*\/\s*\d+)?\b/giu, ' ')
     .replace(/^[\s:|—–-]+|[\s:|—–-]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim() || 'Chuyện chưa kể'
@@ -144,8 +146,8 @@ function titleWithSuffix(title: string, suffix: string): string {
 }
 
 function fallbackTitle(target: PublishTarget): string {
-  let base = cleanInline(target.storyTitle) || 'Chuyện chưa kể'
-  if (Array.from(base).length < 8) base = `Câu chuyện ${base}`
+  let base = cleanInline(target.storyTitle) || (target.contentLanguage?.startsWith('en') ? 'Untold story' : 'Chuyện chưa kể')
+  if (Array.from(base).length < 8) base = `${target.contentLanguage?.startsWith('en') ? 'Story' : 'Câu chuyện'} ${base}`
   return titleWithSuffix(base, partSuffix(target))
 }
 
@@ -159,6 +161,7 @@ function fallbackDescription(target: PublishTarget, title: string): string {
   const isShort = target.mode === 'STORY_SHORT_9_16' || target.mode === 'REEL_SHORT_9_16'
   const excerpt = contentExcerpt(target.content, isShort ? 220 : 560)
   const displayTitle = clipAtWord(cleanInline(target.storyTitle) || title, 140)
+  if (target.contentLanguage?.startsWith('en')) return normalizeDescription(target, [displayTitle, excerpt, isShort ? '#Shorts #Story #Storytelling' : '#Story #Storytelling #Animation'].join('\n\n'))
   if (isShort) {
     const part = Number(target.part)
     const total = Number(target.totalParts)
@@ -187,7 +190,9 @@ function descriptionLimit(mode: PublishMode): number {
 function normalizeDescription(target: PublishTarget, value: string): string {
   const description = cleanDescription(value)
   const hashtagPattern = /#[\p{L}\p{N}_]+/gu
-  const defaults = target.mode === 'STORY_SHORT_9_16' || target.mode === 'REEL_SHORT_9_16'
+  const defaults = target.contentLanguage?.startsWith('en')
+    ? (target.mode.includes('SHORT') ? ['#Shorts', '#Story', '#Storytelling'] : ['#Story', '#Storytelling', '#Animation'])
+    : target.mode === 'STORY_SHORT_9_16' || target.mode === 'REEL_SHORT_9_16'
     ? ['#Shorts', '#TruyenNgan', '#KeChuyen']
     : ['#Truyen', '#KeChuyen', '#Story']
   const hashtags: string[] = []
@@ -239,6 +244,7 @@ function buildPrompt(batch: PreparedTarget[]): string {
   const data = batch.map(({ requestKey, target, context }) => ({
     key: requestKey,
     mode: target.mode,
+    audience: audiencePrompt(target),
     storyTitle: clipAtWord(cleanInline(target.storyTitle) || 'Chuyện chưa kể', 180),
     part: Number.isFinite(Number(target.part)) ? Math.floor(Number(target.part)) : null,
     totalParts: Number.isFinite(Number(target.totalParts)) ? Math.floor(Number(target.totalParts)) : null,
@@ -250,7 +256,7 @@ function buildPrompt(batch: PreparedTarget[]): string {
     '',
     'Quy tắc:',
     '- STORY_LONG_16_9: title 55–80 ký tự; description 450–900 ký tự, 2–3 đoạn, nêu tiền đề nhưng không spoil.',
-    '- STORY_SHORT_9_16: title 45–75 ký tự và phải có “Phần {part}/{totalParts}” khi có số phần; description 220–450 ký tự.',
+    '- STORY_SHORT_9_16: title 45–75 ký tự và phải có số phần bằng ngôn ngữ mục tiêu, ví dụ “Part {part}/{totalParts}” khi có số phần; description 220–450 ký tự.',
     '- REEL_SHORT_9_16: title 35–70 ký tự và phải có số tập khi được cung cấp; description 140–320 ký tự.',
     '- STORY_LONG_1_1: title 50–75 ký tự; description 350–800 ký tự, phù hợp video vuông dài.',
     '- Mọi title tối đa tuyệt đối 100 ký tự, tự nhiên, không lặp nguyên câu hook và không thêm nhãn tỷ lệ khung hình.',

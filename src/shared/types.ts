@@ -13,7 +13,7 @@ export type ProjectStatus =
   | 'READY'
   | 'FAILED';
 
-export type AIProviderName = 'openai' | 'gemini' | 'groq';
+export type AIProviderName = 'openai' | 'gemini' | 'groq' | 'claude-cli' | 'codex-cli' | 'antigravity-cli';
 export type ScriptType = 'LONG_STORY' | 'REEL';
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE';
 export type FitMode = 'CROP' | 'FIT';
@@ -25,6 +25,8 @@ export interface SoundEffectOptions {
 }
 
 export interface ProjectDTO {
+  targetMarket?: string;
+  contentLanguage?: string;
   id: string;
   name: string;
   niche: string | null;
@@ -37,7 +39,17 @@ export interface ProjectDTO {
 }
 
 export interface CreateProjectInput {
+  targetMarket?: string;
+  contentLanguage?: string;
   name: string;
+  niche?: string;
+  topic?: string;
+}
+
+export interface UpdateProjectInput {
+  targetMarket?: string;
+  contentLanguage?: string;
+  name?: string;
   niche?: string;
   topic?: string;
 }
@@ -232,6 +244,15 @@ export interface SelectVoiceInput {
   voiceName: string;
 }
 
+export interface StickmanSceneImageDTO {
+  index: number;
+  setting: string;
+  sectionText: string;
+  fileName: string;
+  filePath: string;
+  fileUrl: string;
+}
+
 export interface StoryMediaDTO {
   thumbnailPath: string | null;
   thumbnailUrl: string | null;
@@ -247,6 +268,7 @@ export interface StoryMediaDTO {
   backgroundName: string | null;
   backgroundDuration: number | null;
   backgroundKind: BackgroundKind | null;
+  backgroundStyle: 'CUSTOM' | 'STICK_FIGURE';
   renderPath: string | null;
   renderUrl: string | null;
   renderStatus: string | null;
@@ -430,6 +452,7 @@ export interface ContentFactoryAPI {
   projects: {
     list(): Promise<ProjectDTO[]>;
     create(input: CreateProjectInput): Promise<ProjectDTO>;
+    update(id: string, input: UpdateProjectInput): Promise<ProjectDTO>;
     remove(id: string): Promise<void>;
   };
   ideas: {
@@ -493,6 +516,8 @@ export interface ContentFactoryAPI {
     onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void;
     onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void;
     resumePending(): Promise<StoryMediaDTO | null>;
+    generateStickVideo(input: { projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<StoryMediaDTO>;
+    generateStickmanSceneImages(input: { projectId: string; scriptId: string; format?: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }>;
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>;
     chooseBackground(projectId: string, kind?: BackgroundKind): Promise<StoryMediaDTO | null>;
     render(input: RenderStoryVideoInput): Promise<StoryMediaDTO>;
