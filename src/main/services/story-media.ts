@@ -3,12 +3,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { nativeImage } from 'electron'
-import { readFile, stat, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink, writeFile, rename } from 'node:fs/promises'
 import sharp from 'sharp'
 import { pathToFileURL } from 'node:url'
 import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getPrisma } from './database'
-import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
+import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
@@ -25,7 +25,7 @@ const scriptHash = (text: string) => createHash('sha256').update(text).digest('h
 const TTS_CHUNK_ATTEMPTS = 4
 const STORY_SHORT_MAX_MS = 180_000
 const STORY_VIDEO_PRESET_SCHEMA = 1
-const CTA_TEXT = 'Hãy nhấn like và đăng ký kênh để mình có thêm động lực làm truyện tiếp cho các bạn nghe nha.'
+const CTA_TEXT = 'If you enjoyed this story, hit like and subscribe for more.'
 const PUBLISH_METADATA_ASSET_TYPE = 'VIDEO_PUBLISH_METADATA'
 const PUBLISH_METADATA_SCHEMA = 1
 const REEL_THUMBNAIL_VERSION = 7
@@ -122,9 +122,13 @@ function storyTextPart(content: string, part: number, totalParts: number): strin
 }
 
 function publishSidecar(metadata: StoredPublishMetadata): string {
+  const caption = metadata.caption || (metadata.title ? `${metadata.title}\n\n${metadata.description}` : metadata.description)
   return [
     `TIÊU ĐỀ (${metadata.mode})`,
     metadata.title,
+    '',
+    'CAPTION ĐĂNG BÀI (REELS / TIKTOK / FB)',
+    caption,
     '',
     'MÔ TẢ',
     metadata.description,
@@ -253,12 +257,13 @@ export class StoryMediaService {
   }
 
   private async makeCta(voiceId: string, projectId: string, forceRegen = false): Promise<string> {
-    const ctaPath = this.storage.getProjectPath(projectId, 'audio', '.parts', 'cta.mp3')
+    const ctaFile = `cta-${createHash('sha256').update(`${voiceId}:${CTA_TEXT}`).digest('hex').slice(0, 16)}.mp3`
+    const ctaPath = this.storage.getProjectPath(projectId, 'audio', '.parts', ctaFile)
     if (!forceRegen) {
       try { if ((await stat(ctaPath)).size > 0) return ctaPath } catch {}
     }
     const bytes = await this.synthesizeChunk(voiceId, CTA_TEXT, 0, 1)
-    await this.storage.writeBuffer(projectId, 'audio/.parts/cta.mp3', bytes)
+    await this.storage.writeBuffer(projectId, `audio/.parts/${ctaFile}`, bytes)
     return ctaPath
   }
 
@@ -268,7 +273,7 @@ export class StoryMediaService {
     const audioJob = await prisma.job.findFirst({ where: { type: 'GENERATE_STORY_AUDIO', status: 'RUNNING' }, orderBy: { updatedAt: 'asc' } })
     if (audioJob?.projectId && audioJob.payload) {
       const payload = parseMeta(audioJob.payload)
-      if (typeof payload.scriptId === 'string') resumedMedia = await this.generateStoryAudio(audioJob.projectId, payload.scriptId)
+      if (typeof payload.scriptId === 'string') resumedMedia = await this.generateStoryAudio(audioJob.projectId, payload.scriptId, payload.studioOutput === true)
     }
     const job = await prisma.job.findFirst({ where: { type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { updatedAt: 'asc' } })
     if (!job?.projectId || !job.payload) return resumedMedia
@@ -324,6 +329,7 @@ export class StoryMediaService {
           url: done ? mediaUrl(row.path, row.updatedAt) : null,
           status: row.status,
           publishTitle: publish?.data.title ?? null,
+          publishCaption: publish?.data.caption ?? (publish?.data.title ? `${publish.data.title}\n\n${publish.data.description}` : null),
           publishDescription: publish?.data.description ?? null,
           publishMetadataPath: publish?.path ?? null,
           publishSource: publish?.data.source ?? null
@@ -379,6 +385,7 @@ export class StoryMediaService {
           thumbnailUrl: mediaUrl(reelThumbnail?.path, reelThumbnail?.createdAt),
           status: reelRender?.status ?? null,
           publishTitle: publish?.data.title ?? null,
+          publishCaption: publish?.data.caption ?? (publish?.data.title ? `${publish.data.title}\n\n${publish.data.description}` : null),
           publishDescription: publish?.data.description ?? null,
           publishMetadataPath: publish?.path ?? null,
           publishSource: publish?.data.source ?? null
@@ -599,7 +606,7 @@ export class StoryMediaService {
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
       prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: [{ approved: 'desc' }, { version: 'desc' }] })
     ])
-    if (parseMeta(background?.metadata).style === 'STICK_FIGURE') throw new Error('Hoạt hình này theo Full Story. Chọn Render Story với định dạng 9:16 để chia Short; Reel scripts riêng cần nền khác.')
+    const isStickBackground = parseMeta(background?.metadata).style === 'STICK_FIGURE'
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
     const savedSoundEffect = normalizeSoundEffectOptions(typeof jobMeta.soundEffect === 'object' ? jobMeta.soundEffect as Partial<SoundEffectOptions> : undefined)
@@ -760,14 +767,56 @@ export class StoryMediaService {
           if (publishedVideo !== existingRender.path) await prisma.render.update({ where: { id: existingRender.id }, data: { path: publishedVideo } })
         } else {
           const render = await prisma.render.create({ data: { projectId, type: 'REEL_VIDEO', path: videoPath, status: 'RUNNING', preset: reel.id } })
+          const reelAudioDuration = await probeDuration(audioPath)
           const subtitlePath = includeSubtitles
             ? await this.storage.writeOutputText(projectId, `subtitles/${slug}.ass`, createAssSubtitles({
                 text: `${reel.content}\n\n${CTA_TEXT}`,
-                totalDuration: await probeDuration(audioPath),
+                totalDuration: reelAudioDuration,
                 format: 'REEL'
               }))
             : undefined
-          await renderLoopedVideo({ backgroundPath: background.path, backgroundKind, audioPath, outputPath: videoPath, format: 'REEL', fitMode, soundEffectSeed: episode, soundEffect, subtitlePath })
+
+          let reelBgPath = background.path
+          let reelBgKind = backgroundKind
+          let reelFrameRate: 30 | 60 = 30
+
+          if (isStickBackground) {
+            report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: đang tạo hoạt hình người que Short 9:16...`)
+            const reelSections = storySections(reel.content, true)
+            const generator = new AIService().provider()
+            let reelScenes: any[] = []
+            try {
+              const res = await generator.generateText({ json: true, prompt: stickPrompt(reelSections, true) })
+              reelScenes = parseStickScenes(res, reelSections.length)
+            } catch {
+              reelScenes = reelSections.map((_, sIdx) => ({
+                setting: sIdx === 0 ? 'home' : sIdx % 2 === 0 ? 'street' : 'office',
+                actors: [{ name: 'An', action: sIdx === 0 ? 'wave' : 'talk', role: 'MAIN' }]
+              }))
+            }
+            reelScenes.push({ setting: reelScenes[reelScenes.length - 1].setting, actors: [{ ...reelScenes[reelScenes.length - 1].actors[0], action: 'wave' }] })
+            reelSections.push(CTA_TEXT)
+            const stickReelPath = await this.storage.getOutputPath(projectId, 'background', `stick-${slug}-${randomUUID()}.mp4`)
+            await renderStickAnimation(reelScenes, reelSections, reelAudioDuration, 'REEL', stickReelPath, pct => {
+              report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: dựng hoạt hình người que ${pct}%...`)
+            }, audioPath)
+            reelBgPath = stickReelPath
+            reelBgKind = 'VIDEO'
+            reelFrameRate = 60
+          }
+
+          await renderLoopedVideo({
+            backgroundPath: reelBgPath,
+            backgroundKind: reelBgKind,
+            frameRate: reelFrameRate,
+            audioPath,
+            outputPath: videoPath,
+            format: 'REEL',
+            fitMode,
+            soundEffectSeed: episode,
+            soundEffect,
+            subtitlePath
+          })
           await prisma.render.update({ where: { id: render.id }, data: { status: 'DONE' } })
         }
         completedUnits++
@@ -824,7 +873,7 @@ export class StoryMediaService {
     return this.get(projectId)
   }
 
-  async extractThumbnailFromVideo(projectId: string, videoPath: string, timeSeconds: number): Promise<StoryMediaDTO> {
+  async extractThumbnailFromVideo(projectId: string, videoPath: string, timeSeconds: number, studioScriptId?: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
     try {
@@ -843,7 +892,10 @@ export class StoryMediaService {
       const frameMetadata = await frame.metadata()
       if (!frameMetadata.width || !frameMetadata.height) throw new Error('Không đọc được kích thước frame trích xuất từ video.')
       const thumbnailBytes = await frame.png().toBuffer()
-      const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
+      const path = studioScriptId
+        ? await this.storage.getStudioOutputPath(projectId, studioScriptId, 'images', 'thumbnail.png')
+        : await this.storage.getOutputPath(projectId, 'images', 'thumbnail.png')
+      await writeFile(path, thumbnailBytes)
       await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
       await prisma.asset.create({
         data: {
@@ -870,25 +922,24 @@ export class StoryMediaService {
   }
 
 
-  async generateStoryAudio(projectId: string, scriptId: string): Promise<StoryMediaDTO> {
+  async generateStoryAudio(projectId: string, scriptId: string, studioOutput = false): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const [project, script] = await Promise.all([
       prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
       prisma.script.findUniqueOrThrow({ where: { id: scriptId } })
     ])
+    if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ cho Story MP3.')
+    if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
+    const chunkSize = this.voices.getMaxTextLength()
+    const pieces = chunks(script.content, chunkSize)
+    if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
     const resuming = Boolean(job && jobMeta.scriptId === scriptId && jobMeta.scriptHash === scriptHash(script.content) && jobMeta.voiceId === project.voiceId)
     if (job && !resuming) {
       await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'Script hoặc voice đã thay đổi; không resume chunk audio cũ.' } })
     }
-    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, scriptHash: scriptHash(script.content), voiceId: project.voiceId }) } })
-    if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ cho Story MP3.')
-    if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
-
-    const chunkSize = this.voices.getMaxTextLength()
-    const pieces = chunks(script.content, chunkSize)
-    if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
+    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, studioOutput, scriptHash: scriptHash(script.content), voiceId: project.voiceId }) } })
 
     await prisma.project.update({ where: { id: projectId }, data: { status: 'GENERATING_MEDIA' } })
     const partPaths: string[] = []
@@ -906,13 +957,15 @@ export class StoryMediaService {
           await this.storage.writeBuffer(projectId, relativePath, bytes)
         }
         partPaths.push(path)
-        await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
+        await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, studioOutput, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
       }
 
       // Append CTA at the end of the story audio
       partPaths.push(await this.makeCta(project.voiceId, projectId, !resuming))
 
-      const output = await this.storage.getOutputPath(projectId, 'audio', 'story.mp3')
+      const output = studioOutput
+        ? await this.storage.getStudioOutputPath(projectId, scriptId, 'audio', 'story.mp3')
+        : await this.storage.getOutputPath(projectId, 'audio', 'story.mp3')
       const listFile = this.storage.getProjectPath(projectId, 'audio', '.parts', 'concat.txt')
       await concatMp3Parts(partPaths, output, listFile)
       const duration = await probeDuration(output)
@@ -933,7 +986,7 @@ export class StoryMediaService {
 
   private readonly stickRuns = new Set<string>()
 
-  async generateStickVideo(projectId: string, scriptId: string, format: VideoFormat, onProgress?: (progress: StoryVideoProgress) => void, source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API'): Promise<StoryMediaDTO> {
+  async generateStickVideo(projectId: string, scriptId: string, format: VideoFormat, onProgress?: (progress: StoryVideoProgress) => void, source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API', studioOutput = false): Promise<StoryMediaDTO> {
     if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video không hợp lệ.')
     if (!['API', 'CODEX_CLI', 'CLAUDE_CLI', 'ANTIGRAVITY_CLI'].includes(source)) throw new Error('Nguồn tạo storyboard không hợp lệ.')
     if (this.stickRuns.has(projectId)) throw new Error('Dự án đang tạo hoạt hình người que.')
@@ -943,41 +996,102 @@ export class StoryMediaService {
     let published = false
     const report = (percent: number, message: string) => onProgress?.({ current: 0, total: 1, percent, stage: 'VIDEO', message })
     try {
-      const [script, audio] = await Promise.all([
-        prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
-        prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
-      ])
-      if (!script || !audio) throw new Error('Hãy tạo truyện và Story MP3 trước.')
-      const audioMeta = parseMeta(audio.metadata)
-      if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content)) throw new Error('Hãy Generate Story MP3 lại từ truyện hiện tại trước khi tạo hoạt hình.')
-      const duration = await probeDuration(audio.path)
-      const sections = storySections(script.content)
+      const script = await prisma.script.findFirst({ where: { id: scriptId, projectId } })
+      if (!script) throw new Error('Không tìm thấy kịch bản để tạo hoạt hình.')
+      const isReel = script.type === 'REEL'
+      const effectiveFormat = isReel ? 'REEL' : format
+      let audioPath: string | undefined
+      let audioId: string | undefined
+
+      if (isReel) {
+        const reelAudios = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' } })
+        const existingAudio = reelAudios.find(row => {
+          const meta = parseMeta(row.metadata)
+          return meta.reelId === script.id && meta.scriptHash === scriptHash(script.content)
+        })
+        if (existingAudio) {
+          audioPath = existingAudio.path
+          audioId = existingAudio.id
+        } else {
+          const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
+          if (!project.voiceId) throw new Error('Hãy chọn voice trước khi tạo hoạt hình cho Reel.')
+          report(1, 'Đang tạo voice cho kịch bản Reel...')
+          const episode = script.version || 1
+          const slug = `reel-${String(episode).padStart(2, '0')}`
+          const expectedAudioPath = studioOutput
+            ? await this.storage.getStudioOutputPath(projectId, scriptId, 'audio', 'reel.mp3')
+            : await this.storage.getOutputPath(projectId, 'audio', 'reels', `${slug}.mp3`)
+          const ctaPath = await this.makeCta(project.voiceId, projectId)
+          const reelChunks = chunks(script.content, this.voices.getMaxTextLength())
+          const partPaths: string[] = []
+          for (const [chunkIndex, text] of reelChunks.entries()) {
+            const audioBytes = await this.synthesizeChunk(project.voiceId, text, chunkIndex, reelChunks.length)
+            partPaths.push(await this.storage.writeBuffer(projectId, `audio/reels/.parts/${slug}-${chunkIndex + 1}.mp3`, audioBytes))
+          }
+          partPaths.push(ctaPath)
+          await concatMp3Parts(partPaths, expectedAudioPath, this.storage.getProjectPath(projectId, 'audio', 'reels', '.parts', `${slug}-concat.txt`))
+          const reelDuration = await probeDuration(expectedAudioPath)
+          const createdAudio = await prisma.asset.create({
+            data: { projectId, type: 'REEL_AUDIO', path: expectedAudioPath, metadata: JSON.stringify({ reelId: script.id, scriptHash: scriptHash(script.content), episode, duration: reelDuration, voiceId: project.voiceId }) }
+          })
+          audioPath = createdAudio.path
+          audioId = createdAudio.id
+        }
+      } else {
+        const audio = await prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+        if (!audio) throw new Error('Hãy tạo truyện và Story MP3 trước.')
+        const audioMeta = parseMeta(audio.metadata)
+        if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content)) throw new Error('Hãy Generate Story MP3 lại từ truyện hiện tại trước khi tạo hoạt hình.')
+        audioPath = audio.path
+        audioId = audio.id
+      }
+
+      const duration = await probeDuration(audioPath)
+      if (studioOutput && isReel && (duration < 30 || duration > 60)) throw new Error(`Voice tập này dài ${duration.toFixed(1)} giây, ngoài mục tiêu 30–60 giây. Hãy chỉnh tốc độ voice hoặc chia lại kịch bản trước khi dựng.`)
+      const isShort = isReel || effectiveFormat === 'REEL' || duration <= 90
+      const sections = storySections(script.content, isShort)
       const sourceLabel = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : 'AI API'
-      report(2, `${sourceLabel} đang phân tích ${sections.length} cảnh từ truyện...`)
+      report(2, `${sourceLabel} đang phân tích ${sections.length} cảnh ${isShort ? 'Short 9:16 ' : ''}từ kịch bản...`)
       const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
-      const response = await generator.generateText({ json: true, prompt: stickPrompt(sections) })
+      const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort) })
       const scenes = parseStickScenes(response, sections.length)
       // Narration ends with the app CTA. Give it a separate scene and timing weight.
       scenes.push({ setting: scenes[scenes.length - 1].setting, actors: [{ ...scenes[scenes.length - 1].actors[0], action: 'wave' }] })
       sections.push(CTA_TEXT)
       const runId = randomUUID()
-      output = await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.mp4`)
-      await renderStickAnimation(scenes, sections, duration, format, output, percent => report(5 + Math.round(percent * .9), `Đang dựng hoạt hình người que: ${percent}%`), audio.path)
+      output = studioOutput
+        ? await this.storage.getStudioOutputPath(projectId, scriptId, 'videos', `stick-${runId}.mp4`)
+        : await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.mp4`)
+      await renderStickAnimation(scenes, sections, duration, effectiveFormat, output, percent => report(5 + Math.round(percent * .65), `Đang dựng hoạt hình người que ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''}: ${percent}%`), audioPath)
+      report(72, 'Đang tạo caption từ lời đọc và CTA...')
+      const subtitlePath = studioOutput
+        ? await this.storage.getStudioOutputPath(projectId, scriptId, 'subtitles', `stick-${runId}.ass`)
+        : await this.storage.getOutputPath(projectId, 'subtitles', `stick-${runId}.ass`)
+      await writeFile(subtitlePath, createAssSubtitles({ text: `${script.content}\n\n${CTA_TEXT}`, totalDuration: duration, format: effectiveFormat }), 'utf8')
+      const captionedOutput = output.replace(/\.mp4$/i, '-captioned.mp4')
+      try {
+        await burnVideoCaptions(output, subtitlePath, captionedOutput, duration,
+          percent => report(73 + Math.round(percent * .22), `Đang ghép caption vào video: ${percent}%`))
+        await rename(captionedOutput, output)
+      } finally { await unlink(captionedOutput).catch(() => undefined) }
       const measured = await probeDuration(output)
       if (Math.abs(measured - duration) > .2) throw new Error('Thời lượng hoạt hình không khớp lời đọc.')
-      const latestAudio = await prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
       const latestScript = await prisma.script.findUnique({ where: { id: scriptId } })
-      if (latestAudio?.id !== audio.id || latestScript?.content !== script.content) throw new Error('Truyện hoặc lời đọc đã thay đổi. Hãy tạo lại hoạt hình.')
-      const storyboardPath = await this.storage.writeOutputText(projectId, `background/stick-${runId}.json`, JSON.stringify({ scriptId, audioAssetId: audio.id, format, duration, timing: 'word-weighted', scenes: scenes.map((scene, index) => ({ ...scene, text: sections[index] })) }, null, 2))
+      if (latestScript?.content !== script.content) throw new Error('Truyện hoặc lời đọc đã thay đổi. Hãy tạo lại hoạt hình.')
+      const storyboardData = JSON.stringify({ scriptId, audioAssetId: audioId, format: effectiveFormat, duration: measured, timing: 'word-weighted', subtitlePath, subtitleTiming: 'estimated-from-text', scenes: scenes.map((scene, index) => ({ ...scene, text: sections[index] })), isShort }, null, 2)
+      const storyboardPath = studioOutput
+        ? await this.storage.getStudioOutputPath(projectId, scriptId, 'storyboard', `stick-${runId}.json`)
+        : await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.json`)
+      await writeFile(storyboardPath, storyboardData, 'utf8')
       await prisma.$transaction([
         prisma.asset.deleteMany({ where: { projectId, type: 'BACKGROUND_VIDEO' } }),
-        prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: output, metadata: JSON.stringify({ kind: 'VIDEO', style: 'STICK_FIGURE', format, duration: measured, audioAssetId: audio.id, scriptHash: scriptHash(script.content), storyboardPath }) } }),
+        prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: output, metadata: JSON.stringify({ kind: 'VIDEO', style: 'STICK_FIGURE', format: effectiveFormat, duration: measured, audioAssetId: audioId, scriptId: script.id, scriptHash: scriptHash(script.content), storyboardPath, subtitlePath, captionsBurnedIn: true, isShort }) } }),
         prisma.render.updateMany({ where: { projectId, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } }, data: { status: 'STALE' } })
       ])
       published = true
       report(97, 'Đang lấy thumbnail từ video hoạt hình...')
-      const media = await this.extractThumbnailFromVideo(projectId, output, Math.min(1, measured / 2))
-      report(100, 'Hoạt hình có lời đọc và thumbnail đã sẵn sàng. Render Story Video để thêm SFX và phụ đề.')
+      const media = await this.extractThumbnailFromVideo(projectId, output, Math.min(1, measured / 2), studioOutput ? scriptId : undefined)
+      report(100, `Hoạt hình ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''} có lời đọc, caption và thumbnail đã sẵn sàng.`)
       return media
     } finally {
       this.stickRuns.delete(projectId)
@@ -992,12 +1106,14 @@ export class StoryMediaService {
     source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API',
   ): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }> {
     const prisma = getPrisma()
-    const script = await prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } })
-    if (!script) throw new Error('Hãy chọn kịch bản truyện LONG_STORY để tạo bộ ảnh phân đoạn.')
+    const script = await prisma.script.findFirst({ where: { id: scriptId, projectId } })
+    if (!script) throw new Error('Hãy chọn kịch bản để tạo bộ ảnh phân đoạn.')
 
-    const sections = storySections(script.content)
+    const isShort = script.type === 'REEL' || format === 'REEL'
+    const effectiveFormat = script.type === 'REEL' ? 'REEL' : format
+    const sections = storySections(script.content, isShort)
     const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
-    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections) })
+    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort) })
     const scenes = parseStickScenes(response, sections.length)
 
     const colors = new Map<string, string>()
@@ -1014,7 +1130,7 @@ export class StoryMediaService {
       const scene = scenes[i]
       const sectionText = sections[i]
       const fileName = `scene_${String(i + 1).padStart(2, '0')}_${scene.setting}.png`
-      const svgText = stickFrame(scene, 0, format, colors)
+      const svgText = stickFrame(scene, 0, effectiveFormat, colors)
       const pngBuffer = await sharp(Buffer.from(svgText)).png().toBuffer()
       const relativePath = `images/scenes/${timestamp}/${fileName}`
       const filePath = await this.storage.writeOutputBuffer(projectId, relativePath, pngBuffer)

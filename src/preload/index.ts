@@ -147,6 +147,19 @@ const api: ContentFactoryAPI = {
     revoke: () => ipcRenderer.invoke('facebook:revoke'),
     fetchPages: userAccessToken => ipcRenderer.invoke('facebook:fetch-pages', userAccessToken),
   },
+  stickmanEngine: {
+    splitReels: input => ipcRenderer.invoke('stickman:reels:split', input),
+    saveOutput: input => ipcRenderer.invoke('stickman:output:save', input),
+    getPillars: () => ipcRenderer.invoke('stickman:pillars:list'),
+    generateIdeas: input => ipcRenderer.invoke('stickman:ideas:generate', input),
+    generateHooks: input => ipcRenderer.invoke('stickman:hooks:generate', input),
+    generateScript: input => ipcRenderer.invoke('stickman:script:generate', input),
+    regenerateBeat: input => ipcRenderer.invoke('stickman:script:regenerate-beat', input),
+    generateScenes: input => ipcRenderer.invoke('stickman:scenes:generate', input),
+    generatePackage: input => ipcRenderer.invoke('stickman:package:generate', input),
+    expandShortToLong: input => ipcRenderer.invoke('stickman:short-to-long:expand', input),
+  },
 };
 
 contextBridge.exposeInMainWorld('contentFactory', api);
+

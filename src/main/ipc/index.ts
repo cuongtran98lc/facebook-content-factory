@@ -46,6 +46,7 @@ import { StoryMediaService } from '../services/story-media';
 import { VoiceService } from '../services/voices';
 import { YouTubeService } from '../services/youtube';
 import { FacebookService } from '../services/facebook';
+import { StickmanEngineService } from '../services/stickman-engine';
 
 const projects = new ProjectService();
 const pipeline = new PipelineService();
@@ -62,6 +63,7 @@ const storage = new ProjectStorageService();
 const crawler = new StoryCrawlerService();
 const youtube = new YouTubeService(settings);
 const facebook = new FacebookService(settings);
+const stickmanEngine = new StickmanEngineService(ai);
 export const scheduler = new SchedulerService(youtube, facebook);
 export const renderQueue = new RenderQueueService(storyMedia);
 
@@ -184,14 +186,14 @@ export function registerIpcHandlers(): void {
   );
   ipcMain.handle('story-media:generate-stick-video', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickVideo']>[0]) =>
     storyMedia.generateStickVideo(input.projectId, input.scriptId, input.format, progress => {
-      if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', progress);
-    }, input.source),
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', { ...progress, projectId: input.projectId, scriptId: input.scriptId });
+    }, input.source, input.studioOutput === true),
   );
   ipcMain.handle('story-media:generate-stickman-scene-images', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickmanSceneImages']>[0]) =>
     storyMedia.generateStickmanSceneImages(input.projectId, input.scriptId, input.format, input.source),
   );
   ipcMain.handle('story-media:generate-audio', (_event, input: GenerateStoryAudioInput) =>
-    storyMedia.generateStoryAudio(input.projectId, input.scriptId),
+    storyMedia.generateStoryAudio(input.projectId, input.scriptId, input.studioOutput === true),
   );
   ipcMain.handle('story-media:choose-background', async (_event, projectId: string, kind: BackgroundKind = 'VIDEO') => {
     const image = kind === 'IMAGE';
@@ -269,4 +271,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('facebook:fetch-pages', (_event, userAccessToken: string) => {
     return facebook.fetchPages(userAccessToken);
   });
+
+  // Stickman Engine
+  ipcMain.handle('stickman:reels:split', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['stickmanEngine']['splitReels']>[0]) => stickmanEngine.splitReels(input));
+  ipcMain.handle('stickman:output:save', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['stickmanEngine']['saveOutput']>[0]) => stickmanEngine.saveOutput(input));
+  ipcMain.handle('stickman:pillars:list', () => stickmanEngine.getPillars());
+  ipcMain.handle('stickman:ideas:generate', (_event, input: any) => stickmanEngine.generateIdeas(input));
+  ipcMain.handle('stickman:hooks:generate', (_event, input: any) => stickmanEngine.generateHooks(input));
+  ipcMain.handle('stickman:script:generate', (_event, input: any) => stickmanEngine.generateScript(input));
+  ipcMain.handle('stickman:script:regenerate-beat', (_event, input: any) => stickmanEngine.regenerateBeat(input));
+  ipcMain.handle('stickman:scenes:generate', (_event, input: any) => stickmanEngine.generateScenes(input));
+  ipcMain.handle('stickman:package:generate', (_event, input: any) => stickmanEngine.generatePackage(input));
+  ipcMain.handle('stickman:short-to-long:expand', (_event, input: any) => stickmanEngine.expandShortToLong(input));
 }

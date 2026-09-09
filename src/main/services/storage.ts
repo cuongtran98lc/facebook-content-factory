@@ -85,6 +85,15 @@ export class ProjectStorageService {
     return root
   }
 
+  async getStudioOutputPath(projectId: string, scriptId: string, ...segments: string[]): Promise<string> {
+    // Full database IDs avoid collisions between projects, scripts and retries.
+    if (!/^[a-zA-Z0-9_-]+$/.test(projectId) || !/^[a-zA-Z0-9_-]+$/.test(scriptId)) throw new Error('ID output Studio không hợp lệ.')
+    const root = safeChildPath(getOutputRoot(), ['stickman-studio', projectId, scriptId])
+    const output = safeChildPath(root, segments)
+    await mkdir(dirname(output), { recursive: true })
+    return output
+  }
+
   async getOutputPath(projectId: string, ...segments: string[]): Promise<string> {
     const root = await this.ensureOutputProject(projectId)
     const output = safeChildPath(root, segments)

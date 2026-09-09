@@ -19,6 +19,7 @@ export interface PublishTarget extends Audience {
 export interface PublishMetadata {
   key: string
   title: string
+  caption?: string
   description: string
   source: 'AI' | 'FALLBACK'
   provider: string | null
@@ -214,10 +215,13 @@ function normalizeDescription(target: PublishTarget, value: string): string {
 
 function fallbackMetadata(target: PublishTarget, provider: string | null): PublishMetadata {
   const title = fallbackTitle(target)
+  const description = fallbackDescription(target, title)
+  const caption = `${title}\n\n${description}`
   return {
     key: String(target.key ?? ''),
     title,
-    description: fallbackDescription(target, title),
+    caption,
+    description,
     source: 'FALLBACK',
     provider
   }
@@ -230,10 +234,15 @@ function normalizeAIItem(target: PublishTarget, item: Record<string, unknown>, p
 
   title = titleWithSuffix(title, partSuffix(target))
   description = normalizeDescription(target, description)
+  let caption = cleanDescription(item.caption)
+  if (!caption || caption.length < 15) {
+    caption = `${title}\n\n${description}`
+  }
 
   return {
     key: String(target.key ?? ''),
     title,
+    caption,
     description,
     source: 'AI',
     provider
@@ -252,20 +261,22 @@ function buildPrompt(batch: PreparedTarget[]): string {
   }))
 
   return [
-    'Tạo title và description riêng cho từng video trong DỮ LIỆU.',
+    'Tạo title, caption và description riêng cho từng video trong DỮ LIỆU.',
     '',
     'Quy tắc:',
+    '- title: tiêu đề hấp dẫn, tự nhiên, không lặp nguyên câu hook và không thêm nhãn tỷ lệ khung hình.',
+    '- caption: 80–220 ký tự, định dạng sẵn để đăng lên mạng xã hội (Facebook Reels, TikTok, Shorts), gồm hook + 1-2 câu kịch tính + kêu gọi xem tiếp + hashtags.',
     '- STORY_LONG_16_9: title 55–80 ký tự; description 450–900 ký tự, 2–3 đoạn, nêu tiền đề nhưng không spoil.',
     '- STORY_SHORT_9_16: title 45–75 ký tự và phải có số phần bằng ngôn ngữ mục tiêu, ví dụ “Part {part}/{totalParts}” khi có số phần; description 220–450 ký tự.',
     '- REEL_SHORT_9_16: title 35–70 ký tự và phải có số tập khi được cung cấp; description 140–320 ký tự.',
     '- STORY_LONG_1_1: title 50–75 ký tự; description 350–800 ký tự, phù hợp video vuông dài.',
-    '- Mọi title tối đa tuyệt đối 100 ký tự, tự nhiên, không lặp nguyên câu hook và không thêm nhãn tỷ lệ khung hình.',
+    '- Mọi title tối đa tuyệt đối 100 ký tự.',
     '- Description kết thúc bằng đúng 3 hashtag liên quan; chỉ dùng #Shorts cho video SHORT 9:16.',
     '- Mỗi item phải khác nhau và phản ánh đúng nội dung của chính item đó.',
     '- Trả đủ đúng một item cho mỗi key đầu vào và giữ nguyên key.',
     '',
     'Trả đúng schema JSON:',
-    '{"items":[{"key":"item-1","title":"...","description":"..."}]}',
+    '{"items":[{"key":"item-1","title":"...","caption":"...","description":"..."}]}',
     '',
     `DỮ LIỆU:\n${JSON.stringify(data)}`
   ].join('\n')

@@ -313,3 +313,19 @@ export async function addAnimationNarration(video: string, audio: string, output
   await run('ffmpeg', ['-y', '-i', video, '-i', audio, '-map', '0:v:0', '-map', '1:a:0',
     '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', output])
 }
+
+/** Burn captions into the existing animation while copying its narration unchanged. */
+export async function burnVideoCaptions(video: string, subtitlePath: string, output: string, duration: number, onProgress?: (percent: number) => void): Promise<void> {
+  if (!await hasFilter('ass')) throw new Error('FFmpeg thiếu libass để ghép caption. Hãy dùng bản ffmpeg-full.');
+  const escapedSubtitlePath = subtitlePath
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+    .replace(/,/g, '\\,')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+  await run('ffmpeg', ['-y', '-i', video, '-map', '0:v:0', '-map', '0:a:0',
+    '-vf', `ass=filename='${escapedSubtitlePath}'`, '-c:v', 'libx264', '-preset', 'veryfast',
+    '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart',
+    '-progress', 'pipe:1', '-nostats', output], seconds => onProgress?.(Math.min(100, Math.round(seconds / duration * 100))));
+}

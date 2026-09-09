@@ -1,4 +1,5 @@
 import type { AIProvider, GenerateTextOptions } from './types'
+import { AIRequestError, retryAfterMs } from './retry'
 
 interface GeminiResponse {
   candidates?: Array<{
@@ -38,8 +39,12 @@ export class GeminiProvider implements AIProvider {
       },
       body: JSON.stringify(body)
     })
+    // Gateways can send an HTML/text error; retain the HTTP status for retry.
+    if (!response.ok) {
+      const data = await response.json().catch(() => null) as GeminiResponse | null
+      throw new AIRequestError(data?.error?.message || `Gemini HTTP ${response.status}`, response.status, retryAfterMs(response.headers.get('retry-after')))
+    }
     const data = (await response.json()) as GeminiResponse
-    if (!response.ok) throw new Error(data.error?.message || `Gemini HTTP ${response.status}`)
 
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('').trim()
     if (!text) throw new Error('Gemini trả về response nhưng không có text output.')

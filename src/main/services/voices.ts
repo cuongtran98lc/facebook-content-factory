@@ -282,9 +282,23 @@ export class VoiceService {
     }
     const edgeVoices: VoiceDTO[] = [
       ...[
-        { voice: 'en-US-JennyNeural', name: 'Jenny · Tiếng Anh Mỹ', lang: 'en-US' },
-        { voice: 'en-GB-SoniaNeural', name: 'Sonia · Tiếng Anh Anh', lang: 'en-GB' }
-      ].map(item => ({ id: `edge::${item.voice}`, name: item.name, category: 'Microsoft Edge TTS', description: `English narration · ${item.lang}`, previewUrl: null, labels: { provider: 'edge-tts', gender: 'female', lang: item.lang } })),
+        { voice: 'en-US-AndrewNeural', name: 'Andrew · Mỹ', lang: 'en-US', gender: 'male', description: 'Hội thoại: ấm, tự tin, tự nhiên' },
+        { voice: 'en-US-BrianNeural', name: 'Brian · Mỹ', lang: 'en-US', gender: 'male', description: 'Hội thoại: gần gũi, thoải mái, chân thành' },
+        { voice: 'en-US-EmmaNeural', name: 'Emma · Mỹ', lang: 'en-US', gender: 'female', description: 'Hội thoại: vui vẻ, rõ ràng' },
+        { voice: 'en-US-AvaNeural', name: 'Ava · Mỹ', lang: 'en-US', gender: 'female', description: 'Hội thoại: biểu cảm, thân thiện' },
+        { voice: 'en-US-JennyNeural', name: 'Jenny · Mỹ', lang: 'en-US', gender: 'female', description: 'Thân thiện, nhẹ nhàng' },
+        { voice: 'en-US-AriaNeural', name: 'Aria · Mỹ', lang: 'en-US', gender: 'female', description: 'Kể truyện: tích cực, tự tin' },
+        { voice: 'en-US-GuyNeural', name: 'Guy · Mỹ', lang: 'en-US', gender: 'male', description: 'Kể truyện: giàu nhiệt huyết' },
+        { voice: 'en-US-ChristopherNeural', name: 'Christopher · Mỹ', lang: 'en-US', gender: 'male', description: 'Kể truyện: tin cậy, đĩnh đạc' },
+        { voice: 'en-US-AnaNeural', name: 'Ana · Mỹ', lang: 'en-US', gender: 'female', description: 'Hoạt hình và hội thoại: dễ thương' },
+        { voice: 'en-GB-SoniaNeural', name: 'Sonia · Anh', lang: 'en-GB', gender: 'female', description: 'Thân thiện, tích cực' },
+        { voice: 'en-GB-RyanNeural', name: 'Ryan · Anh', lang: 'en-GB', gender: 'male', description: 'Thân thiện, tích cực' },
+        { voice: 'en-GB-LibbyNeural', name: 'Libby · Anh', lang: 'en-GB', gender: 'female', description: 'Thân thiện, tích cực' },
+        { voice: 'en-CA-ClaraNeural', name: 'Clara · Canada', lang: 'en-CA', gender: 'female', description: 'Thân thiện, tích cực' },
+        { voice: 'en-CA-LiamNeural', name: 'Liam · Canada', lang: 'en-CA', gender: 'male', description: 'Thân thiện, tích cực' },
+        { voice: 'en-AU-NatashaNeural', name: 'Natasha · Úc', lang: 'en-AU', gender: 'female', description: 'Thân thiện, tích cực' },
+        { voice: 'en-AU-WilliamMultilingualNeural', name: 'William · Úc', lang: 'en-AU', gender: 'male', description: 'Thân thiện, tích cực' },
+      ].map(item => ({ id: `edge::${item.voice}`, name: `${item.name} · Tiếng Anh`, category: 'Microsoft Edge TTS', description: `English · ${item.lang} · ${item.description}`, previewUrl: null, labels: { provider: 'edge-tts', gender: item.gender, lang: item.lang } })),
       { id: EDGE_HOAIMY_VOICE_ID, name: 'Hoài My Neural · Nữ Việt Nam', category: 'Microsoft Edge TTS', description: 'Giọng nữ neural tiếng Việt, rõ và tự nhiên cho narration.', previewUrl: null, labels: { provider: 'edge-tts', gender: 'female', lang: 'vi-VN' } },
       { id: EDGE_NAMMINH_VOICE_ID, name: 'Nam Minh Neural · Nam Việt Nam', category: 'Microsoft Edge TTS', description: 'Giọng nam neural tiếng Việt.', previewUrl: null, labels: { provider: 'edge-tts', gender: 'male', lang: 'vi-VN' } }
     ].filter(voice => !needle || `${voice.name} ${voice.description}`.toLocaleLowerCase('vi').includes(needle))

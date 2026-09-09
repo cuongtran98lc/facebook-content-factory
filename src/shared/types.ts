@@ -291,6 +291,7 @@ export interface StoryVideoPartDTO {
   url: string | null;
   status: string | null;
   publishTitle: string | null;
+  publishCaption?: string | null;
   publishDescription: string | null;
   publishMetadataPath: string | null;
   publishSource: 'AI' | 'FALLBACK' | null;
@@ -300,12 +301,14 @@ export interface ReelMediaDTO {
   episode: number;
   title: string | null;
   audioPath: string | null;
+  audioUrl?: string | null;
   videoPath: string | null;
   videoUrl: string | null;
   thumbnailPath: string | null;
   thumbnailUrl: string | null;
   status: string | null;
   publishTitle: string | null;
+  publishCaption?: string | null;
   publishDescription: string | null;
   publishMetadataPath: string | null;
   publishSource: 'AI' | 'FALLBACK' | null;
@@ -321,6 +324,7 @@ export interface ExtractThumbnailFromVideoInput {
   timeSeconds: number;
 }
 export interface GenerateStoryAudioInput {
+  studioOutput?: boolean;
   projectId: string;
   scriptId: string;
 }
@@ -349,6 +353,8 @@ export interface ReelVideoProgress {
   message: string;
 }
 export interface StoryVideoProgress {
+  projectId?: string;
+  scriptId?: string;
   current: number;
   total: number;
   percent: number;
@@ -403,6 +409,7 @@ export interface ScheduledPostDTO {
   projectName: string;
   platform: Platform;
   publishTitle: string | null;
+  publishCaption?: string | null;
   publishDescription: string | null;
   status: ScheduleStatus | null;
   scheduledAt: string | null;
@@ -516,7 +523,7 @@ export interface ContentFactoryAPI {
     onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void;
     onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void;
     resumePending(): Promise<StoryMediaDTO | null>;
-    generateStickVideo(input: { projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<StoryMediaDTO>;
+    generateStickVideo(input: { studioOutput?: boolean; projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<StoryMediaDTO>;
     generateStickmanSceneImages(input: { projectId: string; scriptId: string; format?: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }>;
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>;
     chooseBackground(projectId: string, kind?: BackgroundKind): Promise<StoryMediaDTO | null>;
@@ -554,4 +561,19 @@ export interface ContentFactoryAPI {
     revoke(): Promise<void>;
     fetchPages(userAccessToken: string): Promise<{ id: string; name: string; accessToken: string }[]>;
   };
+  stickmanEngine: {
+    splitReels(input: { projectId: string; scriptId: string; count: number }): Promise<import('./stickman-engine').StudioReelEpisode[]>;
+    saveOutput(input: { projectId: string; scriptId: string; pkg: import('./stickman-engine').StickmanContentPackage }): Promise<string>;
+    getPillars(): Promise<import('./stickman-engine').StickmanContentPillar[]>;
+    generateIdeas(input: import('./stickman-engine').GenerateStickmanIdeasInput): Promise<import('./stickman-engine').StickmanIdea[]>;
+    generateHooks(input: import('./stickman-engine').GenerateHooksInput): Promise<import('./stickman-engine').HookVariation[]>;
+    generateScript(input: import('./stickman-engine').GenerateScriptInput): Promise<import('./stickman-engine').ScriptBeat[]>;
+    regenerateBeat(input: import('./stickman-engine').RegenerateBeatInput): Promise<import('./stickman-engine').ScriptBeat[]>;
+    generateScenes(input: import('./stickman-engine').GenerateScenesInput): Promise<import('./stickman-engine').EngineScene[]>;
+    generatePackage(input: import('./stickman-engine').GeneratePackageInput): Promise<import('./stickman-engine').StickmanContentPackage>;
+    expandShortToLong(input: import('./stickman-engine').ExpandShortToLongInput): Promise<import('./stickman-engine').StickmanIdea>;
+  };
 }
+
+export * from './stickman-engine';
+

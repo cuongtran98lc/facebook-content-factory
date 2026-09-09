@@ -23,7 +23,7 @@ export class CodexCliService implements AIProvider {
     try {
       await new Promise<void>((resolve, reject) => {
         const child = spawn(this.binary, [
-          'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check',
+          'exec', '--ephemeral', '--skip-git-repo-check',
           '--sandbox', 'read-only', '--color', 'never', '--output-last-message', output, '-'
         ], {
           cwd: root, shell: false, stdio: ['pipe', 'ignore', 'pipe'],

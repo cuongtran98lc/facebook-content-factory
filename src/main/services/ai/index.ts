@@ -7,11 +7,16 @@ import { GeminiProvider } from './gemini';
 import { GroqProvider } from './groq';
 import { OpenAIProvider } from './openai';
 import type { AIProvider } from './types';
+import { RetryingAIProvider } from './retry';
 
 export class AIService {
   constructor(private readonly settings = new SettingsService()) {}
 
   provider(providerName?: AIProviderName): AIProvider {
+    return new RetryingAIProvider(this.rawProvider(providerName));
+  }
+
+  private rawProvider(providerName?: AIProviderName): AIProvider {
     const name = providerName ?? this.settings.getProvider();
     // CLI providers chạy qua binary CLI đã đăng nhập sẵn trên máy — không cần
     // API key hay model config từ Settings.
