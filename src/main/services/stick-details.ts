@@ -2,7 +2,7 @@ export const HAIR = ['none', 'short', 'long', 'bun', 'curly', 'spiky', 'ponytail
 export const OUTFITS = ['plain', 'hoodie', 'shirt', 'dress', 'suit', 'uniform', 'jacket', 'doctor_coat', 'apron', 'police', 'tshirt'] as const
 export const AGES = ['child', 'adult', 'elder'] as const
 export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'worried', 'crying', 'laughing', 'shocked', 'smug', 'in_love', 'furious'] as const
-export const PROPS = ['none', 'book', 'phone', 'bag', 'letter', 'cup', 'flowers', 'laptop', 'gamepad', 'gift', 'money', 'coffee', 'briefcase', 'knife', 'umbrella', 'camera', 'key', 'microphone', 'car_wheel', 'envelope', 'shopping_bag'] as const
+export const PROPS = ['none', 'book', 'phone', 'bag', 'letter', 'cup', 'flowers', 'laptop', 'gamepad', 'gift', 'money', 'coffee', 'briefcase', 'knife', 'umbrella', 'camera', 'key', 'microphone', 'car_wheel', 'envelope', 'shopping_bag', 'contract', 'money_pile', 'red_button', 'blue_button', 'scales'] as const
 export const OBJECTS = ['table', 'chair', 'bed', 'door', 'plant', 'bookshelf', 'sofa', 'tv', 'window', 'lamp', 'clock', 'computer_desk', 'bench', 'car'] as const
 export const CHARACTER_ROLES = ['MAIN', 'GIRLFRIEND', 'BEST_FRIEND', 'SUPPORTING'] as const
 export const ROLE_COLORS = { MAIN: '#e31b23', GIRLFRIEND: '#222222', BEST_FRIEND: '#555555' } as const
@@ -94,6 +94,11 @@ export function heldProp(prop: CharacterDetails['prop'], x: number, y: number): 
   if (prop === 'car_wheel') shape = '<circle cx="0" cy="0" r="22" fill="none" stroke-width="4"/><circle cx="0" cy="0" r="7" fill="#475569"/><path d="M-22 0h15m14 0h15M0 7v15" stroke-width="4"/>'
   if (prop === 'envelope') shape = '<path d="M-22 -14h44v28h-44Z" fill="#fef08a"/><path d="M-22 -14l22 15l22 -14" fill="none" stroke="#ca8a04"/><circle cx="0" cy="2" r="4" fill="#ef4444"/>'
   if (prop === 'shopping_bag') shape = '<rect x="-18" y="-10" width="36" height="34" rx="3" fill="#f43f5e"/><path d="M-8 -10q0 -10 8 -10t8 10" fill="none" stroke="#fff" stroke-width="2.5"/><circle cx="0" cy="8" r="5" fill="#fff" fill-opacity=".5"/>'
+  if (prop === 'contract') shape = '<rect x="-18" y="-22" width="36" height="44" rx="2" fill="#fffef0" stroke="#b45309" stroke-width="2"/><line x1="-12" y1="-14" x2="12" y2="-14" stroke="#64748b" stroke-width="1.5"/><line x1="-12" y1="-6" x2="12" y2="-6" stroke="#64748b" stroke-width="1.5"/><line x1="-12" y1="2" x2="6" y2="2" stroke="#64748b" stroke-width="1.5"/><circle cx="6" cy="12" r="5" fill="#ef4444"/><path d="M-12 12h12" stroke="#222" stroke-width="1.5"/>'
+  if (prop === 'money_pile') shape = '<rect x="-26" y="-12" width="52" height="26" rx="2" fill="#86efac" stroke="#15803d" stroke-width="2"/><rect x="-22" y="-18" width="44" height="12" rx="2" fill="#bbf7d0" stroke="#15803d" stroke-width="1.5"/><text x="0" y="5" font-family="sans-serif" font-weight="bold" font-size="14" fill="#15803d" text-anchor="middle">$ $ $</text>'
+  if (prop === 'red_button') shape = '<rect x="-20" y="-10" width="40" height="25" rx="3" fill="#334155" stroke="#0f172a" stroke-width="2"/><ellipse cx="0" cy="-10" rx="14" ry="7" fill="#ef4444" stroke="#991b1b" stroke-width="2"/><circle cx="0" cy="-12" r="5" fill="#fca5a5" fill-opacity=".6"/>'
+  if (prop === 'blue_button') shape = '<rect x="-20" y="-10" width="40" height="25" rx="3" fill="#334155" stroke="#0f172a" stroke-width="2"/><ellipse cx="0" cy="-10" rx="14" ry="7" fill="#3b82f6" stroke="#1d4ed8" stroke-width="2"/><circle cx="0" cy="-12" r="5" fill="#93c5fd" fill-opacity=".6"/>'
+  if (prop === 'scales') shape = '<line x1="0" y1="-26" x2="0" y2="15" stroke="#b45309" stroke-width="3"/><line x1="-24" y1="-20" x2="24" y2="-20" stroke="#b45309" stroke-width="2.5"/><circle cx="0" cy="-26" r="3" fill="#f59e0b"/><path d="M-24 -20l-8 16h16l-8 -16Z M24 -20l-8 16h16l-8 -16Z" fill="#fbbf24" stroke="#b45309" stroke-width="1.5"/><line x1="-15" y1="15" x2="15" y2="15" stroke="#78350f" stroke-width="4"/>'
   return shape ? `<g transform="translate(${x} ${y})" stroke-width="2.5">${shape}</g>` : ''
 }
 export function sceneObjects(objects: typeof OBJECTS[number][] | undefined, w: number, floor: number): string {
@@ -119,7 +124,7 @@ export function sceneObjects(objects: typeof OBJECTS[number][] | undefined, w: n
   }).join('')
 }
 
-export const OVERLAYS = ['message', 'thought', 'timer', 'money', 'hp', 'rule'] as const
+export const OVERLAYS = ['message', 'thought', 'timer', 'money', 'hp', 'rule', 'dilemma'] as const
 export interface SceneOverlay { kind: typeof OVERLAYS[number]; label: string }
 export function parseOverlay(raw: unknown): SceneOverlay | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -131,6 +136,6 @@ export function parseOverlay(raw: unknown): SceneOverlay | undefined {
 export function renderOverlay(overlay: SceneOverlay | undefined, w: number): string {
   if (!overlay) return ''
   const escaped = overlay.label.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]!))
-  const captions = { message: 'MESSAGE', thought: 'THOUGHT', timer: 'TIME', money: 'BALANCE', hp: 'HP', rule: 'WHAT IF' }
+  const captions = { message: 'MESSAGE', thought: 'THOUGHT', timer: 'TIME', money: 'BALANCE', hp: 'HP', rule: 'WHAT IF', dilemma: 'DILEMMA' }
   return `<g transform="translate(${w / 2} 72)" font-family="sans-serif" text-anchor="middle"><rect x="-195" y="-24" width="390" height="64" rx="14" fill="#f4f7fa" stroke="#222" stroke-width="2"/><text y="-6" font-size="11" fill="#6a7787">${captions[overlay.kind]}</text><text y="22" font-size="14" fill="#222" textLength="${Math.min(355, overlay.label.length * 8)}" lengthAdjust="spacingAndGlyphs">${escaped}</text></g>`
 }

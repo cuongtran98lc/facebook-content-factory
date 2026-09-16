@@ -304,6 +304,31 @@ export async function renderAnimationCycle(pattern: string, output: string, dura
     '-crf', '20', '-pix_fmt', 'yuv420p', output])
 }
 
+export async function renderStillSceneClip(
+  imagePath: string,
+  output: string,
+  duration: number,
+  format: VideoFormat = 'LANDSCAPE',
+  zoomDirection: 'in' | 'out' = 'in',
+  fps = 60
+): Promise<void> {
+  const [w, h] = format === 'REEL' ? [1080, 1920] : [1280, 720];
+  const frames = Math.max(fps, Math.ceil(duration * fps));
+  const zExpr = zoomDirection === 'in' ? 'min(zoom+0.0004,1.10)' : 'min(zoom+0.0002,1.06)';
+  const vf = `scale=3840:-1,zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:fps=${fps}`;
+  await run('ffmpeg', [
+    '-y', '-loop', '1', '-i', imagePath,
+    '-vf', vf,
+    '-t', duration.toFixed(6),
+    '-an',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '20',
+    '-pix_fmt', 'yuv420p',
+    output
+  ]);
+}
+
 export async function concatAnimationScenes(listFile: string, output: string): Promise<void> {
   await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c', 'copy', '-movflags', '+faststart', output])

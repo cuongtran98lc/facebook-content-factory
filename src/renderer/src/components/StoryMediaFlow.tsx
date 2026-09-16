@@ -3,8 +3,16 @@ import type { AIProviderName, BackgroundKind, FitMode, ReelVideoProgress, SoundE
 
 export type StickSource = 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI'
 
+export function stickSourceForProvider(provider?: AIProviderName): StickSource {
+  if (provider === 'claude-cli') return 'CLAUDE_CLI'
+  if (provider === 'codex-cli') return 'CODEX_CLI'
+  if (provider === 'antigravity-cli') return 'ANTIGRAVITY_CLI'
+  return 'API'
+}
+
 type Props = {
   busy: boolean
+  busyMessage?: string
   ffmpegReady: boolean
   hasVoice: boolean
   media: StoryMediaDTO | null
@@ -111,7 +119,8 @@ function StoryVideoResult({ output }: { output: StoryVideoOutputDTO }) {
 }
 
 export function StoryMediaFlow(props: Props) {
-  const [stickSource, setStickSource] = useState<StickSource>('CLAUDE_CLI')
+  const [sourceOverride, setStickSource] = useState<StickSource | null>(null)
+  const stickSource = sourceOverride ?? stickSourceForProvider(props.aiProvider)
   const audioDone = Boolean(props.media?.audioPath)
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
@@ -208,16 +217,17 @@ export function StoryMediaFlow(props: Props) {
             <option value="CLAUDE_CLI">Claude Code (CLI local)</option>
             <option value="ANTIGRAVITY_CLI">Antigravity (Agent CLI)</option>
             <option value="CODEX_CLI">Codex (CLI local)</option>
-            <option value="API">Gemini API Key (Settings)</option>
+            <option value="API">AI đang chọn trong Settings ({props.aiProvider ?? 'mặc định'})</option>
           </select>
         </label>
         <button
           className={props.videoFormat === 'REEL' ? 'primary' : 'secondary'}
           onClick={() => props.onGenerateStickVideo(stickSource)}
-          disabled={props.busy || !audioDone || !props.ffmpegReady}
+          disabled={props.busy}
         >
           {props.videoFormat === 'REEL' ? '📱 Tạo hoạt hình Short (9:16)' : '🎬 Tạo hoạt hình người que'}
         </button>
+        {props.busy && <p role="status">Chưa thể tạo video: {props.busyMessage || 'app đang xử lý tác vụ khác'}. Nút sẽ mở khi tác vụ kết thúc.</p>}
         {props.onGenerateStickmanSceneImages && (
           <button className="secondary" onClick={() => props.onGenerateStickmanSceneImages?.(stickSource)} disabled={props.busy}>
             {props.videoFormat === 'REEL' ? '🖼️ Bộ ảnh phân đoạn (9:16)' : '🖼️ Tạo bộ ảnh phân đoạn'}

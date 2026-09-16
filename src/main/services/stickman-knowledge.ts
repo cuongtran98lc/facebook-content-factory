@@ -45,3 +45,55 @@ export const LONG_RULES = [
 export function rulesForDuration(minutes: number): readonly string[] {
   return minutes <= 1 ? SHORT_RULES : minutes < 5 ? MEDIUM_RULES : LONG_RULES
 }
+
+export const GOOGLE_FLOW_STYLE_GUIDE = `STYLE DIRECTIVES — CINEMATIC 2D CARTOON STICKMAN (HENRY STICKMIN / STORYBOARD ART STYLE):
+- Aesthetic: High-end 2D digital cartoon animation still frame, stylized comic story art style, clean bold black line art outlines, rich cel-shaded coloring.
+- Characters: Stylized stickman character with a large smooth circular white head, bold black outline, and very expressive cartoon face with arched black eyebrows, distressed/expressive black eyes, and emotive mouth showing clear dramatic emotion. Wearing a sharp black business suit jacket with a crisp white collared shirt and red necktie. Thin black stickman arms and legs.
+- Environment & Lighting: Detailed 2D cartoon room or environment with atmospheric lighting, storytelling props, environmental clues, floor reflections, and moody directional lighting casting distinct soft character shadows.
+- Composition: High visual storytelling tension, clean 2D vector cartoon aesthetic.
+- STRICT NEGATIVE CONSTRAINTS: Strictly 2D cartoon illustration only. Absolutely NO realistic human faces, NO photorealism, NO 3D rendering, NO CGI, NO blurry watercolor, NO messy sketches.`
+
+export function buildGoogleFlowThumbnailPrompt(options: {
+  title: string
+  concept: import('../../shared/thumbnail-concepts').ThumbnailConcept
+  topic?: string
+  context: string
+  customPrompt?: string
+  audience?: string
+}): string {
+  const { title, concept, topic, context, customPrompt } = options
+
+  const conceptGuidelines: Record<import('../../shared/thumbnail-concepts').ThumbnailConcept, string> = {
+    PROBLEM_STATE: [
+      'CONCEPT: PROBLEM STATE (High Tension Emergency)',
+      '- Stylized 2D cartoon stickman (round white head, black suit with red tie, thin black limbs) in an overwhelming crisis.',
+      '- Key visual clues: sitting in flooded room with water reflections, looking down in panic at a smartphone with glowing low-battery 5% red warning, 25°C digital wall thermostat.',
+      '- Dramatic atmospheric lighting, cast shadows on blue wall.'
+    ].join('\n'),
+
+    SPLIT_SCREEN: [
+      'CONCEPT: SPLIT-SCREEN COMPARISON (Polar Opposites)',
+      '- Vertical split-screen with red "VS" circle badge in the center.',
+      '- Left side: Stickman in black suit & red tie celebrating and tossing cash in a bright luxury office.',
+      '- Right side: Same stickman kneeling in despair in a rainy dark alley, holding overdue termination debt contract.',
+      '- High contrast visual storytelling, clean 2D comic art.'
+    ].join('\n'),
+
+    HIGH_STAKES: [
+      'CONCEPT: HIGH-STAKES DILEMMA (Two Difficult Choices)',
+      '- Stylized stickman in black suit & red tie under dramatic spotlight, sweating nervously between two pedestals.',
+      '- Left Choice: Glowing RED BUTTON labeled "SIGN DEAL" with burning contract.',
+      '- Right Choice: Glowing BLUE BUTTON labeled "REFUSE" with court lawsuit documents.',
+      '- Neon sign overhead reading "CHOOSE NOW". Red and blue colored rim lighting.'
+    ].join('\n')
+  }
+
+  return [
+    'FORMAT: 16:9 Landscape YouTube Thumbnail.',
+    GOOGLE_FLOW_STYLE_GUIDE,
+    conceptGuidelines[concept] || conceptGuidelines.PROBLEM_STATE,
+    `Story Scene: ${title}. ${topic ? `Topic: ${topic}.` : ''} ${context ? context.slice(0, 350) : ''}`,
+    customPrompt?.trim() ? `Extra details: ${customPrompt.trim()}` : ''
+  ].filter(Boolean).join('\n\n')
+}
+

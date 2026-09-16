@@ -1,3 +1,4 @@
+import type { ThumbnailConcept } from '../../../shared/thumbnail-concepts';
 import { MARKETS, LANGUAGES } from '../../../shared/audience';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -24,7 +25,7 @@ import { ExportQueueView } from '../components/ExportQueueView';
 import { MetricsDashboardView } from '../components/MetricsDashboardView';
 import { RenderQueueView } from '../components/RenderQueueView';
 import { SchedulerView } from '../components/SchedulerView';
-import { StoryMediaFlow } from '../components/StoryMediaFlow';
+import { StoryMediaFlow, stickSourceForProvider } from '../components/StoryMediaFlow';
 import { ThumbnailGenerator } from '../components/ThumbnailGenerator';
 import { StickmanEngineView } from '../components/StickmanEngineView';
 
@@ -660,13 +661,17 @@ export default function App() {
     }
   }
 
-  async function generateThumbnail() {
+  async function generateThumbnail(title?: string, concept?: ThumbnailConcept, engine?: 'AI' | 'BUILTIN_2D') {
     if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') return;
     if (!editorContent.trim()) return setMessage('Story hiện tại đang trống.');
-    const hasKey = settings.provider === 'openai' ? settings.hasOpenAIKey : settings.hasGeminiKey;
-    if (!hasKey) return setMessage(`Chưa có API key cho ${settings.provider}. Vào Settings để thêm key.`);
+    if (engine !== 'BUILTIN_2D') {
+      const hasKey = settings.provider.endsWith('-cli') || (settings.provider === 'openai'
+        ? settings.hasOpenAIKey
+        : settings.provider === 'groq' ? settings.hasGroqKey : settings.hasGeminiKey);
+      if (!hasKey) return setMessage(`Chưa có API key cho ${settings.provider}. Vào Settings để thêm key hoặc chọn "Stickman 2D Vector (Engine nội bộ)".`);
+    }
     setBusy(true);
-    setMessage(`Đang tạo thumbnail 16:9 bằng ${settings.provider}...`);
+    setMessage(engine === 'BUILTIN_2D' ? 'Đang tạo thumbnail Google Flow 2D Vector...' : `Đang tạo thumbnail Google Flow 2D bằng ${settings.provider}...`);
     try {
       const saved = await window.contentFactory.scripts.update({
         scriptId: activeScript.id,
@@ -677,9 +682,12 @@ export default function App() {
         projectId: selected.id,
         scriptId: saved.id,
         prompt: thumbnailPrompt || undefined,
+        title,
+        concept,
+        engine,
       });
       setStoryMedia(media);
-      setMessage('✓ Thumbnail đã tạo xong và được lưu vào thư mục images của project.');
+      setMessage('✓ Thumbnail Google Flow 2D đã tạo xong và được lưu vào thư mục images của project.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -725,10 +733,10 @@ export default function App() {
   }
 
   async function generateStickVideo(source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI') {
-    if (!selected || !activeScript) return;
+    if (busy) return;
+    if (!selected || !activeScript) return setMessage('Hãy chọn dự án và kịch bản trước khi tạo video người que.');
     const isReel = activeScript.type === 'REEL';
     if (!isReel) {
-      if (!storyMedia?.audioPath) return setMessage('Hãy Generate Story MP3 trước.');
       if (editorContent !== activeScript.content) return setMessage('Truyện có chỉnh sửa. Hãy Generate Story MP3 lại trước để hoạt hình khớp lời đọc.');
     }
     const targetFormat = isReel ? 'REEL' : videoFormat;
@@ -737,6 +745,15 @@ export default function App() {
     setStoryVideoProgress({ current: 0, total: 1, percent: 0, stage: 'VIDEO', message: `Đang chuẩn bị storyboard người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''}...` });
     setMessage(`Đang tạo hoạt hình theo nội dung kịch bản ${targetFormat === 'REEL' ? '(Short 9:16)' : ''}...`);
     try {
+      setStoryVideoProgress({ current: 0, total: 1, percent: 0, stage: 'VIDEO', message: 'Đang kiểm tra MP3 và FFmpeg hiện tại...' });
+      const [currentMedia, currentHealth] = await Promise.all([
+        window.contentFactory.storyMedia.get(selected.id),
+        window.contentFactory.app.health(),
+      ]);
+      setStoryMedia(currentMedia);
+      setHealth(currentHealth);
+      if (!currentHealth.ffmpeg) throw new Error('Không tìm thấy FFmpeg để dựng video. MP3 hiện có vẫn được giữ.');
+      if (!isReel && !currentMedia.audioPath) throw new Error('Dự án đang chọn chưa có Story MP3. Hãy chọn đúng dự án đã tạo MP3 hoặc tạo MP3 cho dự án này.');
       setStoryMedia(await window.contentFactory.storyMedia.generateStickVideo({ projectId: selected.id, scriptId: activeScript.id, format: targetFormat, source }));
       setMessage(`✓ Hoạt hình người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''} 60 fps có lời đọc và thumbnail đã sẵn sàng!`);
     } catch (error) {
@@ -754,7 +771,7 @@ export default function App() {
     const isReel = activeScript.type === 'REEL';
     const targetFormat = isReel ? 'REEL' : videoFormat;
     setBusy(true);
-    const sourceName = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude Code CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : 'AI API (Gemini)';
+    const sourceName = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude Code CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : `AI trong Settings (${settings.provider})`;
     setMessage(`Đang tự động chia phân đoạn và vẽ bộ ảnh người que ${targetFormat === 'REEL' ? 'Short 9:16 ' : ''}bằng ${sourceName}...`);
     try {
       const res = await window.contentFactory.storyMedia.generateStickmanSceneImages({
@@ -1663,6 +1680,21 @@ export default function App() {
                           disabled={busy || activeScript.approved || !selected?.voiceId}>
                           Approve
                         </button>
+                        <button
+                          type="button"
+                          className="primary"
+                          onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
+                          disabled={busy}
+                          title={busy ? message || 'Đang xử lý tác vụ khác' : 'Dựng video người que từ kịch bản và MP3 hiện có'}>
+                          🎬 Tạo video người que
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
+                          disabled={busy}>
+                          🖼️ Tạo ảnh phân đoạn
+                        </button>
                       </div>
                     ) : (
                       <div className="button-row">
@@ -1671,13 +1703,13 @@ export default function App() {
                         </button>
                         <button
                           className="primary"
-                          onClick={() => void generateStickVideo('CLAUDE_CLI')}
+                          onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
                           disabled={busy || !selected?.voiceId}>
                           📱 Tạo hoạt hình Short (9:16)
                         </button>
                         <button
                           className="secondary"
-                          onClick={() => void generateStickmanSceneImages('CLAUDE_CLI')}
+                          onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
                           disabled={busy}>
                           🖼️ Bộ ảnh phân đoạn
                         </button>
@@ -1739,11 +1771,13 @@ export default function App() {
                   )}
                   {activeScript.type === 'LONG_STORY' && (
                     <ThumbnailGenerator
+                      key={activeScript.id}
+                      title={storyMedia?.storyVideoOutputs?.find(output => output.format === videoFormat)?.parts[0]?.publishTitle || activeScript.title || selected?.name || ''}
                       busy={busy}
                       media={storyMedia}
                       prompt={thumbnailPrompt}
                       onPromptChange={setThumbnailPrompt}
-                      onGenerate={() => void generateThumbnail()}
+                      onGenerate={(title, concept, engine) => void generateThumbnail(title, concept, engine)}
                       onExtractFromVideo={(videoPath, timeSeconds) =>
                         void extractThumbnailFromVideo(videoPath, timeSeconds)
                       }
@@ -1820,7 +1854,9 @@ export default function App() {
                         )}
                       </div>
                       <StoryMediaFlow
+                        aiProvider={settings.provider}
                         busy={busy}
+                        busyMessage={message}
                         ffmpegReady={Boolean(health?.ffmpeg)}
                         hasVoice={Boolean(selected?.voiceId)}
                         media={storyMedia}

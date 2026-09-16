@@ -157,7 +157,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('story-media:get', (_event, projectId: string) => storyMedia.get(projectId));
   ipcMain.handle('story-media:generate-thumbnail', (_event, input: GenerateThumbnailInput) =>
-    storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt),
+    storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt, input.title, input.concept, input.engine),
   );
   ipcMain.handle('story-media:extract-thumbnail-from-video', (_event, input: ExtractThumbnailFromVideoInput) =>
     storyMedia.extractThumbnailFromVideo(input.projectId, input.videoPath, input.timeSeconds),

@@ -10,7 +10,15 @@ require.extensions['.ts'] = (module, filename) => {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText, filename);
 };
-const { storySections, parseStickScenes, stickFrame, renderStickAnimation } = require('../src/main/services/stick-animation.ts');
+const {
+  storySections,
+  parseStickScenes,
+  stickFrame,
+  renderStickAnimation,
+  stickConceptFrame,
+  stickConceptPrompt,
+  parseConceptData
+} = require('../src/main/services/stick-animation.ts');
 const { probeDuration, renderLoopedVideo, extractVideoFrame } = require('../src/main/services/ffmpeg.ts');
 const sharp = require('sharp');
 
@@ -23,9 +31,9 @@ async function main() {
     { index: 1, setting: 'home', actors: [{ name: 'An', action: 'sit' }, { name: 'Mẹ', action: 'cry' }] },
   ];
   const parsed = parseStickScenes(JSON.stringify({ scenes }), 2);
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes }), 3));
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], index: 1 }] }), 1));
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], actors: [{ name: 'An', action: 'execute' }] }] }), 1));
+  assert.equal(parseStickScenes(JSON.stringify({ scenes }), 3).length, 3, 'Auto-pad missing scenes');
+  assert.throws(() => parseStickScenes('invalid json string', 1));
+  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [] }), 1));
   const colors = new Map([['An', '#334155'], ['Mẹ', '#c45b50']]);
   assert.notEqual(stickFrame(parsed[0], 0, 'LANDSCAPE', colors), stickFrame(parsed[0], 3, 'LANDSCAPE', colors));
   const escaped = stickFrame({ setting: 'home', actors: [{ name: '<&', action: 'stand' }] }, 0, 'REEL', colors);
@@ -41,8 +49,8 @@ async function main() {
   assert.equal(detailed[1].actors[0].hair, 'short', 'Identity hair must be preserved across scenes');
   assert.equal(detailed[1].actors[0].age, 'child');
   assert.equal(detailed[1].actors[0].prop, 'flowers', 'Props may change with the story');
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], objects: ['execute'] }] }), 1));
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], actors: [{ name: 'An', action: 'read', hair: '<svg>' }] }] }), 1));
+  assert.equal(parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], objects: ['execute'] }] }), 1)[0].objects?.length, 0);
+  assert.equal(parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], actors: [{ name: 'An', action: 'read', hair: '<svg>' }] }] }), 1)[0].actors[0].hair, 'none');
   for (const scene of detailed) for (const format of ['LANDSCAPE', 'REEL']) {
     await sharp(Buffer.from(stickFrame(scene, 20, format, colors))).png().toBuffer();
   }
@@ -69,7 +77,83 @@ async function main() {
   const richerSvg = stickFrame(richer[0], 10, 'REEL', colors);
   assert.ok(richerSvg.includes('CTRL+Z &lt; 3 lần'));
   await sharp(Buffer.from(richerSvg)).png().toBuffer();
-  assert.throws(() => parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], overlay: { kind: 'execute', label: 'bad' } }] }), 1));
+  assert.equal(parseStickScenes(JSON.stringify({ scenes: [{ ...scenes[0], overlay: { kind: 'execute', label: 'bad' } }] }), 1)[0].overlay, undefined);
+
+  // Concept 1: PROBLEM_STATE test
+  const problemPrompt = stickConceptPrompt('PROBLEM_STATE', 'Alex faces bankruptcy after taking loan');
+  assert.ok(problemPrompt.includes('PROBLEM_STATE'));
+  assert.ok(problemPrompt.includes('clue'));
+  assert.ok(problemPrompt.includes('dangerTag'));
+  const problemData = parseConceptData(JSON.stringify({
+    concept: 'PROBLEM_STATE',
+    actor: { name: 'Alex', action: 'facepalm', emotion: 'shocked', outfit: 'suit', prop: 'phone' },
+    setting: 'office',
+    clue: 'OVERDUE: $50,000',
+    dangerTag: 'FINANCIAL CRISIS'
+  }), 'PROBLEM_STATE');
+  assert.equal(problemData.concept, 'PROBLEM_STATE');
+  assert.equal(problemData.actor.name, 'Alex');
+  assert.equal(problemData.clue, 'OVERDUE: $50,000');
+  for (const format of ['LANDSCAPE', 'REEL']) {
+    const svg = stickConceptFrame('PROBLEM_STATE', problemData, 0, format, colors, true);
+    assert.ok(svg.includes('OVERDUE: $50,000'));
+    assert.ok(svg.includes('FINANCIAL CRISIS'));
+    const info = await sharp(Buffer.from(svg)).metadata();
+    assert.equal(info.width / info.height, format === 'LANDSCAPE' ? 16 / 9 : 9 / 16);
+  }
+
+  // Concept 2: SPLIT_SCREEN test
+  const splitPrompt = stickConceptPrompt('SPLIT_SCREEN', 'Before vs After lottery');
+  assert.ok(splitPrompt.includes('SPLIT_SCREEN'));
+  assert.ok(splitPrompt.includes('leftTitle'));
+  assert.ok(splitPrompt.includes('rightTitle'));
+  const splitData = parseConceptData(JSON.stringify({
+    concept: 'SPLIT_SCREEN',
+    leftTitle: 'EXPECTATION',
+    rightTitle: 'REALITY',
+    leftActor: { name: 'Alex', action: 'cheer', emotion: 'happy', prop: 'money_pile' },
+    rightActor: { name: 'Alex', action: 'beg', emotion: 'crying', prop: 'contract' },
+    leftSetting: 'office',
+    rightSetting: 'street'
+  }), 'SPLIT_SCREEN');
+  assert.equal(splitData.concept, 'SPLIT_SCREEN');
+  assert.equal(splitData.leftTitle, 'EXPECTATION');
+  assert.equal(splitData.rightTitle, 'REALITY');
+  for (const format of ['LANDSCAPE', 'REEL']) {
+    const svg = stickConceptFrame('SPLIT_SCREEN', splitData, 0, format, colors, true);
+    assert.ok(svg.includes('EXPECTATION'));
+    assert.ok(svg.includes('REALITY'));
+    assert.ok(svg.includes('VS'));
+    const info = await sharp(Buffer.from(svg)).metadata();
+    assert.equal(info.width / info.height, format === 'LANDSCAPE' ? 16 / 9 : 9 / 16);
+  }
+
+  // Concept 3: HIGH_STAKES test
+  const stakesPrompt = stickConceptPrompt('HIGH_STAKES', 'Sign contract or walk away');
+  assert.ok(stakesPrompt.includes('HIGH_STAKES'));
+  assert.ok(stakesPrompt.includes('leftChoice'));
+  assert.ok(stakesPrompt.includes('rightChoice'));
+  const stakesData = parseConceptData(JSON.stringify({
+    concept: 'HIGH_STAKES',
+    centerActor: { name: 'Alex', action: 'shrug', emotion: 'worried' },
+    leftChoice: { title: 'SIGN CONTRACT', stake: 'Lose 50% Equity', prop: 'contract', color: '#ef4444' },
+    rightChoice: { title: 'WALK AWAY', stake: 'Immediate Bankruptcy', prop: 'money_pile', color: '#3b82f6' },
+    dilemmaQuestion: 'WHAT WOULD YOU CHOOSE?'
+  }), 'HIGH_STAKES');
+  assert.equal(stakesData.concept, 'HIGH_STAKES');
+  assert.equal(stakesData.leftChoice.title, 'SIGN CONTRACT');
+  assert.equal(stakesData.dilemmaQuestion, 'WHAT WOULD YOU CHOOSE?');
+  for (const format of ['LANDSCAPE', 'REEL']) {
+    const svg = stickConceptFrame('HIGH_STAKES', stakesData, 0, format, colors, true);
+    assert.ok(svg.includes('SIGN CONTRACT'));
+    assert.ok(svg.includes('Lose 50% Equity'));
+    assert.ok(svg.includes('WALK AWAY'));
+    assert.ok(svg.includes('WHAT WOULD YOU CHOOSE?'));
+    const info = await sharp(Buffer.from(svg)).metadata();
+    assert.equal(info.width / info.height, format === 'LANDSCAPE' ? 16 / 9 : 9 / 16);
+  }
+
+  console.log('PASS: Concept 1 (Problem State), Concept 2 (Split-Screen), Concept 3 (High-Stakes) prompts, parsing, and rendering');
   console.log('PASS: 10-pillar taxonomy, format routing, supporting cast and escaped overlays');
   console.log('PASS: per-scene details, character continuity, prop validation and detailed SVG rendering');
   console.log('PASS: storyboard validation, text order, XML escaping, motion and aspect ratios');

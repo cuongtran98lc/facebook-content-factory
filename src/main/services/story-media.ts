@@ -1,3 +1,4 @@
+import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../shared/thumbnail-concepts'
 import { audiencePrompt } from '../../shared/audience'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
@@ -20,6 +21,7 @@ import { CodexCliService } from './ai/codex-cli'
 import { ClaudeCliService } from './ai/claude-cli'
 import { AntigravityCliService } from './ai/antigravity-cli'
 import { parseStickScenes, renderStickAnimation, stickFrame, stickPrompt, storySections } from './stick-animation'
+import { buildGoogleFlowThumbnailPrompt } from './stickman-knowledge'
 
 const scriptHash = (text: string) => createHash('sha256').update(text).digest('hex')
 const TTS_CHUNK_ATTEMPTS = 4
@@ -350,6 +352,8 @@ export class StoryMediaService {
       thumbnailPath: thumbnail?.path ?? null,
       thumbnailUrl: mediaUrl(thumbnail?.path, thumbnail?.createdAt),
       thumbnailPrompt: typeof thumbnailMeta.prompt === 'string' ? thumbnailMeta.prompt : null,
+      thumbnailTitle: typeof thumbnailMeta.title === 'string' ? thumbnailMeta.title : null,
+      thumbnailConcept: Object.prototype.hasOwnProperty.call(THUMBNAIL_CONCEPTS, String(thumbnailMeta.concept)) ? thumbnailMeta.concept as ThumbnailConcept : null,
       thumbnailProvider: typeof thumbnailMeta.provider === 'string' ? thumbnailMeta.provider : null,
       thumbnailSourceVideoPath: typeof thumbnailMeta.videoPath === 'string' ? thumbnailMeta.videoPath : null,
       thumbnailSourceTimeSeconds: typeof thumbnailMeta.timeSeconds === 'number' ? thumbnailMeta.timeSeconds : null,
@@ -840,7 +844,14 @@ export class StoryMediaService {
     }
   }
 
-  async generateThumbnail(projectId: string, scriptId: string, customPrompt?: string): Promise<StoryMediaDTO> {
+  async generateThumbnail(
+    projectId: string,
+    scriptId: string,
+    customPrompt?: string,
+    customTitle?: string,
+    concept: ThumbnailConcept = 'PROBLEM_STATE',
+    engine?: 'AI' | 'BUILTIN_2D'
+  ): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const [project, script] = await Promise.all([
       prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
@@ -849,17 +860,17 @@ export class StoryMediaService {
     if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ để tạo thumbnail.')
     const context = script.content.replace(/\s+/g, ' ').trim().slice(0, 3500)
     if (!context) throw new Error('Story đang trống, không thể tạo thumbnail.')
-    const prompt = [
-      audiencePrompt(project),
-      'Create a cinematic, emotionally compelling YouTube/Facebook story thumbnail in 16:9 landscape format.',
-      'Use one clear focal subject, expressive emotion, dramatic lighting, strong color contrast, and uncluttered composition.',
-      'Leave intentional negative space for a title overlay. Do not render any words, captions, logos, watermarks, borders, or UI.',
-      `Story title: ${script.title || project.name}.`,
-      `Story topic: ${project.topic || 'not specified'}.`,
-      `Story context: ${context}`,
-      customPrompt?.trim() ? `Additional art direction: ${customPrompt.trim()}` : ''
-    ].filter(Boolean).join('\n')
-    const image = await this.thumbnails.generate(prompt)
+    if (!Object.prototype.hasOwnProperty.call(THUMBNAIL_CONCEPTS, concept)) throw new Error('Concept thumbnail không hợp lệ.')
+    const title = customTitle?.trim() || script.title || project.name
+    const prompt = buildGoogleFlowThumbnailPrompt({
+      title,
+      concept,
+      topic: project.topic || undefined,
+      context,
+      customPrompt,
+      audience: audiencePrompt(project)
+    })
+    const image = await this.thumbnails.generate(prompt, concept, engine)
     if (!image.bytes.length) throw new Error('Provider trả về thumbnail rỗng.')
     const thumbnailBytes = normalizeThumbnail(image.bytes)
     const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
@@ -868,7 +879,21 @@ export class StoryMediaService {
       projectId,
       type: 'THUMBNAIL',
       path,
-      metadata: JSON.stringify({ prompt: customPrompt?.trim() || null, generatedPrompt: prompt, provider: image.provider, model: image.model, mimeType: 'image/png', sourceMimeType: image.mimeType, width: 1280, height: 720, scriptId })
+      metadata: JSON.stringify({
+        title,
+        concept,
+        engine: engine || 'AI',
+        style: 'GOOGLE_FLOW_2D',
+        prompt: customPrompt?.trim() || null,
+        generatedPrompt: prompt,
+        provider: image.provider,
+        model: image.model,
+        mimeType: 'image/png',
+        sourceMimeType: image.mimeType,
+        width: 1280,
+        height: 720,
+        scriptId
+      })
     } })
     return this.get(projectId)
   }
@@ -996,7 +1021,10 @@ export class StoryMediaService {
     let published = false
     const report = (percent: number, message: string) => onProgress?.({ current: 0, total: 1, percent, stage: 'VIDEO', message })
     try {
-      const script = await prisma.script.findFirst({ where: { id: scriptId, projectId } })
+      let script = await prisma.script.findFirst({ where: { id: scriptId, projectId } })
+      if (!script) {
+        script = await prisma.script.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' } })
+      }
       if (!script) throw new Error('Không tìm thấy kịch bản để tạo hoạt hình.')
       const isReel = script.type === 'REEL'
       const effectiveFormat = isReel ? 'REEL' : format
@@ -1089,8 +1117,24 @@ export class StoryMediaService {
         prisma.render.updateMany({ where: { projectId, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } }, data: { status: 'STALE' } })
       ])
       published = true
-      report(97, 'Đang lấy thumbnail từ video hoạt hình...')
-      const media = await this.extractThumbnailFromVideo(projectId, output, Math.min(1, measured / 2), studioOutput ? scriptId : undefined)
+      report(97, 'Đang chuẩn bị thumbnail ảnh tĩnh...')
+      // A finished video must not overwrite the user's chosen thumbnail with
+      // a captioned frame. Render a separate still only when no cover exists.
+      const existingThumbnail = await prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' } })
+      if (!existingThumbnail) {
+        const coverScene = { ...scenes[0], overlay: undefined }
+        const cover = await sharp(Buffer.from(stickFrame(coverScene, 0, 'LANDSCAPE', new Map(), true)))
+          .resize(1280, 720).png().toBuffer()
+        const coverPath = studioOutput
+          ? await this.storage.getStudioOutputPath(projectId, scriptId, 'images', 'thumbnail.png')
+          : await this.storage.getOutputPath(projectId, 'images', 'thumbnail.png')
+        await writeFile(coverPath, cover)
+        await prisma.asset.create({ data: {
+          projectId, type: 'THUMBNAIL', path: coverPath,
+          metadata: JSON.stringify({ provider: 'storyboard', model: 'stick-still', title: script.title, scriptId, width: 1280, height: 720, mimeType: 'image/png' })
+        } })
+      }
+      const media = await this.get(projectId)
       report(100, `Hoạt hình ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''} có lời đọc, caption và thumbnail đã sẵn sàng.`)
       return media
     } finally {
@@ -1113,7 +1157,7 @@ export class StoryMediaService {
     const effectiveFormat = script.type === 'REEL' ? 'REEL' : format
     const sections = storySections(script.content, isShort)
     const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
-    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort) })
+    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort, true) })
     const scenes = parseStickScenes(response, sections.length)
 
     const colors = new Map<string, string>()
@@ -1130,7 +1174,7 @@ export class StoryMediaService {
       const scene = scenes[i]
       const sectionText = sections[i]
       const fileName = `scene_${String(i + 1).padStart(2, '0')}_${scene.setting}.png`
-      const svgText = stickFrame(scene, 0, effectiveFormat, colors)
+      const svgText = stickFrame(scene, 0, effectiveFormat, colors, true)
       const pngBuffer = await sharp(Buffer.from(svgText)).png().toBuffer()
       const relativePath = `images/scenes/${timestamp}/${fileName}`
       const filePath = await this.storage.writeOutputBuffer(projectId, relativePath, pngBuffer)

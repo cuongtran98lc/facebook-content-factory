@@ -257,6 +257,8 @@ export interface StoryMediaDTO {
   thumbnailPath: string | null;
   thumbnailUrl: string | null;
   thumbnailPrompt: string | null;
+  thumbnailTitle?: string | null;
+  thumbnailConcept?: import('./thumbnail-concepts').ThumbnailConcept | null;
   thumbnailProvider: string | null;
   thumbnailSourceVideoPath: string | null;
   thumbnailSourceTimeSeconds: number | null;
@@ -314,6 +316,9 @@ export interface ReelMediaDTO {
   publishSource: 'AI' | 'FALLBACK' | null;
 }
 export interface GenerateThumbnailInput {
+  concept?: import('./thumbnail-concepts').ThumbnailConcept;
+  engine?: 'AI' | 'BUILTIN_2D';
+  title?: string;
   projectId: string;
   scriptId: string;
   prompt?: string;
@@ -576,4 +581,3 @@ export interface ContentFactoryAPI {
 }
 
 export * from './stickman-engine';
-
