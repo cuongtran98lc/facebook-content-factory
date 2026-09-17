@@ -55,58 +55,9 @@ export class ThumbnailService {
       }
     }
 
-    // 2. Load authentic Google Flow 2D Comic Art matching the concept / prompt
-    console.log(`[ThumbnailService] Serving authentic Google Flow 2D artwork for ${concept}`);
-    const conceptImage = await this.loadGoogleFlow2DConcept(concept, prompt);
-    if (conceptImage) {
-      return conceptImage;
-    }
-
-    // 3. Fallback: internal SVG vector
+    // 2. Builtin or fallback: Dynamically generate 2D vector storyboard thumbnail tailored to story & concept
+    console.log(`[ThumbnailService] Generating fresh 2D vector storyboard thumbnail for concept ${concept}`);
     return this.generateStoryboardThumbnail(prompt, concept, preferredProvider);
-  }
-
-  private async loadGoogleFlow2DConcept(concept: ThumbnailConcept, prompt?: string): Promise<GeneratedImage | null> {
-    const fileMap: Record<ThumbnailConcept, string> = {
-      PROBLEM_STATE: 'ai_concept_1_problem_state.png',
-      SPLIT_SCREEN: 'ai_concept_2_split_screen.png',
-      HIGH_STAKES: 'ai_concept_3_high_stakes.png',
-    };
-    let fileName = fileMap[concept] || fileMap.PROBLEM_STATE;
-    const lower = (prompt || '').toLowerCase();
-    if (lower.includes('office') || lower.includes('laptop') || lower.includes('công sở') || lower.includes('bàn làm việc')) {
-      fileName = 'concept_office.png';
-    } else if (lower.includes('shock') || lower.includes('hoảng') || lower.includes('error') || lower.includes('báo động') || lower.includes('panic')) {
-      fileName = 'concept_shock.png';
-    } else if (lower.includes('celebrat') || lower.includes('thành công') || lower.includes('thắng') || lower.includes('vui') || lower.includes('confetti')) {
-      fileName = 'concept_celebration.png';
-    }
-
-    const candidates = [
-      path.resolve(process.cwd(), 'src/main/assets/concepts', fileName),
-      path.resolve(process.cwd(), 'output/concepts', fileName),
-      path.resolve(__dirname, '../../src/main/assets/concepts', fileName),
-      path.resolve(__dirname, '../../assets/concepts', fileName),
-      path.resolve(__dirname, '../assets/concepts', fileName),
-      path.resolve(__dirname, '../../../src/main/assets/concepts', fileName),
-    ];
-    for (const p of candidates) {
-      try {
-        if (fs.existsSync(p)) {
-          const raw = fs.readFileSync(p);
-          const bytes = await sharp(raw).resize(1280, 720).png().toBuffer();
-          return {
-            bytes,
-            mimeType: 'image/png',
-            model: `google-flow-2d-${concept.toLowerCase()}`,
-            provider: 'gemini',
-          };
-        }
-      } catch {
-        // continue
-      }
-    }
-    return null;
   }
 
   private async generateStoryboardThumbnail(prompt: string, concept: ThumbnailConcept, provider: AIProviderName): Promise<GeneratedImage> {

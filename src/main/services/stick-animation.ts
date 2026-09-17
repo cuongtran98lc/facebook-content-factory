@@ -818,7 +818,7 @@ export function stickConceptFrame(
     const dangerTag = pData?.dangerTag || 'PROBLEM STATE'
     const decor = renderSettingDecor(setting, w, floor, ink)
     const accent = colors.get(actor.name) ?? ROLE_COLORS.MAIN
-    const scale = (still ? Math.min(h * 0.78 / 320, w / 220) : 1.35) * (format === 'REEL' ? 1.05 : 1.2)
+    const scale = (still ? Math.min(h * 0.82 / 320, w / 200) : 1.35) * (format === 'REEL' ? 1.15 : 1.35)
     const actorSvg = renderSingleActor(actor, w * 0.45, floor, scale, phase, accent, still, false, true)
 
     const bg = `<defs>
@@ -831,14 +831,15 @@ export function stickConceptFrame(
     <rect width="${w}" height="${h}" fill="url(#alert-vignette)"/>
     <path d="M0 ${floor}H${w}V${h}H0Z" fill="#e2e8f0"/>`
 
+    const clueBoxW = Math.min(260, w * 0.28)
     const problemClues = `
-      <g transform="translate(${w * 0.78} ${floor - 210})">
-        <rect x="-85" y="-45" width="170" height="90" rx="10" fill="#0f172a" stroke="#ef4444" stroke-width="3.5"/>
-        <circle cx="-60" cy="-22" r="6" fill="#ef4444"/>
-        <text x="0" y="-18" font-family="sans-serif" font-size="12" font-weight="900" fill="#f87171" text-anchor="middle">⚠️ CRISIS NOTICE</text>
-        <line x1="-75" y1="-5" x2="75" y2="-5" stroke="#334155" stroke-width="1.5"/>
-        <text x="0" y="16" font-family="sans-serif" font-size="14" font-weight="900" fill="#fef08a" text-anchor="middle">${xml(clue)}</text>
-        <text x="0" y="34" font-family="sans-serif" font-size="10" font-weight="bold" fill="#fca5a5" text-anchor="middle">ACTION REQUIRED</text>
+      <g transform="translate(${w * 0.78} ${floor - 220})">
+        <rect x="${-clueBoxW / 2}" y="-55" width="${clueBoxW}" height="110" rx="14" fill="#0f172a" stroke="#ef4444" stroke-width="4"/>
+        <circle cx="${-clueBoxW / 2 + 25}" cy="-30" r="7" fill="#ef4444"/>
+        <text x="${-clueBoxW / 2 + 42}" y="-24" font-family="sans-serif" font-size="14" font-weight="900" fill="#f87171" text-anchor="start">⚠️ CRISIS NOTICE</text>
+        <line x1="${-clueBoxW / 2 + 15}" y1="-10" x2="${clueBoxW / 2 - 15}" y2="-10" stroke="#334155" stroke-width="2"/>
+        <text x="0" y="18" font-family="sans-serif" font-size="18" font-weight="900" fill="#fef08a" text-anchor="middle">${xml(clue)}</text>
+        <text x="0" y="40" font-family="sans-serif" font-size="12" font-weight="bold" fill="#fca5a5" text-anchor="middle">ACTION REQUIRED</text>
       </g>
       <g stroke="#94a3b8" stroke-width="1.8" fill="#fff" opacity="0.95">
         <rect x="${w * 0.12}" y="${floor - 160}" width="36" height="26" rx="2" transform="rotate(-15 ${w * 0.12} ${floor - 160})"/>
@@ -852,10 +853,11 @@ export function stickConceptFrame(
         <text x="${w * 0.56}" y="${floor - 325}" font-size="52">!</text>
       </g>`
 
+    const bannerW = Math.min(w - 60, Math.max(420, dangerTag.length * 16 + 80))
     const topBanner = `
       <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
-        <rect x="-190" y="-20" width="380" height="42" rx="10" fill="#dc2626" stroke="#991b1b" stroke-width="2.5"/>
-        <text y="7" font-size="14" font-weight="900" fill="#fff" letter-spacing="1">⚠️ ${xml(dangerTag)}</text>
+        <rect x="${-bannerW / 2}" y="-24" width="${bannerW}" height="52" rx="14" fill="#991b1b" stroke="#fecaca" stroke-width="3"/>
+        <text y="9" font-size="20" font-weight="900" fill="#ffffff" letter-spacing="1">⚠️ ${xml(dangerTag)}</text>
       </g>`
 
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
@@ -943,8 +945,8 @@ export function stickConceptFrame(
       </svg>`
     } else {
       const midX = w / 2
-      const leftScale = still ? Math.min(h * 0.72 / 320, midX / 220) : 1.15
-      const rightScale = still ? Math.min(h * 0.72 / 320, midX / 220) : 1.15
+      const leftScale = (still ? Math.min(h * 0.78 / 320, midX / 200) : 1.15) * 1.12
+      const rightScale = (still ? Math.min(h * 0.78 / 320, midX / 200) : 1.15) * 1.12
 
       const leftDecor = renderSettingDecor(leftSetting, midX * 2, floor, ink)
       const rightDecor = renderSettingDecor(rightSetting, w, floor, ink)
@@ -962,8 +964,8 @@ export function stickConceptFrame(
           <g fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${leftDecor}</g>
           ${leftActorSvg}
           <g transform="translate(${midX * 0.5} 46)" font-family="sans-serif" text-anchor="middle">
-            <rect x="-80" y="-16" width="160" height="32" rx="8" fill="#334155" stroke="#0f172a" stroke-width="2"/>
-            <text y="5" font-size="13" font-weight="bold" fill="#f1f5f9">${xml(leftTitle)}</text>
+            <rect x="-110" y="-20" width="220" height="42" rx="10" fill="#1e293b" stroke="#64748b" stroke-width="2.5"/>
+            <text y="7" font-size="15" font-weight="900" fill="#f8fafc">${xml(leftTitle)}</text>
           </g>
         </g>
         <g clip-path="url(#split-right)">
@@ -972,14 +974,14 @@ export function stickConceptFrame(
           <g fill="none" stroke="${ink}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${rightDecor}</g>
           ${rightActorSvg}
           <g transform="translate(${midX + midX * 0.5} 46)" font-family="sans-serif" text-anchor="middle">
-            <rect x="-80" y="-16" width="160" height="32" rx="8" fill="#16a34a" stroke="#14532d" stroke-width="2"/>
-            <text y="5" font-size="13" font-weight="bold" fill="#f0fdf4">${xml(rightTitle)}</text>
+            <rect x="-110" y="-20" width="220" height="42" rx="10" fill="#15803d" stroke="#86efac" stroke-width="2.5"/>
+            <text y="7" font-size="15" font-weight="900" fill="#ffffff">${xml(rightTitle)}</text>
           </g>
         </g>
         <line x1="${midX}" y1="0" x2="${midX}" y2="${h}" stroke="${ink}" stroke-width="6"/>
         <g transform="translate(${midX} 58)" font-family="sans-serif" text-anchor="middle">
-          <circle cx="0" cy="0" r="26" fill="#ef4444" stroke="${ink}" stroke-width="3.5"/>
-          <text y="7" font-size="16" font-weight="900" fill="#fff">VS</text>
+          <circle cx="0" cy="0" r="32" fill="#dc2626" stroke="#ffffff" stroke-width="4"/>
+          <text y="8" font-size="20" font-weight="900" fill="#ffffff">VS</text>
         </g>
       </svg>`
     }
@@ -1003,7 +1005,7 @@ export function stickConceptFrame(
   const rightChoice = hData?.rightChoice || { title: 'OPTION B: CONFESS', stake: 'LOSE CAREER & BROKE', prop: 'blue_button' }
   const dilemmaQuestion = hData?.dilemmaQuestion || 'WHAT WOULD YOU CHOOSE?'
 
-  const centerScale = (still ? Math.min(h * 0.76 / 320, w / 220) : 1.32) * (format === 'REEL' ? 1.05 : 1.15)
+  const centerScale = (still ? Math.min(h * 0.82 / 320, w / 200) : 1.32) * (format === 'REEL' ? 1.15 : 1.25)
   const headFacing: -1 | 1 = still ? 1 : (Math.sin(phase * 2) > 0 ? -1 : 1)
   const centerSvg = renderSingleActor(centerActor, w * 0.5, floor, centerScale, phase, ROLE_COLORS.MAIN, still, false, false, headFacing)
 
@@ -1015,26 +1017,26 @@ export function stickConceptFrame(
   const leftBoxCenterX = leftBoxX + cardW / 2
   const leftChoiceSvg = `
     <g transform="translate(${leftBoxX} ${cardY})">
-      <rect width="${cardW}" height="${cardH}" rx="12" fill="#fef2f2" stroke="#ef4444" stroke-width="3.5"/>
-      <rect x="12" y="10" width="${cardW - 24}" height="28" rx="6" fill="#fee2e2"/>
-      <text x="${cardW / 2}" y="29" font-family="sans-serif" font-size="13" font-weight="900" fill="#dc2626" text-anchor="middle">🔴 CHOICE A</text>
-      <text x="${cardW / 2}" y="65" font-family="sans-serif" font-size="13" font-weight="bold" fill="#111827" text-anchor="middle">${xml(leftChoice.title)}</text>
+      <rect width="${cardW}" height="${cardH}" rx="14" fill="#fef2f2" stroke="#ef4444" stroke-width="4"/>
+      <rect x="12" y="10" width="${cardW - 24}" height="32" rx="8" fill="#fee2e2"/>
+      <text x="${cardW / 2}" y="31" font-family="sans-serif" font-size="14" font-weight="900" fill="#dc2626" text-anchor="middle">🔴 CHOICE A</text>
+      <text x="${cardW / 2}" y="68" font-family="sans-serif" font-size="14" font-weight="bold" fill="#111827" text-anchor="middle">${xml(leftChoice.title)}</text>
       <g transform="translate(${cardW / 2} 115)">${heldProp(leftChoice.prop as any || 'red_button', 0, 0)}</g>
       <rect x="10" y="148" width="${cardW - 20}" height="30" rx="6" fill="#fee2e2" stroke="#fca5a5" stroke-width="1.5"/>
-      <text x="${cardW / 2}" y="167" font-family="sans-serif" font-size="10" font-weight="900" fill="#991b1b" text-anchor="middle">STAKE: ${xml(leftChoice.stake)}</text>
+      <text x="${cardW / 2}" y="167" font-family="sans-serif" font-size="11" font-weight="900" fill="#991b1b" text-anchor="middle">STAKE: ${xml(leftChoice.stake)}</text>
     </g>`
 
   const rightBoxX = format === 'REEL' ? w - cardW - w * 0.04 : w - cardW - w * 0.06
   const rightBoxCenterX = rightBoxX + cardW / 2
   const rightChoiceSvg = `
     <g transform="translate(${rightBoxX} ${cardY})">
-      <rect width="${cardW}" height="${cardH}" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="3.5"/>
-      <rect x="12" y="10" width="${cardW - 24}" height="28" rx="6" fill="#dbeafe"/>
-      <text x="${cardW / 2}" y="29" font-family="sans-serif" font-size="13" font-weight="900" fill="#2563eb" text-anchor="middle">🔵 CHOICE B</text>
-      <text x="${cardW / 2}" y="65" font-family="sans-serif" font-size="13" font-weight="bold" fill="#111827" text-anchor="middle">${xml(rightChoice.title)}</text>
+      <rect width="${cardW}" height="${cardH}" rx="14" fill="#eff6ff" stroke="#3b82f6" stroke-width="4"/>
+      <rect x="12" y="10" width="${cardW - 24}" height="32" rx="8" fill="#dbeafe"/>
+      <text x="${cardW / 2}" y="31" font-family="sans-serif" font-size="14" font-weight="900" fill="#2563eb" text-anchor="middle">🔵 CHOICE B</text>
+      <text x="${cardW / 2}" y="68" font-family="sans-serif" font-size="14" font-weight="bold" fill="#111827" text-anchor="middle">${xml(rightChoice.title)}</text>
       <g transform="translate(${cardW / 2} 115)">${heldProp(rightChoice.prop as any || 'blue_button', 0, 0)}</g>
       <rect x="10" y="148" width="${cardW - 20}" height="30" rx="6" fill="#dbeafe" stroke="#93c5fd" stroke-width="1.5"/>
-      <text x="${cardW / 2}" y="167" font-family="sans-serif" font-size="10" font-weight="900" fill="#1e40af" text-anchor="middle">STAKE: ${xml(rightChoice.stake)}</text>
+      <text x="${cardW / 2}" y="167" font-family="sans-serif" font-size="11" font-weight="900" fill="#1e40af" text-anchor="middle">STAKE: ${xml(rightChoice.stake)}</text>
     </g>`
 
   const arrowY = floor - 18
@@ -1050,10 +1052,11 @@ export function stickConceptFrame(
       <text x="${w * 0.55}" y="${floor - 320}" font-size="34" fill="#3b82f6">?</text>
     </g>`
 
+  const bannerW = Math.min(w - 60, Math.max(460, dilemmaQuestion.length * 16 + 80))
   const topBanner = `
     <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
-      <rect x="-190" y="-20" width="380" height="42" rx="10" fill="#1e1b4b" stroke="#6366f1" stroke-width="2.5"/>
-      <text y="7" font-size="14" font-weight="900" fill="#e0e7ff" letter-spacing="1">⚖️ ${xml(dilemmaQuestion)}</text>
+      <rect x="${-bannerW / 2}" y="-24" width="${bannerW}" height="52" rx="14" fill="#1e1b4b" stroke="#818cf8" stroke-width="3"/>
+      <text y="9" font-size="20" font-weight="900" fill="#fef08a" letter-spacing="1">⚖️ ${xml(dilemmaQuestion)}</text>
     </g>`
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
@@ -1567,52 +1570,6 @@ export async function renderEmotionDemoVideo(
 }
 
 
-export function resolveGoogleFlow2DSceneAsset(scene: StickScene, index: number): string | null {
-  const primaryActor = scene.actors[0]
-  const action = primaryActor?.action
-  const emotion = primaryActor?.emotion
-  const setting = scene.setting
-
-  let selectedFileName: string
-
-  if (action === 'shock' || emotion === 'shocked' || emotion === 'furious') {
-    selectedFileName = 'concept_shock.png'
-  } else if (['happy', 'cheer', 'dance', 'laugh'].includes(action || '') || emotion === 'happy' || emotion === 'laughing') {
-    selectedFileName = 'concept_celebration.png'
-  } else if (setting === 'office' || action === 'type' || action === 'read' || primaryActor?.prop === 'laptop') {
-    selectedFileName = 'concept_office.png'
-  } else if (action === 'think' || action === 'shrug' || action === 'beg' || scene.overlay?.kind === 'dilemma' || scene.overlay?.kind === 'rule') {
-    selectedFileName = 'ai_concept_3_high_stakes.png'
-  } else if (action === 'fight' || scene.actors.length > 1) {
-    selectedFileName = 'ai_concept_2_split_screen.png'
-  } else if (action === 'cry' || action === 'phone' || action === 'facepalm' || action === 'fall' || emotion === 'worried' || emotion === 'sad') {
-    selectedFileName = 'ai_concept_1_problem_state.png'
-  } else {
-    const pool = [
-      'ai_concept_1_problem_state.png',
-      'concept_office.png',
-      'concept_shock.png',
-      'ai_concept_2_split_screen.png',
-      'concept_celebration.png',
-      'ai_concept_3_high_stakes.png'
-    ]
-    selectedFileName = pool[index % pool.length]
-  }
-
-  const candidateDirs = [
-    join(process.cwd(), 'src/main/assets/concepts'),
-    join(process.cwd(), 'output/concepts'),
-    join(__dirname, '../../assets/concepts'),
-    join(__dirname, '../assets/concepts')
-  ]
-
-  for (const dir of candidateDirs) {
-    const fullPath = join(dir, selectedFileName)
-    if (existsSync(fullPath)) return fullPath
-  }
-  return null
-}
-
 export async function renderStickAnimation(scenes: StickScene[], sections: string[], duration: number, format: VideoFormat, output: string, progress: (percent: number) => void, audioPath?: string): Promise<void> {
   if (!Number.isFinite(duration) || duration <= 0 || scenes.length !== sections.length || !scenes.length) throw new Error('Thời lượng hoặc storyboard không hợp lệ.')
   const root = await mkdtemp(join(tmpdir(), 'stick-story-'))
@@ -1644,33 +1601,9 @@ export async function renderStickAnimation(scenes: StickScene[], sections: strin
       const sceneDuration = (endFrame - usedFrames) / 60
       usedFrames = endFrame
 
-      const conceptAsset = resolveGoogleFlow2DSceneAsset(scene, index)
       const sceneImg = join(root, `scene_${index}.png`)
-
-      if (conceptAsset) {
-        if (format === 'REEL') {
-          const bg = await sharp(conceptAsset)
-            .resize(1080, 1920, { fit: 'cover' })
-            .blur(25)
-            .modulate({ brightness: 0.45 })
-            .toBuffer()
-          const fg = await sharp(conceptAsset)
-            .resize(1080, 608, { fit: 'contain' })
-            .toBuffer()
-          await sharp(bg)
-            .composite([{ input: fg, top: Math.round((1920 - 608) / 2), left: 0 }])
-            .png()
-            .toFile(sceneImg)
-        } else {
-          await sharp(conceptAsset)
-            .resize(targetW, targetH, { fit: 'cover' })
-            .png()
-            .toFile(sceneImg)
-        }
-      } else {
-        const svg = stickFrame(scene, 0, format, colors, true)
-        await sharp(Buffer.from(svg)).resize(targetW, targetH).png().toFile(sceneImg)
-      }
+      const svg = stickFrame(scene, 0, format, colors, true)
+      await sharp(Buffer.from(svg)).resize(targetW, targetH).png().toFile(sceneImg)
 
       const clip = join(root, `${index}.mp4`)
       const zoomDirection = index % 2 === 0 ? 'in' : 'out'

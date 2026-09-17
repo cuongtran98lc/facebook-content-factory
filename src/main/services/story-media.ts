@@ -193,12 +193,78 @@ function escapeSvgText(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 }
 
+function landscapeThumbnailLines(title: string): string[] {
+  const clean = title.replace(/\s+/g, ' ').trim()
+  if (!clean) return ['WHAT IF...?']
+  const words = clean.split(' ').filter(Boolean)
+  const lines: string[] = []
+  for (const word of words) {
+    const current = lines[lines.length - 1]
+    if (!current || (current.length + word.length + 1 > 18 && lines.length < 2)) {
+      lines.push(word)
+    } else {
+      lines[lines.length - 1] = `${current} ${word}`
+    }
+  }
+  if (lines.length > 2) lines.splice(2)
+  if (lines[1]?.length > 24) lines[1] = `${lines[1].slice(0, 23).trimEnd()}…`
+  return lines
+}
+
+function renderLandscapeThumbnailOverlay(title: string, concept?: ThumbnailConcept, topic?: string): Buffer {
+  const width = 1280
+  const height = 720
+  const lines = landscapeThumbnailLines(title)
+  const isWhatIf = title.toLowerCase().includes('what if') || title.toLowerCase().startsWith('nếu')
+  const badgeText = isWhatIf ? '⚡ WHAT IF...?' : concept === 'HIGH_STAKES' ? '⚖️ LỰA CHỌN KHÓ' : concept === 'SPLIT_SCREEN' ? '🔥 TRƯỚC & SAU' : '⚠️ KỊCH TÍNH'
+
+  const startX = 48
+  const startY = 48
+  const fontSize = lines.length > 1 ? 56 : 64
+  const lineHeight = fontSize + 16
+  const maxChars = Math.max(...lines.map(l => l.length))
+  const plateWidth = Math.min(width - 96, Math.max(460, Math.round(maxChars * (fontSize * 0.62) + 76)))
+  const plateHeight = 64 + lines.length * lineHeight + 18
+  const badgeWidth = Math.round(badgeText.length * 11) + 40
+
+  const textSpans = lines.map((line, idx) => {
+    const fill = idx === 0 ? '#FFE600' : '#FFFFFF'
+    return `<text x="${startX + 28}" y="${startY + 72 + (idx + 1) * lineHeight - 14}" font-family="'Arial Black', Arial, 'Segoe UI', sans-serif" font-size="${fontSize}" font-weight="900" fill="${fill}" stroke="#000000" stroke-width="12" stroke-linejoin="round" paint-order="stroke fill" filter="url(#thumb-shadow)">${escapeSvgText(line.toUpperCase())}</text>`
+  }).join('\n')
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+    <defs>
+      <filter id="thumb-shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="4" dy="6" stdDeviation="0" flood-color="#000000" flood-opacity="0.95"/>
+      </filter>
+      <linearGradient id="thumb-plate" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#050811" stop-opacity="0.88"/>
+        <stop offset="100%" stop-color="#0f172a" stop-opacity="0.80"/>
+      </linearGradient>
+      <linearGradient id="badge-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#ef4444"/>
+        <stop offset="100%" stop-color="#dc2626"/>
+      </linearGradient>
+    </defs>
+    <!-- Background Shield / Plate -->
+    <rect x="${startX}" y="${startY}" width="${plateWidth}" height="${plateHeight}" rx="20" fill="url(#thumb-plate)" stroke="#f59e0b" stroke-width="3" filter="url(#thumb-shadow)"/>
+    <rect x="${startX + 8}" y="${startY + 8}" width="${plateWidth - 16}" height="${plateHeight - 16}" rx="14" fill="none" stroke="#ffffff" stroke-opacity="0.2" stroke-width="1.5"/>
+    <!-- Topic / Concept Badge -->
+    <rect x="${startX + 24}" y="${startY + 18}" width="${badgeWidth}" height="32" rx="16" fill="url(#badge-grad)" stroke="#ffffff" stroke-width="2"/>
+    <text x="${startX + 24 + badgeWidth / 2}" y="${startY + 39}" font-family="Arial, sans-serif" font-size="13" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="0.8">${escapeSvgText(badgeText)}</text>
+    <!-- Punchy Title Text -->
+    ${textSpans}
+  </svg>`
+
+  return Buffer.from(svg)
+}
+
 function thumbnailTitleLines(value: string): string[] {
   const words = value.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
   const lines: string[] = []
   for (const word of words) {
     const current = lines[lines.length - 1]
-    if (!current || (current.length + word.length + 1 > 21 && lines.length < 3)) lines.push(word)
+    if (!current || (current.length + word.length + 1 > 20 && lines.length < 3)) lines.push(word)
     else lines[lines.length - 1] = `${current} ${word}`
   }
   if (lines.length > 3) lines.splice(3)
@@ -209,19 +275,48 @@ function thumbnailTitleLines(value: string): string[] {
 async function episodeThumbnail(bytes: Buffer, episode: number, storyTitle: string): Promise<Buffer> {
   const width = 1080
   const height = 1920
-  const lines = thumbnailTitleLines(`#${episode}: ${storyTitle}`)
-  const frameX = 34
-  const frameWidth = 996
-  const lineHeight = 94
-  const frameHeight = 82 + lines.length * lineHeight
-  // Center the complete title box vertically on the TikTok thumbnail.
+  const lines = thumbnailTitleLines(storyTitle)
+  const epText = `TẬP ${String(episode).padStart(2, '0')}`
+  const frameX = 48
+  const frameWidth = 984
+  const fontSize = 72
+  const lineHeight = 88
+  const frameHeight = 110 + lines.length * lineHeight
   const frameY = Math.round((height - frameHeight) / 2)
-  const titleSpans = lines.map((line, index) => `<tspan x="${frameX + 46}" dy="${index === 0 ? 0 : lineHeight}">${escapeSvgText(line)}</tspan>`).join('')
-  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect x="${frameX + 18}" y="${frameY + 20}" width="${frameWidth}" height="${frameHeight}" fill="#111827"/><rect x="${frameX}" y="${frameY}" width="${frameWidth}" height="${frameHeight}" fill="#e91e4d" stroke="#ffffff" stroke-width="8"/><rect x="${frameX + 14}" y="${frameY + 14}" width="${frameWidth - 28}" height="${frameHeight - 28}" fill="none" stroke="#ffffff" stroke-opacity="0.42" stroke-width="3"/><text x="${frameX + 46}" y="${frameY + 108}" text-anchor="start" font-family="Arial, sans-serif" font-size="76" font-weight="900" fill="white">${titleSpans}</text></svg>`)
+  const badgeW = 210
+  const badgeH = 46
+
+  const titleSpans = lines.map((line, index) => {
+    const fill = index === 0 ? '#FFE600' : '#FFFFFF'
+    return `<text x="${frameX + 40}" y="${frameY + 120 + index * lineHeight}" font-family="'Arial Black', Arial, 'Segoe UI', sans-serif" font-size="${fontSize}" font-weight="900" fill="${fill}" stroke="#000000" stroke-width="14" stroke-linejoin="round" paint-order="stroke fill" filter="url(#drop-shadow)">${escapeSvgText(line.toUpperCase())}</text>`
+  }).join('\n')
+
+  const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+    <defs>
+      <filter id="drop-shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="4" dy="8" stdDeviation="2" flood-color="#000000" flood-opacity="0.95"/>
+      </filter>
+      <linearGradient id="card-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#090d16" stop-opacity="0.92"/>
+        <stop offset="100%" stop-color="#1e1b4b" stop-opacity="0.88"/>
+      </linearGradient>
+      <linearGradient id="ep-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#ef4444"/>
+        <stop offset="100%" stop-color="#dc2626"/>
+      </linearGradient>
+    </defs>
+    <!-- Card Frame -->
+    <rect x="${frameX}" y="${frameY}" width="${frameWidth}" height="${frameHeight}" rx="24" fill="url(#card-grad)" stroke="#f59e0b" stroke-width="3.5" filter="url(#drop-shadow)"/>
+    <rect x="${frameX + 10}" y="${frameY + 10}" width="${frameWidth - 20}" height="${frameHeight - 20}" rx="18" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="2"/>
+    <!-- Episode Badge -->
+    <rect x="${frameX + 38}" y="${frameY + 22}" width="${badgeW}" height="${badgeH}" rx="23" fill="url(#ep-grad)" stroke="#ffffff" stroke-width="2.5"/>
+    <text x="${frameX + 38 + badgeW / 2}" y="${frameY + 53}" text-anchor="middle" font-family="'Arial Black', Arial, sans-serif" font-size="20" font-weight="900" fill="#ffffff" letter-spacing="1.5">⚡ ${escapeSvgText(epText)}</text>
+    <!-- Title Lines -->
+    ${titleSpans}
+  </svg>`)
+
   try {
     const result = await sharp(bytes)
-      // Match the Reel canvas. `cover` preserves the source aspect ratio and
-      // crops overflow, so the image is never stretched or distorted.
       .resize(width, height, { fit: 'cover', position: 'centre', withoutEnlargement: false })
       .composite([{ input: overlay, top: 0, left: 0 }])
       .png()
@@ -852,7 +947,8 @@ export class StoryMediaService {
     customPrompt?: string,
     customTitle?: string,
     concept: ThumbnailConcept = 'PROBLEM_STATE',
-    engine?: 'AI' | 'BUILTIN_2D'
+    engine?: 'AI' | 'BUILTIN_2D',
+    includeTextOverlay = true
   ): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const [project, script] = await Promise.all([
@@ -874,7 +970,15 @@ export class StoryMediaService {
     })
     const image = await this.thumbnails.generate(prompt, concept, engine)
     if (!image.bytes.length) throw new Error('Provider trả về thumbnail rỗng.')
-    const thumbnailBytes = normalizeThumbnail(image.bytes)
+    const normalized = normalizeThumbnail(image.bytes)
+    let thumbnailBytes = normalized
+    if (includeTextOverlay) {
+      const overlay = renderLandscapeThumbnailOverlay(title, concept, project.topic || undefined)
+      thumbnailBytes = await sharp(normalized)
+        .composite([{ input: overlay, top: 0, left: 0 }])
+        .png()
+        .toBuffer()
+    }
     const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
     await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
     await prisma.asset.create({ data: {
@@ -888,6 +992,7 @@ export class StoryMediaService {
         style: 'GOOGLE_FLOW_2D',
         prompt: customPrompt?.trim() || null,
         generatedPrompt: prompt,
+        includeTextOverlay,
         provider: image.provider,
         model: image.model,
         mimeType: 'image/png',

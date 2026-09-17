@@ -2,6 +2,8 @@ import { clipboard, dialog, ipcMain, shell } from 'electron';
 import type {
   AIProviderName,
   BackgroundKind,
+  BuildMindsetScriptInput,
+  CrawlMindsetArticleInput,
   CrawlStoryInput,
   CreatePillarInput,
   GenerateIdeasInput,
@@ -31,6 +33,7 @@ import { getPrisma } from '../services/database';
 import { hasFfmpeg } from '../services/ffmpeg';
 import { IdeaService } from '../services/ideas';
 import { MetricsService } from '../services/metrics';
+import { MindsetContentService } from '../services/mindset-content';
 import { getStorageRoot } from '../services/paths';
 import { PillarService } from '../services/pillar';
 import { PipelineService } from '../services/pipeline';
@@ -61,6 +64,7 @@ const voices = new VoiceService(settings);
 const storyMedia = new StoryMediaService(voices);
 const storage = new ProjectStorageService();
 const crawler = new StoryCrawlerService();
+const mindsetContent = new MindsetContentService(ai);
 const youtube = new YouTubeService(settings);
 const facebook = new FacebookService(settings);
 const stickmanEngine = new StickmanEngineService(ai);
@@ -155,13 +159,16 @@ export function registerIpcHandlers(): void {
     }),
   );
 
+  ipcMain.handle('mindset:crawl-article', (_event, input: CrawlMindsetArticleInput) => mindsetContent.crawlArticle(input));
+  ipcMain.handle('mindset:draft-script', (_event, input: BuildMindsetScriptInput) => mindsetContent.draftScript(input));
+
   ipcMain.handle('voices:list', (_event, search?: string) => voices.list(search));
   ipcMain.handle('voices:preview', (_event, input: PreviewVoiceInput) => voices.preview(input));
   ipcMain.handle('voices:select', (_event, input: SelectVoiceInput) => voices.select(input));
 
   ipcMain.handle('story-media:get', (_event, projectId: string) => storyMedia.get(projectId));
   ipcMain.handle('story-media:generate-thumbnail', (_event, input: GenerateThumbnailInput) =>
-    storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt, input.title, input.concept, input.engine),
+    storyMedia.generateThumbnail(input.projectId, input.scriptId, input.prompt, input.title, input.concept, input.engine, input.includeTextOverlay !== false),
   );
   ipcMain.handle('story-media:extract-thumbnail-from-video', (_event, input: ExtractThumbnailFromVideoInput) =>
     storyMedia.extractThumbnailFromVideo(input.projectId, input.videoPath, input.timeSeconds),

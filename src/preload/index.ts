@@ -75,6 +75,10 @@ const api: ContentFactoryAPI = {
       return () => ipcRenderer.removeListener('crawler:progress', listener);
     },
   },
+  mindset: {
+    crawlArticle: input => ipcRenderer.invoke('mindset:crawl-article', input),
+    draftScript: input => ipcRenderer.invoke('mindset:draft-script', input),
+  },
   voices: {
     list: search => ipcRenderer.invoke('voices:list', search),
     preview: input => ipcRenderer.invoke('voices:preview', input),

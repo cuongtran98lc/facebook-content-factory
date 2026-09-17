@@ -186,6 +186,32 @@ export interface CrawlStoryResult {
   sourceUrl: string;
 }
 
+// --- Mindset content tab (crawl 1 bài viết → AI viết kịch bản mindset mới,
+// KHÔNG lưu DB ở bước này; lưu thật sự tái dùng scripts.importStory) ---
+export interface CrawlMindsetArticleInput {
+  url: string;
+}
+export interface MindsetArticleDTO {
+  sourceUrl: string;
+  title: string;
+  excerpt: string;
+}
+export interface BuildMindsetScriptInput {
+  /** Bỏ trống cả 3 field sourceXxx để AI tự tổng hợp hoàn toàn bằng kiến thức của nó, không cần crawl. */
+  sourceUrl?: string;
+  sourceTitle?: string;
+  sourceExcerpt?: string;
+  /** Ép dùng đúng 1 trong 5 pillar (xem shared/mindset-pillars.ts); bỏ trống để AI tự chọn. */
+  pillar?: string;
+  targetMinutes?: number;
+}
+export interface MindsetScriptDraftDTO {
+  title: string;
+  hook: string;
+  pillar: string;
+  content: string;
+}
+
 export interface AISettingsDTO {
   provider: AIProviderName;
   openaiModel: string;
@@ -322,6 +348,7 @@ export interface GenerateThumbnailInput {
   projectId: string;
   scriptId: string;
   prompt?: string;
+  includeTextOverlay?: boolean;
 }
 export interface ExtractThumbnailFromVideoInput {
   projectId: string;
@@ -513,6 +540,10 @@ export interface ContentFactoryAPI {
   crawler: {
     crawl(input: CrawlStoryInput): Promise<CrawlStoryResult>;
     onProgress(callback: (progress: CrawlProgress) => void): () => void;
+  };
+  mindset: {
+    crawlArticle(input: CrawlMindsetArticleInput): Promise<MindsetArticleDTO>;
+    draftScript(input: BuildMindsetScriptInput): Promise<MindsetScriptDraftDTO>;
   };
   voices: {
     list(search?: string): Promise<VoiceDTO[]>;

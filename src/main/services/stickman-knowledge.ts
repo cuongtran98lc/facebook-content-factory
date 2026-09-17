@@ -46,12 +46,15 @@ export function rulesForDuration(minutes: number): readonly string[] {
   return minutes <= 1 ? SHORT_RULES : minutes < 5 ? MEDIUM_RULES : LONG_RULES
 }
 
-export const GOOGLE_FLOW_STYLE_GUIDE = `STYLE DIRECTIVES — CINEMATIC 2D CARTOON STICKMAN (HENRY STICKMIN / STORYBOARD ART STYLE):
-- Aesthetic: High-end 2D digital cartoon animation still frame, stylized comic story art style, clean bold black line art outlines, rich cel-shaded coloring.
-- Characters: Stylized stickman character with a large smooth circular white head, bold black outline, and very expressive cartoon face with arched black eyebrows, distressed/expressive black eyes, and emotive mouth showing clear dramatic emotion. Wearing a sharp black business suit jacket with a crisp white collared shirt and red necktie. Thin black stickman arms and legs.
-- Environment & Lighting: Detailed 2D cartoon room or environment with atmospheric lighting, storytelling props, environmental clues, floor reflections, and moody directional lighting casting distinct soft character shadows.
-- Composition: High visual storytelling tension, clean 2D vector cartoon aesthetic.
-- STRICT NEGATIVE CONSTRAINTS: Strictly 2D cartoon illustration only. Absolutely NO realistic human faces, NO photorealism, NO 3D rendering, NO CGI, NO blurry watercolor, NO messy sketches.`
+export const GOOGLE_FLOW_STYLE_GUIDE = `STYLE DIRECTIVES — HIGH-CONVERTING CINEMATIC 2D CARTOON STICKMAN (HENRY STICKMIN / VIRAL YOUTUBE THUMBNAIL ART STYLE):
+- Visual Impact & Pop: Explosive high-contrast 2D digital cartoon illustration. Extremely vibrant, punchy saturated colors with crisp bold black line art outlines and bold cel-shading.
+- Protagonist Scale & Focus: The stylized stickman protagonist MUST be HUGE and prominent, occupying 60%–75% of the total frame height, demanding immediate eye contact. Positioned front-and-center or offset to the right, commanding the frame.
+- Exaggerated Face & Expression: Smooth circular white head with thick black outline. Hyper-expressive cartoon face: arched thick black eyebrows, giant wide shock/distress/anger cartoon eyes with tiny dilated pupils, sweat drops flying, mouth wide open screaming or gasping in disbelief. Extreme emotion that instantly hooks the viewer.
+- Signature Outfit: Sharp black tailored business suit jacket, crisp white collared shirt, and vibrant cherry-red necktie (or story-specific iconic outfit). Thin black limbs with expressive hand gestures.
+- Glowing Rim Lighting (High Pop): Electric neon rim lighting (fiery red, vibrant cyan, or golden amber glow along the contours of the stickman's body and head), dramatically separating the character from the background.
+- Story Environment & Depth: Richly detailed 2D cartoon background directly representing the story location, with depth layers (foreground props, midground character, background architecture/lighting). Cinematic directional spotlights and dramatic soft drop shadows.
+- Thumbnail Composition: High storytelling tension. Clean negative space / dark vignette in the upper-left area reserved for large hook title typography.
+- STRICT NEGATIVE CONSTRAINTS: Strictly 2D cartoon illustration only. Absolutely NO realistic human faces, NO photorealism, NO 3D rendering, NO CGI, NO blurry watercolor, NO messy sketches, NO dull grey flat backgrounds.`
 
 export function buildGoogleFlowThumbnailPrompt(options: {
   title: string
@@ -65,26 +68,28 @@ export function buildGoogleFlowThumbnailPrompt(options: {
 
   const conceptGuidelines: Record<import('../../shared/thumbnail-concepts').ThumbnailConcept, string> = {
     PROBLEM_STATE: [
-      'CONCEPT: PROBLEM STATE (High Tension Emergency)',
-      '- Stylized 2D cartoon stickman (round white head, black suit with red tie, thin black limbs) in an overwhelming crisis.',
-      '- Key visual clues: sitting in flooded room with water reflections, looking down in panic at a smartphone with glowing low-battery 5% red warning, 25°C digital wall thermostat.',
-      '- Dramatic atmospheric lighting, cast shadows on blue wall.'
+      'CONCEPT ARCHETYPE: PROBLEM STATE (Peak Emergency & Crisis)',
+      '- Narrative Focus: Depict the main protagonist at the absolute peak crisis or catastrophic breaking point of the story.',
+      '- Character State: Massive 2D stickman (round white head, glowing red/amber rim light, extreme shock/panic expression with sweating and wide eyes, black suit with red tie) reacting with intense distress and urgency.',
+      '- Environment: Draw a fully realized 2D cartoon environment representing the actual story setting (office, street, home, lab, etc.) filled with chaotic story-relevant visual clues, alarm cues, or hazard elements from the script.',
+      '- Lighting & Atmosphere: Dramatic directional lighting casting crisp character shadows, high-contrast red warning mood emphasizing the overwhelming stakes.'
     ].join('\n'),
 
     SPLIT_SCREEN: [
-      'CONCEPT: SPLIT-SCREEN COMPARISON (Polar Opposites)',
-      '- Vertical split-screen with red "VS" circle badge in the center.',
-      '- Left side: Stickman in black suit & red tie celebrating and tossing cash in a bright luxury office.',
-      '- Right side: Same stickman kneeling in despair in a rainy dark alley, holding overdue termination debt contract.',
-      '- High contrast visual storytelling, clean 2D comic art.'
+      'CONCEPT ARCHETYPE: SPLIT-SCREEN COMPARISON (Polar Opposites / Contrast)',
+      '- Narrative Focus: High-contrast dual-panel split screen showing the two starkly contrasting extremes, before vs after, or expectation vs reality of this story.',
+      '- Composition: Clean vertical or diagonal split down the center with a stylized glowing "VS" circle badge or sharp divide.',
+      '- Left Panel: Depict the protagonist in the positive, triumphant, or expectant state of the story (golden warm lighting, confident pose, story-relevant props).',
+      '- Right Panel: Depict the same protagonist in the tragic, disastrous, or harsh reality state of the story (dark cold blue moody lighting, desperate posture, story-relevant aftermath).',
+      '- High visual storytelling tension, maintaining consistent 2D cartoon stickman character identity across both panels.'
     ].join('\n'),
 
     HIGH_STAKES: [
-      'CONCEPT: HIGH-STAKES DILEMMA (Two Difficult Choices)',
-      '- Stylized stickman in black suit & red tie under dramatic spotlight, sweating nervously between two pedestals.',
-      '- Left Choice: Glowing RED BUTTON labeled "SIGN DEAL" with burning contract.',
-      '- Right Choice: Glowing BLUE BUTTON labeled "REFUSE" with court lawsuit documents.',
-      '- Neon sign overhead reading "CHOOSE NOW". Red and blue colored rim lighting.'
+      'CONCEPT ARCHETYPE: HIGH-STAKES DILEMMA (The Impossible Choice)',
+      '- Narrative Focus: Protagonist paralyzed between two agonizing, high-consequence choices directly arising from this story conflict.',
+      '- Composition: Protagonist centered under intense dramatic spotlight, sweating nervously or reaching out in agonizing indecision.',
+      '- Flanking Elements: Two clear visual representations of the two distinct story paths/choices on the left and right, with symbolic props, documents, or illuminated decision indicators reflecting the specific story dilemma.',
+      '- Lighting: Colored rim lighting (warm/red tension on one side, cool/blue dilemma on the other) heightening the suspense.'
     ].join('\n')
   }
 
@@ -92,8 +97,17 @@ export function buildGoogleFlowThumbnailPrompt(options: {
     'FORMAT: 16:9 Landscape YouTube Thumbnail.',
     GOOGLE_FLOW_STYLE_GUIDE,
     conceptGuidelines[concept] || conceptGuidelines.PROBLEM_STATE,
-    `Story Scene: ${title}. ${topic ? `Topic: ${topic}.` : ''} ${context ? context.slice(0, 350) : ''}`,
-    customPrompt?.trim() ? `Extra details: ${customPrompt.trim()}` : ''
+    `VIRAL THUMBNAIL COMPOSITION & HOOK:`,
+    `- Eye-Level Dramatic Angle: Focus on protagonist's huge expressive face and body occupying ~70% of vertical height.`,
+    `- Visual Conflict Clues: Include 1-2 illuminated high-stakes props directly symbolizing the crisis from this story.`,
+    `- Top-Left Breathing Room: Keep the top-left area dark or atmospheric so bold title hook text stands out cleanly.`,
+    `STORY CONTEXT & SCENE DETAILS:`,
+    `- Title: "${title}"`,
+    topic ? `- Topic: ${topic}` : '',
+    `- Story Scene Summary: ${context ? context.slice(0, 500) : ''}`,
+    customPrompt?.trim() ? `- Creator Custom Directives: ${customPrompt.trim()}` : '',
+    `IMPORTANT: Base all environmental props, crisis triggers, and dilemma choices strictly on this specific story. Do NOT invent unrelated props.`
   ].filter(Boolean).join('\n\n')
 }
+
 

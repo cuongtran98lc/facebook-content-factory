@@ -8,7 +8,7 @@ type Props = {
   prompt: string
   title: string
   onPromptChange(value: string): void
-  onGenerate(title: string, concept: ThumbnailConcept, engine?: 'AI' | 'BUILTIN_2D'): void
+  onGenerate(title: string, concept: ThumbnailConcept, engine?: 'AI' | 'BUILTIN_2D', includeTextOverlay?: boolean): void
   onExtractFromVideo(videoPath: string, timeSeconds: number): void
 }
 
@@ -23,6 +23,7 @@ export function ThumbnailGenerator({
 }: Props) {
   const [mode, setMode] = useState<'ai' | 'video'>('ai')
   const [engine, setEngine] = useState<'AI' | 'BUILTIN_2D'>('AI')
+  const [includeTextOverlay, setIncludeTextOverlay] = useState<boolean>(true)
   const [concept, setConcept] = useState<ThumbnailConcept>(media?.thumbnailConcept ?? 'PROBLEM_STATE')
   useEffect(() => { if (media?.thumbnailConcept) setConcept(media.thumbnailConcept) }, [media?.thumbnailConcept])
   const [imageTitle, setImageTitle] = useState(title)
@@ -138,9 +139,9 @@ export function ThumbnailGenerator({
             Phương thức tạo ảnh
             <select value={engine} disabled={busy} onChange={e => setEngine(e.target.value as 'AI' | 'BUILTIN_2D')}>
               <option value="AI">Google Flow AI (Gemini / DALL-E 3)</option>
-              <option value="BUILTIN_2D">Google Flow 2D Comic Art (Concept Art · Chuẩn 1280×720)</option>
+              <option value="BUILTIN_2D">Google Flow 2D Vector (Vector Art SVG)</option>
             </select>
-            <span>{engine === 'AI' ? 'Dùng AI vẽ ảnh minh họa người que 2D phong cách Google Flow.' : 'Dùng kho tranh vẽ 2D Google Flow Comic Art sắc nét chuẩn kích thước 1280×720.'}</span>
+            <span>{engine === 'AI' ? 'Dùng AI vẽ ảnh người que 2D mới theo cốt truyện chuẩn phong cách concept.' : 'Phân tích cốt truyện và tạo vector 2D SVG mới chuẩn tỷ lệ 1280×720.'}</span>
           </label>
 
           <label className="thumbnail-direction">
@@ -159,10 +160,22 @@ export function ThumbnailGenerator({
               placeholder="Ví dụ: người mẹ đứng trước căn nhà cũ, ánh sáng điện ảnh, tông xanh lạnh..."
             />
           </label>
+          <label className="thumbnail-direction" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexDirection: 'row', marginTop: '4px' }}>
+            <input
+              type="checkbox"
+              checked={includeTextOverlay}
+              disabled={busy}
+              onChange={e => setIncludeTextOverlay(e.target.checked)}
+              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b' }}>
+              ✨ Phủ chữ giật tít nổi bật (Text Hook Overlay · Đậm nét 3D, từ khóa vàng kim, tag kịch tính)
+            </span>
+          </label>
           <button
             type="button"
             className="primary full thumbnail-button"
-            onClick={() => onGenerate(imageTitle.trim(), concept, engine)}
+            onClick={() => onGenerate(imageTitle.trim(), concept, engine, includeTextOverlay)}
             disabled={busy || !imageTitle.trim()}
           >
             {busy ? 'Đang xử lý...' : media?.thumbnailPath ? `Generate lại Thumbnail (${engine === 'AI' ? 'Google Flow AI' : '2D Vector'})` : `Generate Thumbnail (${engine === 'AI' ? 'Google Flow AI' : '2D Vector'})`}
