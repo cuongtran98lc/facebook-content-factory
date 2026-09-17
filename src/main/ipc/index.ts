@@ -103,6 +103,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('app:reveal-file', (_event, path: string) => {
     if (typeof path === 'string' && path) shell.showItemInFolder(path);
   });
+  ipcMain.handle('app:open-file', async (_event, path: string) => {
+    if (typeof path === 'string' && path) return await shell.openPath(path);
+    return 'Path is invalid';
+  });
 
   ipcMain.handle('projects:list', () => projects.list());
   ipcMain.handle('projects:create', (_event, input) => projects.create(input));
@@ -191,6 +195,15 @@ export function registerIpcHandlers(): void {
   );
   ipcMain.handle('story-media:generate-stickman-scene-images', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickmanSceneImages']>[0]) =>
     storyMedia.generateStickmanSceneImages(input.projectId, input.scriptId, input.format, input.source),
+  );
+  ipcMain.handle('story-media:generate-emotion-demo', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateEmotionDemo']>[0]) =>
+    storyMedia.generateEmotionDemo(input.projectId, input.emotion, input.format),
+  );
+  ipcMain.handle('story-media:list-emotion-demos', (_event, input: { projectId?: string }) =>
+    storyMedia.listEmotionDemos(input?.projectId),
+  );
+  ipcMain.handle('story-media:use-demo-as-background', (_event, input: { projectId: string; videoPath: string }) =>
+    storyMedia.setBackground(input.projectId, input.videoPath, 'VIDEO'),
   );
   ipcMain.handle('story-media:generate-audio', (_event, input: GenerateStoryAudioInput) =>
     storyMedia.generateStoryAudio(input.projectId, input.scriptId, input.studioOutput === true),

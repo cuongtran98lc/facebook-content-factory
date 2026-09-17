@@ -1,6 +1,7 @@
-import type { ThumbnailConcept } from '../../../shared/thumbnail-concepts';
-import { MARKETS, LANGUAGES } from '../../../shared/audience';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { LANGUAGES, MARKETS } from '../../../shared/audience';
+import type { ThumbnailConcept } from '../../../shared/thumbnail-concepts';
+import { COMPILED_TOPICS, CompiledTopic } from '../../../shared/topics';
 import type {
   AIProviderName,
   AISettingsDTO,
@@ -20,16 +21,24 @@ import type {
   VoiceDTO,
   VoiceSettingsDTO,
 } from '../../../shared/types';
-import { COMPILED_TOPICS, CompiledTopic } from '../../../shared/topics';
 import { ExportQueueView } from '../components/ExportQueueView';
 import { MetricsDashboardView } from '../components/MetricsDashboardView';
 import { RenderQueueView } from '../components/RenderQueueView';
 import { SchedulerView } from '../components/SchedulerView';
+import { StickmanEngineView } from '../components/StickmanEngineView';
 import { StoryMediaFlow, stickSourceForProvider } from '../components/StoryMediaFlow';
 import { ThumbnailGenerator } from '../components/ThumbnailGenerator';
-import { StickmanEngineView } from '../components/StickmanEngineView';
 
-type View = 'dashboard' | 'ideas' | 'scripts' | 'stickman-engine' | 'scheduler' | 'export-queue' | 'metrics' | 'render-queue' | 'settings';
+type View =
+  | 'dashboard'
+  | 'ideas'
+  | 'scripts'
+  | 'stickman-engine'
+  | 'scheduler'
+  | 'export-queue'
+  | 'metrics'
+  | 'render-queue'
+  | 'settings';
 
 const DEFAULT_SETTINGS: AISettingsDTO = {
   // Groq mặc định tạm thời — Gemini đang bị Google chặn project ("denied
@@ -68,7 +77,10 @@ function rewriteInstruction(script?: ScriptDTO): string {
 
 function ideaDetails(description: string | null): { summary: string; suggestions: string[] } {
   if (!description) return { summary: '', suggestions: [] };
-  const sections = description.split(/\s*\|\|\s*/).map(section => section.trim()).filter(Boolean);
+  const sections = description
+    .split(/\s*\|\|\s*/)
+    .map(section => section.trim())
+    .filter(Boolean);
   if (sections.length < 2) return { summary: description, suggestions: [] };
   return {
     summary: sections[0].replace(/^TÓM TẮT:\s*/i, ''),
@@ -106,7 +118,9 @@ export default function App() {
   const [health, setHealth] = useState<AppHealth | null>(null);
   const [name, setName] = useState('Story 001');
   const [selectedTopicId, setSelectedTopicId] = useState<string>('family_inheritance');
-  const [topic, setTopic] = useState('Mẹ chia tài sản cho các con, thử lòng con cái, mâu thuẫn anh chị em, con nuôi vs con ruột, di chúc bí mật và bài học lòng hiếu thảo');
+  const [topic, setTopic] = useState(
+    'Mẹ chia tài sản cho các con, thử lòng con cái, mâu thuẫn anh chị em, con nuôi vs con ruột, di chúc bí mật và bài học lòng hiếu thảo',
+  );
   const [niche, setNiche] = useState('family');
   const [targetMarket, setTargetMarket] = useState('US');
   const [contentLanguage, setContentLanguage] = useState('en-US');
@@ -241,9 +255,13 @@ export default function App() {
     setRewriteNote(rewriteInstruction(activeScript));
   }, [activeScript?.id]);
   useEffect(() => {
-    setTargetMarket(selected ? selected.targetMarket ?? 'VN' : 'US');
-    setContentLanguage(selected ? selected.contentLanguage ?? 'vi-VN' : 'en-US');
-    setVoiceTestText(selected?.contentLanguage?.startsWith('en') ? 'That day, I returned to the old house, unaware of what awaited me behind the door.' : 'Ngày hôm đó, tôi trở về căn nhà cũ và không ngờ điều đang chờ mình phía sau cánh cửa.');
+    setTargetMarket(selected ? (selected.targetMarket ?? 'VN') : 'US');
+    setContentLanguage(selected ? (selected.contentLanguage ?? 'vi-VN') : 'en-US');
+    setVoiceTestText(
+      selected?.contentLanguage?.startsWith('en')
+        ? 'That day, I returned to the old house, unaware of what awaited me behind the door.'
+        : 'Ngày hôm đó, tôi trở về căn nhà cũ và không ngờ điều đang chờ mình phía sau cánh cửa.',
+    );
   }, [selected?.id, selected?.targetMarket, selected?.contentLanguage]);
   useEffect(() => {
     setVoiceId(selected?.voiceId ?? '');
@@ -309,7 +327,13 @@ export default function App() {
     setBusy(true);
     setMessage('');
     try {
-      const created = await window.contentFactory.projects.create({ name, topic, niche, targetMarket, contentLanguage });
+      const created = await window.contentFactory.projects.create({
+        name,
+        topic,
+        niche,
+        targetMarket,
+        contentLanguage,
+      });
       setSelectedId(created.id);
       await reloadProjects();
       setIdeas([]);
@@ -332,17 +356,30 @@ export default function App() {
     setBusy(true);
     try {
       let targetProjectId = selected?.id;
-      const currentTopicText = topic.trim() || COMPILED_TOPICS.find(t => t.id === selectedTopicId)?.prompt || 'Chuyện gia đình';
+      const currentTopicText =
+        topic.trim() || COMPILED_TOPICS.find(t => t.id === selectedTopicId)?.prompt || 'Chuyện gia đình';
       const currentNiche = niche.trim() || 'family';
 
       if (targetProjectId) {
         setMessage(`Đang cập nhật chủ đề & tạo ${ideaCount} ideas bằng ${settings.provider}...`);
-        await window.contentFactory.projects.update(targetProjectId, { topic: currentTopicText, niche: currentNiche, targetMarket, contentLanguage });
+        await window.contentFactory.projects.update(targetProjectId, {
+          topic: currentTopicText,
+          niche: currentNiche,
+          targetMarket,
+          contentLanguage,
+        });
       } else {
         setMessage(`Đang tạo project mới & ${ideaCount} ideas bằng ${settings.provider}...`);
         const topicObj = COMPILED_TOPICS.find(t => t.id === selectedTopicId);
-        const projName = name.trim() || `${topicObj ? topicObj.title : 'Project'} ${new Date().toLocaleDateString('vi-VN')}`;
-        const created = await window.contentFactory.projects.create({ name: projName, topic: currentTopicText, niche: currentNiche, targetMarket, contentLanguage });
+        const projName =
+          name.trim() || `${topicObj ? topicObj.title : 'Project'} ${new Date().toLocaleDateString('vi-VN')}`;
+        const created = await window.contentFactory.projects.create({
+          name: projName,
+          topic: currentTopicText,
+          niche: currentNiche,
+          targetMarket,
+          contentLanguage,
+        });
         targetProjectId = created.id;
         setSelectedId(created.id);
       }
@@ -646,14 +683,16 @@ export default function App() {
         title: activeScript.title ?? undefined,
         content: editorContent,
       });
-      setScripts(current => current.map(script => script.id === saved.id ? saved : script));
+      setScripts(current => current.map(script => (script.id === saved.id ? saved : script)));
       const media = await window.contentFactory.storyMedia.generateAudio({
         projectId: selected.id,
         scriptId: saved.id,
       });
       setStoryMedia(media);
       await reloadProjects();
-      setMessage('✓ Bước 1/4 hoàn tất: Story MP3 đã sẵn sàng. Tiếp theo hãy tạo hoạt hình người que hoặc chọn Video / Ảnh background.');
+      setMessage(
+        '✓ Bước 1/4 hoàn tất: Story MP3 đã sẵn sàng. Tiếp theo hãy tạo hoạt hình người que hoặc chọn Video / Ảnh background.',
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -665,13 +704,24 @@ export default function App() {
     if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') return;
     if (!editorContent.trim()) return setMessage('Story hiện tại đang trống.');
     if (engine !== 'BUILTIN_2D') {
-      const hasKey = settings.provider.endsWith('-cli') || (settings.provider === 'openai'
-        ? settings.hasOpenAIKey
-        : settings.provider === 'groq' ? settings.hasGroqKey : settings.hasGeminiKey);
-      if (!hasKey) return setMessage(`Chưa có API key cho ${settings.provider}. Vào Settings để thêm key hoặc chọn "Stickman 2D Vector (Engine nội bộ)".`);
+      const hasKey =
+        settings.provider.endsWith('-cli') ||
+        (settings.provider === 'openai'
+          ? settings.hasOpenAIKey
+          : settings.provider === 'groq'
+            ? settings.hasGroqKey
+            : settings.hasGeminiKey);
+      if (!hasKey)
+        return setMessage(
+          `Chưa có API key cho ${settings.provider}. Vào Settings để thêm key hoặc chọn "Stickman 2D Vector (Engine nội bộ)".`,
+        );
     }
     setBusy(true);
-    setMessage(engine === 'BUILTIN_2D' ? 'Đang tạo thumbnail Google Flow 2D Vector...' : `Đang tạo thumbnail Google Flow 2D bằng ${settings.provider}...`);
+    setMessage(
+      engine === 'BUILTIN_2D'
+        ? 'Đang tạo thumbnail Google Flow 2D Vector...'
+        : `Đang tạo thumbnail Google Flow 2D bằng ${settings.provider}...`,
+    );
     try {
       const saved = await window.contentFactory.scripts.update({
         scriptId: activeScript.id,
@@ -719,11 +769,13 @@ export default function App() {
     setBusy(true);
     setMessage('Đang tạo thumbnail từ video hoạt hình...');
     try {
-      setStoryMedia(await window.contentFactory.storyMedia.extractThumbnailFromVideo({
-        projectId: selected.id,
-        videoPath: storyMedia.backgroundPath,
-        timeSeconds: Math.min(1, (storyMedia.backgroundDuration ?? 2) / 2),
-      }));
+      setStoryMedia(
+        await window.contentFactory.storyMedia.extractThumbnailFromVideo({
+          projectId: selected.id,
+          videoPath: storyMedia.backgroundPath,
+          timeSeconds: Math.min(1, (storyMedia.backgroundDuration ?? 2) / 2),
+        }),
+      );
       setMessage('✓ Đã lưu thumbnail của video vào images/thumbnail.png.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -737,15 +789,28 @@ export default function App() {
     if (!selected || !activeScript) return setMessage('Hãy chọn dự án và kịch bản trước khi tạo video người que.');
     const isReel = activeScript.type === 'REEL';
     if (!isReel) {
-      if (editorContent !== activeScript.content) return setMessage('Truyện có chỉnh sửa. Hãy Generate Story MP3 lại trước để hoạt hình khớp lời đọc.');
+      if (editorContent !== activeScript.content)
+        return setMessage('Truyện có chỉnh sửa. Hãy Generate Story MP3 lại trước để hoạt hình khớp lời đọc.');
     }
     const targetFormat = isReel ? 'REEL' : videoFormat;
     setBusy(true);
     setStoryVideoGenerating(true);
-    setStoryVideoProgress({ current: 0, total: 1, percent: 0, stage: 'VIDEO', message: `Đang chuẩn bị storyboard người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''}...` });
+    setStoryVideoProgress({
+      current: 0,
+      total: 1,
+      percent: 0,
+      stage: 'VIDEO',
+      message: `Đang chuẩn bị storyboard người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''}...`,
+    });
     setMessage(`Đang tạo hoạt hình theo nội dung kịch bản ${targetFormat === 'REEL' ? '(Short 9:16)' : ''}...`);
     try {
-      setStoryVideoProgress({ current: 0, total: 1, percent: 0, stage: 'VIDEO', message: 'Đang kiểm tra MP3 và FFmpeg hiện tại...' });
+      setStoryVideoProgress({
+        current: 0,
+        total: 1,
+        percent: 0,
+        stage: 'VIDEO',
+        message: 'Đang kiểm tra MP3 và FFmpeg hiện tại...',
+      });
       const [currentMedia, currentHealth] = await Promise.all([
         window.contentFactory.storyMedia.get(selected.id),
         window.contentFactory.app.health(),
@@ -753,9 +818,21 @@ export default function App() {
       setStoryMedia(currentMedia);
       setHealth(currentHealth);
       if (!currentHealth.ffmpeg) throw new Error('Không tìm thấy FFmpeg để dựng video. MP3 hiện có vẫn được giữ.');
-      if (!isReel && !currentMedia.audioPath) throw new Error('Dự án đang chọn chưa có Story MP3. Hãy chọn đúng dự án đã tạo MP3 hoặc tạo MP3 cho dự án này.');
-      setStoryMedia(await window.contentFactory.storyMedia.generateStickVideo({ projectId: selected.id, scriptId: activeScript.id, format: targetFormat, source }));
-      setMessage(`✓ Hoạt hình người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''} 60 fps có lời đọc và thumbnail đã sẵn sàng!`);
+      if (!isReel && !currentMedia.audioPath)
+        throw new Error(
+          'Dự án đang chọn chưa có Story MP3. Hãy chọn đúng dự án đã tạo MP3 hoặc tạo MP3 cho dự án này.',
+        );
+      setStoryMedia(
+        await window.contentFactory.storyMedia.generateStickVideo({
+          projectId: selected.id,
+          scriptId: activeScript.id,
+          format: targetFormat,
+          source,
+        }),
+      );
+      setMessage(
+        `✓ Hoạt hình người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''} 60 fps có lời đọc và thumbnail đã sẵn sàng!`,
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -771,8 +848,17 @@ export default function App() {
     const isReel = activeScript.type === 'REEL';
     const targetFormat = isReel ? 'REEL' : videoFormat;
     setBusy(true);
-    const sourceName = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude Code CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : `AI trong Settings (${settings.provider})`;
-    setMessage(`Đang tự động chia phân đoạn và vẽ bộ ảnh người que ${targetFormat === 'REEL' ? 'Short 9:16 ' : ''}bằng ${sourceName}...`);
+    const sourceName =
+      source === 'CODEX_CLI'
+        ? 'Codex CLI'
+        : source === 'CLAUDE_CLI'
+          ? 'Claude Code CLI'
+          : source === 'ANTIGRAVITY_CLI'
+            ? 'Antigravity CLI'
+            : `AI trong Settings (${settings.provider})`;
+    setMessage(
+      `Đang tự động chia phân đoạn và vẽ bộ ảnh người que ${targetFormat === 'REEL' ? 'Short 9:16 ' : ''}bằng ${sourceName}...`,
+    );
     try {
       const res = await window.contentFactory.storyMedia.generateStickmanSceneImages({
         projectId: selected.id,
@@ -882,7 +968,9 @@ export default function App() {
   async function regenerateReelThumbnails() {
     if (!selected) return;
     if (typeof window.contentFactory.storyMedia.regenerateReelThumbnails !== 'function') {
-      setMessage('Preload Electron đang là bản cũ. Hãy thoát hoàn toàn ứng dụng và chạy lại npm start để dùng Generate lại Thumbnail Reel.');
+      setMessage(
+        'Preload Electron đang là bản cũ. Hãy thoát hoàn toàn ứng dụng và chạy lại npm start để dùng Generate lại Thumbnail Reel.',
+      );
       return;
     }
     setBusy(true);
@@ -1072,7 +1160,9 @@ export default function App() {
           <button className={`nav ${view === 'scripts' ? 'active' : ''}`} onClick={() => setView('scripts')}>
             Scripts
           </button>
-          <button className={`nav ${view === 'stickman-engine' ? 'active' : ''}`} onClick={() => setView('stickman-engine')}>
+          <button
+            className={`nav ${view === 'stickman-engine' ? 'active' : ''}`}
+            onClick={() => setView('stickman-engine')}>
             ⚡ Stickman Studio
           </button>
           <button className="nav" disabled>
@@ -1108,20 +1198,25 @@ export default function App() {
               disabled={busy}
               onChange={event => void changeActiveAI(event.target.value as AIProviderName)}>
               <option value="groq" disabled={!settings.hasGroqKey}>
-                Groq · {settings.groqModel}{settings.hasGroqKey ? '' : ' · chưa có key'}
+                Groq · {settings.groqModel}
+                {settings.hasGroqKey ? '' : ' · chưa có key'}
               </option>
               <option value="gemini" disabled={!settings.hasGeminiKey}>
-                Gemini · {settings.geminiModel}{settings.hasGeminiKey ? '' : ' · chưa có key'}
+                Gemini · {settings.geminiModel}
+                {settings.hasGeminiKey ? '' : ' · chưa có key'}
               </option>
               <option value="openai" disabled={!settings.hasOpenAIKey}>
-                OpenAI · {settings.openaiModel}{settings.hasOpenAIKey ? '' : ' · chưa có key'}
+                OpenAI · {settings.openaiModel}
+                {settings.hasOpenAIKey ? '' : ' · chưa có key'}
               </option>
               <option value="claude-cli">Claude CLI (local)</option>
               <option value="codex-cli">Codex CLI (local)</option>
               <option value="antigravity-cli">Antigravity CLI (local)</option>
             </select>
             {!hasAIKey(settings, settings.provider) && (
-              <button type="button" onClick={() => setView('settings')}>Thêm API key →</button>
+              <button type="button" onClick={() => setView('settings')}>
+                Thêm API key →
+              </button>
             )}
           </label>
         </div>
@@ -1206,27 +1301,57 @@ export default function App() {
             <section className="card">
               <h2>Khán giả YouTube</h2>
               <div className="topic-generator-fields">
-                <label>Thị trường
-                  <select disabled={busy} value={targetMarket} onChange={e => { setTargetMarket(e.target.value); setContentLanguage(e.target.value === 'VN' ? 'vi-VN' : e.target.value === 'GB' ? 'en-GB' : 'en-US'); }}>
-                    {MARKETS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                <label>
+                  Thị trường
+                  <select
+                    disabled={busy}
+                    value={targetMarket}
+                    onChange={e => {
+                      setTargetMarket(e.target.value);
+                      setContentLanguage(
+                        e.target.value === 'VN' ? 'vi-VN' : e.target.value === 'GB' ? 'en-GB' : 'en-US',
+                      );
+                    }}>
+                    {MARKETS.map(item => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
-                <label>Ngôn ngữ nội dung
+                <label>
+                  Ngôn ngữ nội dung
                   <select disabled={busy} value={contentLanguage} onChange={e => setContentLanguage(e.target.value)}>
-                    {LANGUAGES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    {LANGUAGES.map(item => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
-                {selected && <button disabled={busy} onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await window.contentFactory.projects.update(selected.id, { targetMarket, contentLanguage });
-                    await reloadProjects();
-                    setMessage('Đã lưu khán giả mục tiêu. Cấu hình áp dụng cho lần generate tiếp theo.');
-                  } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
-                  finally { setBusy(false); }
-                }}>Lưu cho project hiện tại</button>}
+                {selected && (
+                  <button
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await window.contentFactory.projects.update(selected.id, { targetMarket, contentLanguage });
+                        await reloadProjects();
+                        setMessage('Đã lưu khán giả mục tiêu. Cấu hình áp dụng cho lần generate tiếp theo.');
+                      } catch (error) {
+                        setMessage(error instanceof Error ? error.message : String(error));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}>
+                    Lưu cho project hiện tại
+                  </button>
+                )}
               </div>
-              <p className="muted">Áp dụng khi tạo project hoặc generate chủ đề. Với project hiện tại, bấm Lưu trước khi tạo nội dung. Nội dung đã tạo không tự dịch; hãy generate lại và chọn giọng đọc phù hợp ngôn ngữ.</p>
+              <p className="muted">
+                Áp dụng khi tạo project hoặc generate chủ đề. Với project hiện tại, bấm Lưu trước khi tạo nội dung. Nội
+                dung đã tạo không tự dịch; hãy generate lại và chọn giọng đọc phù hợp ngôn ngữ.
+              </p>
             </section>
             <section className="card compiled-topics-section">
               <div className="topics-gallery-header">
@@ -1235,7 +1360,8 @@ export default function App() {
                     <span>✨</span> Kho Chủ đề đã Tổng hợp
                   </h2>
                   <p>
-                    Chọn một chủ đề đã biên soạn bên dưới. Bạn có thể tự chỉnh sửa nội dung và bấm <strong>Generate Ideas</strong> bất cứ lúc nào.
+                    Chọn một chủ đề đã biên soạn bên dưới. Bạn có thể tự chỉnh sửa nội dung và bấm{' '}
+                    <strong>Generate Ideas</strong> bất cứ lúc nào.
                   </p>
                 </div>
                 <span className="master-prompt-badge">AI MASTER PROMPT READY</span>
@@ -1243,7 +1369,8 @@ export default function App() {
 
               <div className="topics-grid">
                 {COMPILED_TOPICS.map(item => {
-                  const isActive = selectedTopicId === item.id || (topic && topic.includes(item.title.split('&')[0].trim()));
+                  const isActive =
+                    selectedTopicId === item.id || (topic && topic.includes(item.title.split('&')[0].trim()));
                   return (
                     <button
                       type="button"
@@ -1381,7 +1508,8 @@ export default function App() {
                   <>
                     <div className="project-title">{selected.name}</div>
                     <div className="meta">
-                      {selected.niche ?? 'general'} · {selected.status} · {selected.targetMarket ?? 'VN'} / {selected.contentLanguage ?? 'vi-VN'}
+                      {selected.niche ?? 'general'} · {selected.status} · {selected.targetMarket ?? 'VN'} /{' '}
+                      {selected.contentLanguage ?? 'vi-VN'}
                     </div>
                     <div className="topic">{selected.topic ?? 'No topic'}</div>
                     <div className="steps">
@@ -1460,44 +1588,49 @@ export default function App() {
               {ideas.map(idea => {
                 const details = ideaDetails(idea.description);
                 return (
-                <article className={`idea-card ${idea.selected ? 'chosen' : ''}`} key={idea.id}>
-                  <div className="idea-top">
-                    <span className="score">{idea.score?.toFixed(1) ?? '-'}</span>
-                    {idea.selected && <span className="chosen-label">SELECTED</span>}
-                  </div>
-                  <h3>{idea.title}</h3>
-                  <p className="hook">{idea.hook}</p>
-                  <p>{details.summary}</p>
-                  {!!details.suggestions.length && (
-                    <details className="idea-suggestions">
-                      <summary>Gợi ý triển khai Reel + Long Video</summary>
-                      <div>
-                        {details.suggestions.map((suggestion, index) => {
-                          const separator = suggestion.indexOf(':');
-                          const label = separator > 0 ? suggestion.slice(0, separator) : `Gợi ý ${index + 1}`;
-                          const value = separator > 0 ? suggestion.slice(separator + 1).trim() : suggestion;
-                          return <section key={`${idea.id}-${index}`}><strong>{label}</strong><p>{value}</p></section>;
-                        })}
-                      </div>
-                    </details>
-                  )}
-                  <button
-                    className={idea.selected ? 'secondary full' : 'primary full'}
-                    disabled={busy || idea.selected}
-                    onClick={() => selectIdea(idea.id)}>
-                    {idea.selected ? 'Đang sử dụng' : 'Use this idea'}
-                  </button>
-                  {idea.selected && (
+                  <article className={`idea-card ${idea.selected ? 'chosen' : ''}`} key={idea.id}>
+                    <div className="idea-top">
+                      <span className="score">{idea.score?.toFixed(1) ?? '-'}</span>
+                      {idea.selected && <span className="chosen-label">SELECTED</span>}
+                    </div>
+                    <h3>{idea.title}</h3>
+                    <p className="hook">{idea.hook}</p>
+                    <p>{details.summary}</p>
+                    {!!details.suggestions.length && (
+                      <details className="idea-suggestions">
+                        <summary>Gợi ý triển khai Reel + Long Video</summary>
+                        <div>
+                          {details.suggestions.map((suggestion, index) => {
+                            const separator = suggestion.indexOf(':');
+                            const label = separator > 0 ? suggestion.slice(0, separator) : `Gợi ý ${index + 1}`;
+                            const value = separator > 0 ? suggestion.slice(separator + 1).trim() : suggestion;
+                            return (
+                              <section key={`${idea.id}-${index}`}>
+                                <strong>{label}</strong>
+                                <p>{value}</p>
+                              </section>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    )}
                     <button
-                      className="secondary full top-gap"
-                      onClick={() => {
-                        setActiveScriptId(null);
-                        setView('scripts');
-                      }}>
-                      Generate Story từ idea này →
+                      className={idea.selected ? 'secondary full' : 'primary full'}
+                      disabled={busy || idea.selected}
+                      onClick={() => selectIdea(idea.id)}>
+                      {idea.selected ? 'Đang sử dụng' : 'Use this idea'}
                     </button>
-                  )}
-                </article>
+                    {idea.selected && (
+                      <button
+                        className="secondary full top-gap"
+                        onClick={() => {
+                          setActiveScriptId(null);
+                          setView('scripts');
+                        }}>
+                        Generate Story từ idea này →
+                      </button>
+                    )}
+                  </article>
                 );
               })}
             </div>
@@ -1628,28 +1761,36 @@ export default function App() {
                       value={targetMinutes}
                       onChange={e => setTargetMinutes(Math.min(30, Math.max(0.25, Number(e.target.value) || 0.25)))}
                     />
-                    <small>0.25–1 phút: Short · trên 1–dưới 5: video vừa · từ 5: video dài. Ước tính 145 từ/phút.</small>
+                    <small>
+                      0.25–1 phút: Short · trên 1–dưới 5: video vừa · từ 5: video dài. Ước tính 145 từ/phút.
+                    </small>
                   </label>
                   <div className="duration-preset-row">
                     <button
                       type="button"
                       className={`preset-btn ${targetMinutes <= 1 ? 'active short' : ''}`}
-                      onClick={() => { setTargetMinutes(0.5); setVideoFormat('REEL'); }}
-                    >
+                      onClick={() => {
+                        setTargetMinutes(0.5);
+                        setVideoFormat('REEL');
+                      }}>
                       ⚡ Video Short (15–60s)
                     </button>
                     <button
                       type="button"
                       className={`preset-btn ${targetMinutes > 1 && targetMinutes < 5 ? 'active' : ''}`}
-                      onClick={() => { setTargetMinutes(3); setVideoFormat('LANDSCAPE'); }}
-                    >
+                      onClick={() => {
+                        setTargetMinutes(3);
+                        setVideoFormat('LANDSCAPE');
+                      }}>
                       ⏱️ Video Vừa (3 phút)
                     </button>
                     <button
                       type="button"
                       className={`preset-btn ${targetMinutes >= 5 ? 'active' : ''}`}
-                      onClick={() => { setTargetMinutes(8); setVideoFormat('LANDSCAPE'); }}
-                    >
+                      onClick={() => {
+                        setTargetMinutes(8);
+                        setVideoFormat('LANDSCAPE');
+                      }}>
                       🎬 Video Dài (8 phút)
                     </button>
                   </div>
@@ -1685,7 +1826,11 @@ export default function App() {
                           className="primary"
                           onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
                           disabled={busy}
-                          title={busy ? message || 'Đang xử lý tác vụ khác' : 'Dựng video người que từ kịch bản và MP3 hiện có'}>
+                          title={
+                            busy
+                              ? message || 'Đang xử lý tác vụ khác'
+                              : 'Dựng video người que từ kịch bản và MP3 hiện có'
+                          }>
                           🎬 Tạo video người que
                         </button>
                         <button
@@ -1727,31 +1872,32 @@ export default function App() {
                     value={editorContent}
                     onChange={e => setEditorContent(e.target.value)}
                   />
-                  {activeScript.type === 'REEL' && (() => {
-                    const currentReel = storyMedia?.reels?.find(r => r.reelId === activeScript.id);
-                    return (
-                      <div className="reel-single-media-box">
-                        <div className="reel-media-actions">
-                          <div>
-                            <strong>🎬 Hoạt hình Người que cho kịch bản Reel này (9:16 Short)</strong>
-                            <span>Dựng hoạt hình doodle 2D 60 fps tỷ lệ dọc 9:16 đồng bộ với lời đọc.</span>
+                  {activeScript.type === 'REEL' &&
+                    (() => {
+                      const currentReel = storyMedia?.reels?.find(r => r.reelId === activeScript.id);
+                      return (
+                        <div className="reel-single-media-box">
+                          <div className="reel-media-actions">
+                            <div>
+                              <strong>🎬 Hoạt hình Người que cho kịch bản Reel này (9:16 Short)</strong>
+                              <span>Dựng hoạt hình doodle 2D 60 fps tỷ lệ dọc 9:16 đồng bộ với lời đọc.</span>
+                            </div>
                           </div>
+                          {currentReel?.videoUrl && (
+                            <div className="reel-preview-card">
+                              <h4>Video Hoạt hình Short 9:16 của tập này:</h4>
+                              <video src={currentReel.videoUrl} controls />
+                            </div>
+                          )}
+                          {currentReel?.audioUrl && !currentReel.videoUrl && (
+                            <div className="reel-preview-card">
+                              <h4>Audio giọng đọc tập này:</h4>
+                              <audio src={currentReel.audioUrl} controls />
+                            </div>
+                          )}
                         </div>
-                        {currentReel?.videoUrl && (
-                          <div className="reel-preview-card">
-                            <h4>Video Hoạt hình Short 9:16 của tập này:</h4>
-                            <video src={currentReel.videoUrl} controls />
-                          </div>
-                        )}
-                        {currentReel?.audioUrl && !currentReel.videoUrl && (
-                          <div className="reel-preview-card">
-                            <h4>Audio giọng đọc tập này:</h4>
-                            <audio src={currentReel.audioUrl} controls />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                      );
+                    })()}
                   {activeScript.type === 'REEL' && sceneImages && sceneImages.length > 0 && (
                     <div className="scene-images-gallery">
                       <h4>🖼️ Thư viện Ảnh Người Que theo Phân đoạn ({sceneImages.length} cảnh)</h4>
@@ -1772,7 +1918,13 @@ export default function App() {
                   {activeScript.type === 'LONG_STORY' && (
                     <ThumbnailGenerator
                       key={activeScript.id}
-                      title={storyMedia?.storyVideoOutputs?.find(output => output.format === videoFormat)?.parts[0]?.publishTitle || activeScript.title || selected?.name || ''}
+                      title={
+                        storyMedia?.storyVideoOutputs?.find(output => output.format === videoFormat)?.parts[0]
+                          ?.publishTitle ||
+                        activeScript.title ||
+                        selected?.name ||
+                        ''
+                      }
                       busy={busy}
                       media={storyMedia}
                       prompt={thumbnailPrompt}
@@ -1854,6 +2006,10 @@ export default function App() {
                         )}
                       </div>
                       <StoryMediaFlow
+                        projectId={selected?.id}
+                        onRefreshMedia={() => {
+                          if (selected?.id) void window.contentFactory.storyMedia.get(selected.id).then(setStoryMedia);
+                        }}
                         aiProvider={settings.provider}
                         busy={busy}
                         busyMessage={message}
@@ -1919,7 +2075,9 @@ export default function App() {
             projects={projects}
             selectedProjectId={selectedId}
             onSelectProject={setSelectedId}
-            onProjectUpdated={updated => setProjects(previous => previous.map(project => project.id === updated.id ? updated : project))}
+            onProjectUpdated={updated =>
+              setProjects(previous => previous.map(project => (project.id === updated.id ? updated : project)))
+            }
             onNavigateToScripts={() => setView('scripts')}
           />
         </div>
@@ -2023,8 +2181,8 @@ export default function App() {
                 Test OpenAI
               </button>
               <p className="hint">
-                CLI providers dùng Claude Code / Codex / Antigravity CLI đã đăng nhập sẵn trên máy (không cần API
-                key). Cần cài đặt CLI tương ứng và đăng nhập trước ở Terminal.
+                CLI providers dùng Claude Code / Codex / Antigravity CLI đã đăng nhập sẵn trên máy (không cần API key).
+                Cần cài đặt CLI tương ứng và đăng nhập trước ở Terminal.
               </p>
               <button type="button" className="secondary" disabled={busy} onClick={() => testAI('claude-cli')}>
                 Test Claude CLI

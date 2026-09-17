@@ -6,7 +6,7 @@ import { closePrisma } from './services/database';
 import { getOutputRoot, getStorageRoot } from './services/paths';
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'local-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'local-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } },
 ]);
 
 function isInsideRoot(path: string, root: string): boolean {
@@ -46,9 +46,16 @@ app.whenReady().then(() => {
   protocol.handle('local-media', request => {
     const url = new URL(request.url);
     const requested = decodeURIComponent(url.pathname.slice(1));
-    const allowedRoots = [getStorageRoot(), getOutputRoot()];
+    const allowedRoots = [
+      getStorageRoot(),
+      getOutputRoot(),
+      join(getOutputRoot(), 'demos'),
+      join(app.getPath('userData'), 'data'),
+    ];
     if (!allowedRoots.some(root => isInsideRoot(requested, root))) return new Response('Forbidden', { status: 403 });
-    return net.fetch(pathToFileURL(resolve(requested)).toString());
+    return net.fetch(pathToFileURL(resolve(requested)).toString(), {
+      headers: request.headers,
+    });
   });
   registerIpcHandlers();
   scheduler.start();

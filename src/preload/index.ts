@@ -8,6 +8,7 @@ const api: ContentFactoryAPI = {
     copyText: text => ipcRenderer.invoke('app:copy-text', text),
     openExternal: url => ipcRenderer.invoke('app:open-external', url),
     revealFile: path => ipcRenderer.invoke('app:reveal-file', path),
+    openFile: path => ipcRenderer.invoke('app:open-file', path),
   },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
@@ -99,6 +100,9 @@ const api: ContentFactoryAPI = {
     resumePending: () => ipcRenderer.invoke('story-media:resume-pending'),
     generateStickVideo: input => ipcRenderer.invoke('story-media:generate-stick-video', input),
     generateStickmanSceneImages: input => ipcRenderer.invoke('story-media:generate-stickman-scene-images', input),
+    generateEmotionDemo: input => ipcRenderer.invoke('story-media:generate-emotion-demo', input),
+    listEmotionDemos: input => ipcRenderer.invoke('story-media:list-emotion-demos', input),
+    useDemoAsBackground: input => ipcRenderer.invoke('story-media:use-demo-as-background', input),
     generateAudio: input => ipcRenderer.invoke('story-media:generate-audio', input),
     chooseBackground: (projectId, kind) => ipcRenderer.invoke('story-media:choose-background', projectId, kind),
     render: input => ipcRenderer.invoke('story-media:render', input),

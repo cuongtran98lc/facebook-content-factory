@@ -460,6 +460,7 @@ export interface ContentFactoryAPI {
     copyText(text: string): Promise<void>;
     openExternal(url: string): Promise<void>;
     revealFile(path: string): Promise<void>;
+    openFile?(path: string): Promise<string>;
   };
   projects: {
     list(): Promise<ProjectDTO[]>;
@@ -530,6 +531,9 @@ export interface ContentFactoryAPI {
     resumePending(): Promise<StoryMediaDTO | null>;
     generateStickVideo(input: { studioOutput?: boolean; projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<StoryMediaDTO>;
     generateStickmanSceneImages(input: { projectId: string; scriptId: string; format?: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }>;
+    generateEmotionDemo(input: { projectId?: string; emotion: string; format?: VideoFormat }): Promise<{ videoPath: string; videoUrl: string; duration: number }>;
+    listEmotionDemos?(input: { projectId?: string }): Promise<EmotionDemoDTO[]>;
+    useDemoAsBackground?(input: { projectId: string; videoPath: string }): Promise<StoryMediaDTO>;
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>;
     chooseBackground(projectId: string, kind?: BackgroundKind): Promise<StoryMediaDTO | null>;
     render(input: RenderStoryVideoInput): Promise<StoryMediaDTO>;
@@ -578,6 +582,15 @@ export interface ContentFactoryAPI {
     generatePackage(input: import('./stickman-engine').GeneratePackageInput): Promise<import('./stickman-engine').StickmanContentPackage>;
     expandShortToLong(input: import('./stickman-engine').ExpandShortToLongInput): Promise<import('./stickman-engine').StickmanIdea>;
   };
+}
+
+export interface EmotionDemoDTO {
+  fileName: string;
+  videoPath: string;
+  videoUrl: string;
+  emotion: string;
+  createdAt: number;
+  size: number;
 }
 
 export * from './stickman-engine';

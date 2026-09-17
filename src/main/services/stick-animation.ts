@@ -1101,6 +1101,471 @@ export async function renderConceptStickVideo(
   }
 }
 
+export function renderEmotionDemoFrame(emotion: string, frame: number, format: VideoFormat): string {
+  const w = format === 'REEL' ? 540 : 960
+  const h = format === 'LANDSCAPE' ? 540 : format === 'REEL' ? 960 : 960
+  const floor = h * (format === 'REEL' ? 0.78 : 0.75)
+  const phase = (frame / 120) * Math.PI * 2
+  const ink = '#111827'
+  const emo = (emotion || 'worried').toLowerCase()
+
+  if (emo === 'worried' || emo === 'crisis' || emo === 'sad') {
+    const breath = Math.sin(phase) * 2.5
+    const jitter = Math.sin(phase * 16) * 1.5
+    const batteryBlink = frame % 30 < 18 ? 1 : 0.4
+    const glowRadius = 75 + Math.sin(phase * 4) * 8
+    const charX = w * (format === 'REEL' ? 0.54 : 0.62)
+    const charY = floor - 8
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <defs>
+        <linearGradient id="crisis-wall" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#334155"/>
+          <stop offset="70%" stop-color="#1e293b"/>
+          <stop offset="100%" stop-color="#0f172a"/>
+        </linearGradient>
+        <linearGradient id="crisis-floor" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0f172a"/>
+          <stop offset="100%" stop-color="#020617"/>
+        </linearGradient>
+        <radialGradient id="phone-cyan-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8"/>
+          <stop offset="50%" stop-color="#0284c7" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#0284c7" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="spotlight" cx="60%" cy="40%" r="70%">
+          <stop offset="0%" stop-color="#94a3b8" stop-opacity="0.15"/>
+          <stop offset="100%" stop-color="#000000" stop-opacity="0.65"/>
+        </radialGradient>
+      </defs>
+
+      <!-- Wall & Floor -->
+      <rect width="${w}" height="${floor}" fill="url(#crisis-wall)"/>
+      <rect y="${floor}" width="${w}" height="${h - floor}" fill="url(#crisis-floor)"/>
+
+      <!-- Wall Water Seepage / Condensation -->
+      <path d="M0 ${floor} Q50 ${floor - 45} 120 ${floor - 15} T250 ${floor - 35} T380 ${floor - 20} T520 ${floor - 50} T${w} ${floor - 25} L${w} ${floor} Z" fill="#0284c7" fill-opacity="0.18"/>
+
+      <!-- Door in background -->
+      <g stroke="#475569" stroke-width="3.5" fill="none">
+        <rect x="${w * 0.22}" y="${floor - 380}" width="${w * 0.2}" height="380"/>
+        <line x1="${w * 0.22}" y1="${floor - 190}" x2="${w * 0.42}" y2="${floor - 190}" stroke-dasharray="6,4"/>
+        <rect x="${w * 0.24}" y="${floor - 210}" width="24" height="9" rx="3" fill="#94a3b8" stroke="#334155" stroke-width="2"/>
+      </g>
+
+      <!-- Digital Thermostat (25°C) from reference -->
+      <g transform="translate(${w * 0.05} ${floor - 290})">
+        <rect x="0" y="0" width="105" height="74" rx="12" fill="#cbd5e1" stroke="#334155" stroke-width="3.5"/>
+        <rect x="8" y="8" width="60" height="58" rx="6" fill="#bae6fd" stroke="#0284c7" stroke-width="2"/>
+        <text x="38" y="44" font-family="monospace" font-size="17" font-weight="900" fill="#0369a1" text-anchor="middle">25°C</text>
+        <text x="54" y="24" font-size="10">☀️</text>
+        <polygon points="85,22 75,34 95,34" fill="#64748b"/>
+        <polygon points="85,58 75,46 95,46" fill="#64748b"/>
+      </g>
+
+      <!-- Water Puddles on floor with reflections -->
+      <g fill="#0284c7" fill-opacity="0.22" stroke="#38bdf8" stroke-width="2.5">
+        <path d="M${w * 0.08} ${floor + 25} Q${w * 0.25} ${floor + 10} ${w * 0.45} ${floor + 35} T${w * 0.85} ${floor + 55} Q${w * 0.55} ${floor + 95} ${w * 0.08} ${floor + 25} Z"/>
+        <ellipse cx="${w * 0.72}" cy="${floor + 45}" rx="55" ry="16"/>
+        <ellipse cx="${w * 0.35}" cy="${floor + 70}" rx="65" ry="18"/>
+      </g>
+
+      <!-- Debris pipes on left floor -->
+      <g stroke="#64748b" stroke-width="4.5" stroke-linecap="round">
+        <line x1="${w * 0.07}" y1="${floor + 60}" x2="${w * 0.07}" y2="${floor + 30}"/>
+        <line x1="${w * 0.12}" y1="${floor + 75}" x2="${w * 0.12}" y2="${floor + 45}"/>
+        <line x1="${w * 0.15}" y1="${floor + 85}" x2="${w * 0.17}" y2="${floor + 60}"/>
+      </g>
+
+      <!-- Character Cast Shadow -->
+      <ellipse cx="${charX}" cy="${floor + 16}" rx="110" ry="24" fill="#020617" fill-opacity="0.65"/>
+
+      <!-- STICKMAN CHARACTER (HENRY STICKMIN STYLE SEATED) -->
+      <g transform="translate(${charX} ${charY})">
+        <!-- Bent Legs (Chân gập gối nhọn & Chân duỗi) -->
+        <path d="M-15 -35 L-48 -105 L-115 -5" fill="none" stroke="${ink}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- Bean Shoes (Giày hạt đậu) -->
+        <ellipse cx="-115" cy="-5" rx="24" ry="12" fill="#475569" stroke="${ink}" stroke-width="4"/>
+        <path d="M12 -35 L45 -45 L105 8" fill="none" stroke="${ink}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+        <ellipse cx="105" cy="8" rx="26" ry="13" fill="#475569" stroke="${ink}" stroke-width="4"/>
+
+        <!-- Torso with Suit & Red Tie -->
+        <g transform="translate(0, ${breath})">
+          <!-- Suit Body -->
+          <path d="M-30 -150 L30 -150 L24 -32 L-24 -32 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+          <!-- Suit Lapels -->
+          <path d="M-30 -150 L-8 -95 L-22 -32 M30 -150 L8 -95 L22 -32" fill="none" stroke="#334155" stroke-width="3"/>
+          <!-- White Shirt Collar -->
+          <polygon points="-16,-150 0,-110 16,-150" fill="#ffffff" stroke="none"/>
+          <!-- Red Tie -->
+          <polygon points="-5,-128 0,-122 5,-128 7,-70 0,-52 -7,-70" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+          <!-- Left Arm & 4-Finger Gloved Hand resting flat on floor -->
+          <path d="M22 -130 L78 -75 L130 5" fill="none" stroke="${ink}" stroke-width="6" stroke-linecap="round"/>
+          <g transform="translate(130, 5)" fill="#ffffff" stroke="${ink}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M-8 -5 C-5 -16 16 -18 22 -2 C24 6 16 12 0 10 Z"/>
+            <line x1="8" y1="-10" x2="24" y2="-7"/>
+            <line x1="12" y1="-3" x2="28" y2="1"/>
+            <line x1="8" y1="5" x2="24" y2="8"/>
+          </g>
+
+          <!-- Right Arm holding Glowing Phone -->
+          <path d="M-22 -130 L${-58 + jitter} -80 L${-80 + jitter} -112" fill="none" stroke="${ink}" stroke-width="6" stroke-linecap="round"/>
+
+          <!-- Glowing Cyan Aura from phone screen -->
+          <circle cx="${-92 + jitter}" cy="-125" r="${glowRadius}" fill="url(#phone-cyan-glow)"/>
+
+          <!-- Phone Device -->
+          <g transform="translate(${-92 + jitter}, -125) rotate(-22)">
+            <rect x="-16" y="-30" width="32" height="60" rx="7" fill="#1e293b" stroke="#64748b" stroke-width="3"/>
+            <rect x="-13" y="-27" width="26" height="54" rx="4" fill="#38bdf8" fill-opacity="0.92"/>
+            <!-- Battery Icon & 5% Alert -->
+            <rect x="-9" y="-6" width="18" height="11" rx="2" fill="none" stroke="#ef4444" stroke-width="2" opacity="${batteryBlink}"/>
+            <rect x="9" y="-3" width="2" height="5" fill="#ef4444" opacity="${batteryBlink}"/>
+            <rect x="-7" y="-4" width="4" height="7" fill="#ef4444" opacity="${batteryBlink}"/>
+            <text x="0" y="16" font-family="sans-serif" font-size="8" font-weight="900" fill="#dc2626" text-anchor="middle" opacity="${batteryBlink}">5%</text>
+          </g>
+
+          <!-- Hand fingers holding phone -->
+          <g transform="translate(${-92 + jitter}, -125)" fill="#ffffff" stroke="${ink}" stroke-width="3">
+            <circle cx="-13" cy="-2" r="6"/>
+            <circle cx="-11" cy="6" r="5.5"/>
+            <circle cx="-8" cy="14" r="5"/>
+          </g>
+
+          <!-- Round White Head -->
+          <circle cx="0" cy="-210" r="56" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+
+          <!-- Floating Eyebrows (Lo âu / Buồn - Arched Sad Eyebrows) -->
+          <path d="M-42 -260 Q-26 -278 -15 -254" fill="none" stroke="${ink}" stroke-width="5" stroke-linecap="round"/>
+          <path d="M15 -254 Q26 -278 42 -260" fill="none" stroke="${ink}" stroke-width="5" stroke-linecap="round"/>
+
+          <!-- Thick Curved Sad Eyes (Mắt cong buồn Henry Stickmin) -->
+          <path d="M-34 -224 Q-22 -246 -12 -208" fill="none" stroke="${ink}" stroke-width="6.5" stroke-linecap="round"/>
+          <path d="M12 -208 Q22 -246 34 -224" fill="none" stroke="${ink}" stroke-width="6.5" stroke-linecap="round"/>
+
+          <!-- Open Sad Mouth with teeth -->
+          <path d="M-18 -178 Q0 -192 18 -178 Q6 -164 -18 -178 Z" fill="#991b1b" stroke="${ink}" stroke-width="3"/>
+          <path d="M-12 -176 Q0 -181 12 -176" stroke="#fff" stroke-width="2.5" fill="none"/>
+        </g>
+      </g>
+
+      <!-- Ambient Spotlight & Vignette -->
+      <rect width="${w}" height="${h}" fill="url(#spotlight)" pointer-events="none"/>
+
+      <!-- Header Label Badge -->
+      <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+        <rect x="-210" y="-20" width="420" height="42" rx="10" fill="#0f172a" stroke="#ef4444" stroke-width="2.5"/>
+        <text y="7" font-size="14" font-weight="900" fill="#f87171" letter-spacing="1">⚠️ CRISIS / WORRIED · PHONG CÁCH HENRY STICKMIN</text>
+      </g>
+    </svg>`
+  }
+
+  if (emo === 'shocked') {
+    const jump = Math.abs(Math.sin(phase * 4)) * 12
+    const shake = Math.sin(phase * 20) * 3
+    const charX = w * 0.5 + shake
+    const charY = floor - jump
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <defs>
+        <radialGradient id="shock-bg" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#fef08a"/>
+          <stop offset="50%" stop-color="#f59e0b"/>
+          <stop offset="100%" stop-color="#78350f"/>
+        </radialGradient>
+      </defs>
+      <rect width="${w}" height="${h}" fill="url(#shock-bg)"/>
+      <path d="M0 ${floor}H${w}V${h}H0Z" fill="#1e293b"/>
+
+      <g stroke="#fef08a" stroke-width="4" stroke-linecap="round" fill="none">
+        ${[0, 45, 90, 135, 180, 225, 270, 315].map(deg => {
+          const rad = (deg * Math.PI) / 180
+          const x1 = charX + Math.cos(rad) * 110
+          const y1 = charY - 210 + Math.sin(rad) * 110
+          const x2 = charX + Math.cos(rad) * (140 + Math.sin(phase * 6) * 15)
+          const y2 = charY - 210 + Math.sin(rad) * (140 + Math.sin(phase * 6) * 15)
+          return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`
+        }).join('')}
+      </g>
+
+      <g fill="#ef4444" font-family="sans-serif" font-weight="900" text-anchor="middle">
+        <text x="${charX - 130}" y="${charY - 260}" font-size="52">!</text>
+        <text x="${charX + 130}" y="${charY - 260}" font-size="52">!</text>
+        <text x="${charX}" y="${charY - 320}" font-size="64">⚡</text>
+      </g>
+
+      <g transform="translate(${charX} ${charY})">
+        <path d="M-15 -35 L-55 0 M15 -35 L55 0" stroke="${ink}" stroke-width="7" stroke-linecap="round"/>
+        <ellipse cx="-55" cy="0" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3.5"/>
+        <ellipse cx="55" cy="0" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3.5"/>
+
+        <path d="M-28 -145 L28 -145 L22 -35 L-22 -35 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+        <polygon points="-16,-145 0,-108 16,-145" fill="#ffffff" stroke="none"/>
+        <polygon points="-5,-122 0,-116 5,-122 7,-65 0,-50 -7,-65" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+        <path d="M-25 -130 L-75 -160 L-100 -200" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="-100" cy="-200" r="10" fill="#fff" stroke="${ink}" stroke-width="3"/>
+        <path d="M25 -130 L75 -160 L100 -200" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="100" cy="-200" r="10" fill="#fff" stroke="${ink}" stroke-width="3"/>
+
+        <circle cx="0" cy="-210" r="54" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+        <circle cx="-20" cy="-212" r="16" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+        <circle cx="-20" cy="-212" r="3.5" fill="${ink}"/>
+        <circle cx="20" cy="-212" r="16" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+        <circle cx="20" cy="-212" r="3.5" fill="${ink}"/>
+        <path d="M-36 -260 Q-20 -280 -8 -262" fill="none" stroke="${ink}" stroke-width="4.5"/>
+        <path d="M8 -262 Q20 -280 36 -260" fill="none" stroke="${ink}" stroke-width="4.5"/>
+        <ellipse cx="0" cy="-172" rx="14" ry="22" fill="#991b1b" stroke="${ink}" stroke-width="3.5"/>
+      </g>
+
+      <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+        <rect x="-170" y="-20" width="340" height="42" rx="10" fill="#78350f" stroke="#f59e0b" stroke-width="2.5"/>
+        <text y="7" font-size="14" font-weight="900" fill="#fef08a" letter-spacing="1">⚡ SHOCKED · KINH HOÀNG</text>
+      </g>
+    </svg>`
+  }
+
+  if (emo === 'crying') {
+    const sob = Math.sin(phase * 8) * 3
+    const tearDropY = ((frame * 6) % 90)
+    const charX = w * 0.5
+    const charY = floor
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <defs>
+        <linearGradient id="cry-bg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0f172a"/>
+          <stop offset="100%" stop-color="#1e3a8a"/>
+        </linearGradient>
+      </defs>
+      <rect width="${w}" height="${h}" fill="url(#cry-bg)"/>
+      <path d="M0 ${floor}H${w}V${h}H0Z" fill="#020617"/>
+
+      <ellipse cx="${charX}" cy="${floor + 10}" rx="65" ry="18" fill="#0284c7" fill-opacity="0.4" stroke="#38bdf8" stroke-width="2"/>
+
+      <g transform="translate(${charX} ${charY})">
+        <path d="M-15 -35 L-25 0 M15 -35 L25 0" stroke="${ink}" stroke-width="7" stroke-linecap="round"/>
+        <ellipse cx="-25" cy="0" rx="18" ry="9" fill="#475569" stroke="${ink}" stroke-width="3"/>
+        <ellipse cx="25" cy="0" rx="18" ry="9" fill="#475569" stroke="${ink}" stroke-width="3"/>
+
+        <g transform="translate(0, ${sob})">
+          <path d="M-26 -140 L26 -140 L20 -35 L-20 -35 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+          <polygon points="-14,-140 0,-105 14,-140" fill="#ffffff" stroke="none"/>
+          <polygon points="-4,-118 0,-112 4,-118 6,-65 0,-50 -6,-65" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+          <path d="M-22 -125 L-35 -155 L-12 -175" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+          <circle cx="-12" cy="-175" r="9" fill="#fff" stroke="${ink}" stroke-width="3"/>
+          <path d="M22 -125 L35 -155 L12 -175" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+          <circle cx="12" cy="-175" r="9" fill="#fff" stroke="${ink}" stroke-width="3"/>
+
+          <circle cx="0" cy="-200" r="52" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+          <path d="M-35 -235 L-12 -220" stroke="${ink}" stroke-width="5" stroke-linecap="round"/>
+          <path d="M35 -235 L12 -220" stroke="${ink}" stroke-width="5" stroke-linecap="round"/>
+          <path d="M-30 -205 L-14 -198 L-30 -192" fill="none" stroke="${ink}" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M30 -205 L14 -198 L30 -192" fill="none" stroke="${ink}" stroke-width="4.5" stroke-linecap="round"/>
+
+          <path d="M-18 -195 Q-25 -160 -20 -120" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round"/>
+          <path d="M18 -195 Q25 -160 20 -120" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round"/>
+          <circle cx="-20" cy="${-120 + tearDropY}" r="4.5" fill="#38bdf8"/>
+          <circle cx="20" cy="${-120 + tearDropY}" r="4.5" fill="#38bdf8"/>
+
+          <path d="M-15 -165 Q-8 -175 0 -168 Q8 -175 15 -165" fill="none" stroke="${ink}" stroke-width="3.5"/>
+        </g>
+      </g>
+
+      <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+        <rect x="-170" y="-20" width="340" height="42" rx="10" fill="#1e3a8a" stroke="#38bdf8" stroke-width="2.5"/>
+        <text y="7" font-size="14" font-weight="900" fill="#93c5fd" letter-spacing="1">😭 CRYING · ĐAU BUỒN</text>
+      </g>
+    </svg>`
+  }
+
+  if (emo === 'furious' || emo === 'angry') {
+    const shake = Math.sin(phase * 24) * 2.5
+    const charX = w * 0.5 + shake
+    const charY = floor
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <defs>
+        <radialGradient id="fury-bg" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#991b1b"/>
+          <stop offset="70%" stop-color="#450a0a"/>
+          <stop offset="100%" stop-color="#180303"/>
+        </radialGradient>
+      </defs>
+      <rect width="${w}" height="${h}" fill="url(#fury-bg)"/>
+      <path d="M0 ${floor}H${w}V${h}H0Z" fill="#180303"/>
+
+      <g stroke="#f87171" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.6">
+        <path d="M${charX - 45} ${charY - 260} Q${charX - 55} ${charY - 290} ${charX - 45} ${charY - 320}"/>
+        <path d="M${charX + 45} ${charY - 260} Q${charX + 55} ${charY - 290} ${charX + 45} ${charY - 320}"/>
+      </g>
+
+      <g transform="translate(${charX} ${charY})">
+        <path d="M-16 -35 L-40 0 M16 -35 L40 0" stroke="${ink}" stroke-width="7" stroke-linecap="round"/>
+        <ellipse cx="-40" cy="0" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3"/>
+        <ellipse cx="40" cy="0" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3"/>
+
+        <path d="M-28 -145 L28 -145 L22 -35 L-22 -35 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+        <polygon points="-16,-145 0,-108 16,-145" fill="#ffffff" stroke="none"/>
+        <polygon points="-5,-122 0,-116 5,-122 7,-65 0,-50 -7,-65" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+        <path d="M-25 -130 L-65 -100 L-65 -60" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="-65" cy="-60" r="12" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+        <path d="M25 -130 L65 -100 L65 -60" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="65" cy="-60" r="12" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+
+        <circle cx="0" cy="-205" r="54" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+        <g transform="translate(24, -245) scale(0.7)" stroke="#ef4444" stroke-width="3.5" fill="none">
+          <path d="M-10 -10 H10 V10 H-10 Z"/>
+          <line x1="0" y1="-14" x2="0" y2="14"/>
+          <line x1="-14" y1="0" x2="14" y2="0"/>
+        </g>
+
+        <path d="M-38 -240 L-8 -225" stroke="#dc2626" stroke-width="5.5" stroke-linecap="round"/>
+        <path d="M38 -240 L8 -225" stroke="#dc2626" stroke-width="5.5" stroke-linecap="round"/>
+        <line x1="-30" y1="-210" x2="-10" y2="-215" stroke="${ink}" stroke-width="6" stroke-linecap="round"/>
+        <line x1="30" y1="-210" x2="10" y2="-215" stroke="${ink}" stroke-width="6" stroke-linecap="round"/>
+        <rect x="-18" y="-178" width="36" height="12" rx="3" fill="#ffffff" stroke="${ink}" stroke-width="3"/>
+        <line x1="-18" y1="-172" x2="18" y2="-172" stroke="${ink}" stroke-width="1.5"/>
+        <line x1="-6" y1="-178" x2="-6" y2="-166" stroke="${ink}" stroke-width="1.5"/>
+        <line x1="6" y1="-178" x2="6" y2="-166" stroke="${ink}" stroke-width="1.5"/>
+      </g>
+
+      <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+        <rect x="-170" y="-20" width="340" height="42" rx="10" fill="#991b1b" stroke="#ef4444" stroke-width="2.5"/>
+        <text y="7" font-size="14" font-weight="900" fill="#fca5a5" letter-spacing="1">🔥 FURIOUS · BÙNG NỔ PHẪN NỘ</text>
+      </g>
+    </svg>`
+  }
+
+  if (emo === 'happy' || emo === 'cheer') {
+    const jumpY = Math.abs(Math.sin(phase * 2)) * 22
+    const charX = w * 0.5
+    const charY = floor - jumpY
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+      <defs>
+        <radialGradient id="happy-bg" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#fef3c7"/>
+          <stop offset="60%" stop-color="#f59e0b"/>
+          <stop offset="100%" stop-color="#d97706"/>
+        </radialGradient>
+      </defs>
+      <rect width="${w}" height="${h}" fill="url(#happy-bg)"/>
+      <path d="M0 ${floor}H${w}V${h}H0Z" fill="#1e293b"/>
+
+      <g fill="#ec4899" stroke="none">
+        ${[0.15, 0.3, 0.45, 0.6, 0.75, 0.85].map((rx, idx) => {
+          const py = ((frame * 7 + idx * 70) % (floor - 40)) + 20
+          const colors = ['#ec4899', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6']
+          return `<circle cx="${w * rx}" cy="${py}" r="5" fill="${colors[idx % colors.length]}"/>`
+        }).join('')}
+      </g>
+
+      <g transform="translate(${charX} ${charY})">
+        <path d="M-15 -35 L-35 5 M15 -35 L35 5" stroke="${ink}" stroke-width="7" stroke-linecap="round"/>
+        <ellipse cx="-35" cy="5" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3"/>
+        <ellipse cx="35" cy="5" rx="20" ry="10" fill="#475569" stroke="${ink}" stroke-width="3"/>
+
+        <path d="M-28 -145 L28 -145 L22 -35 L-22 -35 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+        <polygon points="-16,-145 0,-108 16,-145" fill="#ffffff" stroke="none"/>
+        <polygon points="-5,-122 0,-116 5,-122 7,-65 0,-50 -7,-65" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+        <path d="M-25 -130 L-70 -170 L-95 -220" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="-95" cy="-220" r="10" fill="#fff" stroke="${ink}" stroke-width="3"/>
+        <path d="M25 -130 L70 -170 L95 -220" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+        <circle cx="95" cy="-220" r="10" fill="#fff" stroke="${ink}" stroke-width="3"/>
+
+        <circle cx="0" cy="-205" r="54" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+        <path d="M-30 -205 Q-20 -225 -10 -205" fill="none" stroke="${ink}" stroke-width="5.5" stroke-linecap="round"/>
+        <path d="M10 -205 Q20 -225 30 -205" fill="none" stroke="${ink}" stroke-width="5.5" stroke-linecap="round"/>
+        <path d="M-32 -235 Q-20 -250 -8 -235" fill="none" stroke="${ink}" stroke-width="4.5"/>
+        <path d="M8 -235 Q20 -250 32 -235" fill="none" stroke="${ink}" stroke-width="4.5"/>
+        <path d="M-22 -175 Q0 -150 22 -175 Z" fill="#ef4444" stroke="${ink}" stroke-width="3.5"/>
+        <ellipse cx="-34" cy="-185" rx="8" ry="4" fill="#fb7185" opacity="0.6"/>
+        <ellipse cx="34" cy="-185" rx="8" ry="4" fill="#fb7185" opacity="0.6"/>
+      </g>
+
+      <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+        <rect x="-170" y="-20" width="340" height="42" rx="10" fill="#d97706" stroke="#fef08a" stroke-width="2.5"/>
+        <text y="7" font-size="14" font-weight="900" fill="#ffffff" letter-spacing="1">🎉 HAPPY · ĂN MỪNG CHIẾN THẮNG</text>
+      </g>
+    </svg>`
+  }
+
+  // Default / Smug / Thinking
+  const charX = w * 0.5
+  const charY = floor
+  const thinkBob = Math.sin(phase * 3) * 2
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+    <defs>
+      <linearGradient id="cool-bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#1e1b4b"/>
+        <stop offset="60%" stop-color="#312e81"/>
+        <stop offset="100%" stop-color="#090d16"/>
+      </linearGradient>
+    </defs>
+    <rect width="${w}" height="${h}" fill="url(#cool-bg)"/>
+    <path d="M0 ${floor}H${w}V${h}H0Z" fill="#020617"/>
+
+    <g font-family="sans-serif" font-weight="900" text-anchor="middle" fill="#818cf8">
+      <text x="${charX + 65}" y="${charY - 260 + thinkBob * 3}" font-size="38">?</text>
+    </g>
+
+    <g transform="translate(${charX} ${charY})">
+      <path d="M-15 -35 L-20 0 M15 -35 L20 0" stroke="${ink}" stroke-width="7" stroke-linecap="round"/>
+      <ellipse cx="-20" cy="0" rx="18" ry="9" fill="#475569" stroke="${ink}" stroke-width="3"/>
+      <ellipse cx="20" cy="0" rx="18" ry="9" fill="#475569" stroke="${ink}" stroke-width="3"/>
+
+      <path d="M-28 -145 L28 -145 L22 -35 L-22 -35 Z" fill="#475569" stroke="${ink}" stroke-width="4"/>
+      <polygon points="-16,-145 0,-108 16,-145" fill="#ffffff" stroke="none"/>
+      <polygon points="-5,-122 0,-116 5,-122 7,-65 0,-50 -7,-65" fill="#dc2626" stroke="${ink}" stroke-width="2"/>
+
+      <path d="M-22 -125 L-55 -95 L-55 -40" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+      <path d="M22 -125 L45 -140 L15 -175" stroke="${ink}" stroke-width="6" stroke-linecap="round" fill="none"/>
+      <circle cx="15" cy="-175" r="8" fill="#fff" stroke="${ink}" stroke-width="3"/>
+
+      <circle cx="0" cy="-205" r="54" fill="#ffffff" stroke="${ink}" stroke-width="5.5"/>
+      <path d="M-32 -248 Q-20 -262 -8 -248" fill="none" stroke="${ink}" stroke-width="4.5"/>
+      <path d="M8 -238 Q20 -245 32 -240" fill="none" stroke="${ink}" stroke-width="4.5"/>
+      <circle cx="-16" cy="-210" r="5" fill="${ink}"/>
+      <circle cx="16" cy="-210" r="5" fill="${ink}"/>
+      <path d="M-10 -172 Q0 -168 15 -175" fill="none" stroke="${ink}" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+
+    <g transform="translate(${w / 2} 48)" font-family="sans-serif" text-anchor="middle">
+      <rect x="-170" y="-20" width="340" height="42" rx="10" fill="#312e81" stroke="#818cf8" stroke-width="2.5"/>
+      <text y="7" font-size="14" font-weight="900" fill="#c7d2fe" letter-spacing="1">🤔 THINKING · ĐẮN ĐO SUY NGHĨ</text>
+    </g>
+  </svg>`
+}
+
+export async function renderEmotionDemoVideo(
+  emotion: string,
+  format: VideoFormat,
+  output: string,
+  progress?: (percent: number) => void
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'stick-emotion-demo-'))
+  try {
+    const dir = join(root, 'frames')
+    await mkdir(dir)
+    const totalFrames = 120
+    for (let frame = 0; frame < totalFrames; frame++) {
+      const svg = renderEmotionDemoFrame(emotion, frame, format)
+      await sharp(Buffer.from(svg)).png().toFile(join(dir, `${String(frame).padStart(3, '0')}.png`))
+      if (progress) progress(Math.round((frame / totalFrames) * 65))
+    }
+    await renderAnimationCycle(join(dir, '%03d.png'), output, 3)
+    if (progress) progress(100)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 
 export function resolveGoogleFlow2DSceneAsset(scene: StickScene, index: number): string | null {
   const primaryActor = scene.actors[0]

@@ -4,10 +4,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { nativeImage } from 'electron'
-import { readFile, stat, unlink, writeFile, rename } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, stat, unlink, writeFile, rename, readdir } from 'node:fs/promises'
 import sharp from 'sharp'
 import { pathToFileURL } from 'node:url'
-import type { BackgroundKind, FitMode, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
+import type { BackgroundKind, EmotionDemoDTO, FitMode, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
+import { getOutputRoot } from './paths'
 import { getPrisma } from './database'
 import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
@@ -20,7 +22,7 @@ import { AIService } from './ai'
 import { CodexCliService } from './ai/codex-cli'
 import { ClaudeCliService } from './ai/claude-cli'
 import { AntigravityCliService } from './ai/antigravity-cli'
-import { parseStickScenes, renderStickAnimation, stickFrame, stickPrompt, storySections } from './stick-animation'
+import { parseStickScenes, renderEmotionDemoVideo, renderStickAnimation, stickFrame, stickPrompt, storySections } from './stick-animation'
 import { buildGoogleFlowThumbnailPrompt } from './stickman-knowledge'
 
 const scriptHash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -1192,6 +1194,66 @@ export class StoryMediaService {
 
     const outputDir = this.storage.getProjectPath(projectId, `images/scenes/${timestamp}`)
     return { sceneImages, outputDir }
+  }
+
+  async generateEmotionDemo(
+    projectId?: string,
+    emotion: string = 'worried',
+    format: VideoFormat = 'REEL',
+  ): Promise<{ videoPath: string; videoUrl: string; duration: number }> {
+    const timestamp = Date.now()
+    const fileName = `demo-emotion-${emotion.toLowerCase()}-${timestamp}.mp4`
+    let outputPath: string
+    if (projectId) {
+      outputPath = await this.storage.getOutputPath(projectId, 'demos', fileName)
+    } else {
+      const fallbackDir = join(getOutputRoot(), 'demos')
+      await mkdir(fallbackDir, { recursive: true })
+      outputPath = join(fallbackDir, fileName)
+    }
+    await renderEmotionDemoVideo(emotion, format, outputPath)
+    return {
+      videoPath: outputPath,
+      videoUrl: mediaUrl(outputPath) || pathToFileURL(outputPath).href,
+      duration: 3,
+    }
+  }
+
+  async listEmotionDemos(projectId?: string): Promise<EmotionDemoDTO[]> {
+    let demosDir: string
+    if (projectId) {
+      const root = await this.storage.ensureOutputProject(projectId).catch(() => null)
+      if (!root) return []
+      demosDir = join(root, 'demos')
+    } else {
+      demosDir = join(getOutputRoot(), 'demos')
+    }
+
+    if (!existsSync(demosDir)) return []
+    try {
+      const files = await readdir(demosDir)
+      const mp4Files = files.filter(f => f.startsWith('demo-emotion-') && f.endsWith('.mp4'))
+      const results: EmotionDemoDTO[] = []
+      for (const file of mp4Files) {
+        const fullPath = join(demosDir, file)
+        const st = await stat(fullPath).catch(() => null)
+        if (!st) continue
+        const parts = file.replace(/\.mp4$/, '').split('-')
+        const emotion = parts[2] || 'custom'
+        const timestamp = parseInt(parts[3] || '0', 10) || Math.round(st.mtimeMs)
+        results.push({
+          fileName: file,
+          videoPath: fullPath,
+          videoUrl: mediaUrl(fullPath, st.mtimeMs) || pathToFileURL(fullPath).href,
+          emotion,
+          createdAt: timestamp,
+          size: st.size,
+        })
+      }
+      return results.sort((a, b) => b.createdAt - a.createdAt)
+    } catch {
+      return []
+    }
   }
 
   async setBackground(projectId: string, sourcePath: string, kind: BackgroundKind = 'VIDEO'): Promise<StoryMediaDTO> {
