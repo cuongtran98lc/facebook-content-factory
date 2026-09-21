@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AIProviderName, BackgroundKind, EmotionDemoDTO, FitMode, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+import type { AIProviderName, BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneSource, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+
+export function stickSceneImageUrl(scene: Pick<StickmanSceneImageDTO, 'filePath' | 'fileUrl'>): string {
+  if (scene.fileUrl.startsWith('local-media://')) return scene.fileUrl
+  return `local-media://file/${encodeURIComponent(scene.filePath)}`
+}
 
 export type StickSource = 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI'
 
@@ -18,6 +23,7 @@ type Props = {
   hasVoice: boolean
   media: StoryMediaDTO | null
   videoFormat: VideoFormat
+  stickVisualStyle: StickVisualStyle
   fitMode: FitMode
   soundEffect: SoundEffectOptions
   includeSubtitles: boolean
@@ -26,6 +32,11 @@ type Props = {
   aiProvider?: AIProviderName
   onGenerateStickVideo(source: StickSource): void
   onGenerateStickmanSceneImages?(source: StickSource): void
+  onImportFlowSceneImages?(sources: FlowSceneSource[]): void
+  googleFlowCapture?: GoogleFlowCaptureStatus | null
+  onStartGoogleFlowAutomation?(): void
+  onStartGoogleFlowCapture?(): void
+  onCancelGoogleFlowCapture?(): void
   onGenerateVideoThumbnail(): void
   onGenerateAudio(): void
   onGenerateReelVideos(): void
@@ -34,6 +45,7 @@ type Props = {
   onChooseBackground(kind: BackgroundKind): void
   onRender(): void
   onVideoFormatChange(value: VideoFormat): void
+  onStickVisualStyleChange(value: StickVisualStyle): void
   onFitModeChange(value: FitMode): void
   onSoundEffectChange(value: SoundEffectOptions): void
   onIncludeSubtitlesChange(value: boolean): void
@@ -131,6 +143,8 @@ export function StoryMediaFlow(props: Props) {
   const [autoApplyBackground, setAutoApplyBackground] = useState<boolean>(true)
   const [demoList, setDemoList] = useState<EmotionDemoDTO[]>([])
   const [videoLoadError, setVideoLoadError] = useState<boolean>(false)
+  const [flowImageUrls, setFlowImageUrls] = useState<string[]>([])
+  const [flowInputError, setFlowInputError] = useState('')
 
   const EMOTION_LABELS: Record<string, string> = {
     worried: '😰 Khủng hoảng / Lo âu (Crisis - Chuẩn ảnh mẫu)',
@@ -156,6 +170,39 @@ export function StoryMediaFlow(props: Props) {
   useEffect(() => {
     void refreshDemoList()
   }, [props.projectId])
+
+  const audioSegmentKey = (props.media?.audioSegments ?? []).map(segment => segment.path).join('|')
+  useEffect(() => {
+    const count = props.media?.audioSegments?.length ?? 0
+    setFlowImageUrls(current => Array.from({ length: count }, (_, index) => current[index] ?? ''))
+    setFlowInputError('')
+  }, [props.projectId, audioSegmentKey])
+
+  function handleFetchFlowUrls() {
+    const sources = flowImageUrls.map(value => ({ kind: 'URL' as const, value: value.trim() }))
+    if (sources.some(source => !source.value)) {
+      setFlowInputError('Mỗi audio phân đoạn cần một link ảnh Google Flow.')
+      return
+    }
+    setFlowInputError('')
+    props.onImportFlowSceneImages?.(sources)
+  }
+
+  async function handleChooseFlowFiles() {
+    if (typeof window.contentFactory?.storyMedia?.chooseFlowSceneImageFiles !== 'function') {
+      setFlowInputError('Main process đang chạy bản cũ. Hãy thoát hoàn toàn app rồi mở lại.')
+      return
+    }
+    const paths = await window.contentFactory.storyMedia.chooseFlowSceneImageFiles()
+    if (!paths) return
+    const expected = props.media?.audioSegments?.length ?? 0
+    if (paths.length !== expected) {
+      setFlowInputError(`Đã chọn ${paths.length} ảnh; cần đúng ${expected} ảnh theo thứ tự phân đoạn.`)
+      return
+    }
+    setFlowInputError('')
+    props.onImportFlowSceneImages?.(paths.map(value => ({ kind: 'FILE', value })))
+  }
 
   async function handleReveal(path: string) {
     try {
@@ -189,6 +236,7 @@ export function StoryMediaFlow(props: Props) {
         projectId: props.projectId,
         emotion: selectedEmotion,
         format: props.videoFormat,
+        visualStyle: props.stickVisualStyle,
       })
       const data = {
         videoUrl: res.videoUrl,
@@ -231,6 +279,10 @@ export function StoryMediaFlow(props: Props) {
   }
 
   const audioDone = Boolean(props.media?.audioPath)
+  const audioSegmentSupport = props.media?.audioSegmentSupport === true
+  const audioSegments = props.media?.audioSegments ?? []
+  const projectFlowCapture = props.googleFlowCapture?.projectId === props.projectId ? props.googleFlowCapture : null
+  const flowCaptureActive = Boolean(projectFlowCapture && ['CONNECTING', 'WAITING_LOGIN', 'GENERATING', 'CAPTURING', 'BUILDING'].includes(projectFlowCapture.stage))
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
     ? props.media.storyVideoParts
@@ -240,7 +292,7 @@ export function StoryMediaFlow(props: Props) {
     : storyVideoParts.length ? [{ format: storyVideoParts[0].format, status: props.media?.renderStatus ?? null, parts: storyVideoParts }] : []
   const selectedOutput = storyVideoOutputs.find(output => output.format === props.videoFormat)
   const renderDone = Boolean(selectedOutput?.parts.length && selectedOutput.parts.every(part => part.status === 'DONE'))
-  const canGenerateAudio = props.hasVoice && props.ffmpegReady
+  const canGenerateAudio = props.hasVoice && props.ffmpegReady && audioSegmentSupport
   const canChooseBackground = audioDone
   const canRender = audioDone && backgroundDone && props.ffmpegReady
   const hasReelVideos = Boolean(props.media?.reels.some(reel => reel.videoUrl))
@@ -257,11 +309,17 @@ export function StoryMediaFlow(props: Props) {
   ]
   const missingReelRequirements = reelRequirements.filter(item => !item.ready).map(item => item.label)
 
-  const audioHint = !props.hasVoice
+  const audioHint = !audioSegmentSupport
+    ? 'Main process đang chạy bản cũ. Đóng hoàn toàn app rồi mở lại để bật xuất audio phân đoạn.'
+    : !props.hasVoice
     ? 'Chọn voice trước để tạo MP3.'
     : !props.ffmpegReady
       ? 'Cần FFmpeg để ghép các đoạn MP3.'
-      : audioDone ? 'MP3 đã sẵn sàng; có thể tạo lại từ story hiện tại.' : 'Sẵn sàng tạo MP3 từ story hiện tại.'
+      : audioDone
+        ? audioSegments.length
+          ? 'MP3 tổng và các phân đoạn đã sẵn sàng; có thể tạo lại từ story hiện tại.'
+          : 'MP3 cũ chưa có file phân đoạn; hãy regenerate để tạo các đoạn riêng.'
+        : 'Tạo MP3 tổng kèm từng file phân đoạn.'
   const videoHint = audioDone
     ? (props.media?.backgroundName ?? 'Chọn video hoặc ảnh nền từ máy.')
     : 'Hoàn tất Story MP3 trước.'
@@ -281,80 +339,215 @@ export function StoryMediaFlow(props: Props) {
     </div>
 
     <div className="media-step">
-      <div><b>1</b><div><strong>Story MP3</strong><span>{audioHint}</span></div></div>
+      <div><b>1</b><div><strong>Story MP3 + phân đoạn</strong><span>{audioHint}</span></div></div>
       <button className="secondary" onClick={props.onGenerateAudio} disabled={props.busy || !canGenerateAudio}>
-        {audioDone ? 'Regenerate Story MP3' : 'Generate Story MP3'}
+        {audioDone ? 'Regenerate MP3 + phân đoạn' : 'Generate MP3 + phân đoạn'}
       </button>
     </div>
     {props.media?.audioUrl && <div className="media-preview compact"><audio className="voice-player" src={props.media.audioUrl} controls /><span>Duration: {formatDuration(props.media.audioDuration)}</span></div>}
+    {!!audioSegments.length && (
+      <details className="audio-segments">
+        <summary>Audio phân đoạn ({audioSegments.length} file)</summary>
+        <div className="audio-segment-list">
+          {audioSegments.map(segment => (
+            <article className="audio-segment" key={`${segment.index}-${segment.path}`}>
+              <div className="audio-segment-head">
+                <div>
+                  <strong>{segment.kind === 'CTA' ? 'CTA' : `Phân đoạn ${segment.index}`}</strong>
+                  <span>{formatDuration(segment.duration)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  title="Mở thư mục chứa file audio"
+                  onClick={() => void window.contentFactory.app.revealFile(segment.path)}>
+                  Mở file
+                </button>
+              </div>
+              <audio className="voice-player" src={segment.url} controls preload="none" />
+              <p>{segment.text}</p>
+            </article>
+          ))}
+        </div>
+      </details>
+    )}
 
-    <div className="media-step">
-      <div><b>2</b><div><strong>Hoạt hình người que / Background</strong><span>{videoHint}</span></div></div>
-      <div className="stick-format-selector">
-        <span className="stick-format-label">ĐỊNH DẠNG:</span>
-        <div className="stick-format-group">
-          <button
-            type="button"
-            className={`stick-format-btn ${props.videoFormat === 'REEL' ? 'active short' : ''}`}
-            onClick={() => props.onVideoFormatChange('REEL')}
-            disabled={props.busy}
-          >
-            📱 Video Short (9:16 Dọc)
-          </button>
-          <button
-            type="button"
-            className={`stick-format-btn ${props.videoFormat === 'LANDSCAPE' ? 'active' : ''}`}
-            onClick={() => props.onVideoFormatChange('LANDSCAPE')}
-            disabled={props.busy}
-          >
-            🖥️ Video Dài (16:9 Ngang)
-          </button>
-          <button
-            type="button"
-            className={`stick-format-btn ${props.videoFormat === 'SQUARE' ? 'active' : ''}`}
-            onClick={() => props.onVideoFormatChange('SQUARE')}
-            disabled={props.busy}
-          >
-            ⏹️ Vuông (1:1)
+    {!!audioSegments.length && props.onImportFlowSceneImages && (
+      <section className="flow-scenes-import">
+        <div className="flow-scenes-heading">
+          <div>
+            <strong>Ảnh Google Flow theo phân đoạn</strong>
+            <span>{flowCaptureActive ? `${projectFlowCapture?.captured ?? 0}/${audioSegments.length} ảnh đang nhận` : `${props.media?.flowSceneImages?.length ?? 0}/${audioSegments.length} ảnh đã ghép`}</span>
+          </div>
+          <div className="flow-connect-actions">
+            {flowCaptureActive ? (
+              <button type="button" className="secondary" onClick={props.onCancelGoogleFlowCapture} disabled={props.googleFlowCapture?.stage === 'BUILDING'}>
+                {projectFlowCapture?.stage === 'BUILDING' ? 'Đang ghép video...' : 'Dừng nhận ảnh'}
+              </button>
+            ) : (
+              <>
+                <button type="button" className="primary" onClick={props.onStartGoogleFlowAutomation} disabled={props.busy}>
+                  Tự động tạo bằng Flow
+                </button>
+                <button type="button" className="secondary" onClick={props.onStartGoogleFlowCapture} disabled={props.busy}>
+                  Nhận ảnh tải từ Flow
+                </button>
+              </>
+            )}
+            <button type="button" className="secondary" onClick={() => void handleChooseFlowFiles()} disabled={props.busy || flowCaptureActive}>
+              Chọn ảnh đã tải
+            </button>
+          </div>
+        </div>
+        {projectFlowCapture && (
+          <div className={`flow-capture-status stage-${projectFlowCapture.stage.toLowerCase()}`} role="status">
+            <progress value={projectFlowCapture.captured} max={Math.max(1, projectFlowCapture.total)} />
+            <span>{projectFlowCapture.message}</span>
+          </div>
+        )}
+        <div className="flow-url-list">
+          {audioSegments.map((segment, index) => (
+            <label className="flow-url-row" key={segment.path}>
+              <span>{segment.kind === 'CTA' ? 'CTA' : `Đoạn ${segment.index}`} · {formatDuration(segment.duration)}</span>
+              <input
+                type="url"
+                value={flowImageUrls[index] ?? ''}
+                placeholder="https://...googleusercontent.com/..."
+                disabled={props.busy}
+                onChange={event => setFlowImageUrls(current => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))}
+              />
+              <small>{segment.text}</small>
+            </label>
+          ))}
+        </div>
+        <div className="flow-scenes-actions">
+          {flowInputError && <span role="alert">{flowInputError}</span>}
+          <button type="button" className="secondary" onClick={handleFetchFlowUrls} disabled={props.busy}>
+            Tải link và ghép video
           </button>
         </div>
+      </section>
+    )}
+
+    {!!props.media?.flowSceneImages?.length && (
+      <div className={`scene-images-gallery flow-scenes-gallery format-${props.videoFormat.toLowerCase()}`}>
+        <h4>Ảnh Google Flow đã đồng bộ ({props.media.flowSceneImages.length} đoạn)</h4>
+        <div className="scene-images-grid">
+          {props.media.flowSceneImages.map(scene => (
+            <div key={scene.index} className="scene-image-card">
+              <div className="scene-image-header">
+                <span className="scene-number">{scene.kind === 'CTA' ? 'CTA' : `Đoạn ${scene.index}`}</span>
+                <span className="scene-setting-tag">{formatDuration(scene.duration)} · {scene.source}</span>
+              </div>
+              <img src={stickSceneImageUrl(scene)} alt={`Google Flow ${scene.index}`} />
+              <p className="scene-text">{scene.sectionText}</p>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="background-actions">
-        <label className="stick-source-label">
-          NGUỒN CHIA CẢNH
-          <select value={stickSource} disabled={props.busy} onChange={event => setStickSource(event.target.value as StickSource)}>
-            <option value="CLAUDE_CLI">Claude Code (CLI local)</option>
-            <option value="ANTIGRAVITY_CLI">Antigravity (Agent CLI)</option>
-            <option value="CODEX_CLI">Codex (CLI local)</option>
-            <option value="API">AI đang chọn trong Settings ({props.aiProvider ?? 'mặc định'})</option>
-          </select>
-        </label>
-        <button
-          className={props.videoFormat === 'REEL' ? 'primary' : 'secondary'}
-          onClick={() => props.onGenerateStickVideo(stickSource)}
-          disabled={props.busy}
-        >
-          {props.videoFormat === 'REEL' ? '📱 Tạo hoạt hình Short (9:16)' : '🎬 Tạo hoạt hình người que'}
-        </button>
-        {props.busy && <p role="status">Chưa thể tạo video: {props.busyMessage || 'app đang xử lý tác vụ khác'}. Nút sẽ mở khi tác vụ kết thúc.</p>}
-        {props.onGenerateStickmanSceneImages && (
-          <button className="secondary" onClick={() => props.onGenerateStickmanSceneImages?.(stickSource)} disabled={props.busy}>
-            {props.videoFormat === 'REEL' ? '🖼️ Bộ ảnh phân đoạn (9:16)' : '🖼️ Tạo bộ ảnh phân đoạn'}
+    )}
+
+    <div className="media-step media-step-2">
+      <div className="media-step-head">
+        <b>2</b>
+        <div>
+          <strong>{props.stickVisualStyle === 'ENGINEER_3D' ? 'Hoạt hình 3D Engineer' : 'Hoạt hình người que 2D'} / Background</strong>
+          <span>{videoHint}</span>
+        </div>
+      </div>
+      <div className="media-step-row">
+        <div className="stick-render-settings">
+         <div className="stick-style-selector" aria-label="Phong cách nhân vật">
+          <span className="stick-format-label">NHÂN VẬT:</span>
+          <div className="stick-format-group">
+            <button
+              type="button"
+              className={`stick-format-btn ${props.stickVisualStyle === 'DOODLE_2D' ? 'active' : ''}`}
+              onClick={() => props.onStickVisualStyleChange('DOODLE_2D')}
+              disabled={props.busy}
+            >
+              2D Doodle
+            </button>
+            <button
+              type="button"
+              className={`stick-format-btn ${props.stickVisualStyle === 'ENGINEER_3D' ? 'active engineer-3d' : ''}`}
+              onClick={() => props.onStickVisualStyleChange('ENGINEER_3D')}
+              disabled={props.busy}
+            >
+              3D Engineer
+            </button>
+          </div>
+         </div>
+         <div className="stick-format-selector">
+          <span className="stick-format-label">ĐỊNH DẠNG:</span>
+          <div className="stick-format-group">
+            <button
+              type="button"
+              className={`stick-format-btn ${props.videoFormat === 'REEL' ? 'active short' : ''}`}
+              onClick={() => props.onVideoFormatChange('REEL')}
+              disabled={props.busy}
+            >
+              📱 Video Short (9:16 Dọc)
+            </button>
+            <button
+              type="button"
+              className={`stick-format-btn ${props.videoFormat === 'LANDSCAPE' ? 'active' : ''}`}
+              onClick={() => props.onVideoFormatChange('LANDSCAPE')}
+              disabled={props.busy}
+            >
+              🖥️ Video Dài (16:9 Ngang)
+            </button>
+            <button
+              type="button"
+              className={`stick-format-btn ${props.videoFormat === 'SQUARE' ? 'active' : ''}`}
+              onClick={() => props.onVideoFormatChange('SQUARE')}
+              disabled={props.busy}
+            >
+              ⏹️ Vuông (1:1)
+            </button>
+          </div>
+         </div>
+        </div>
+        <div className="background-actions">
+          <label className="stick-source-label">
+            NGUỒN CHIA CẢNH
+            <select value={stickSource} disabled={props.busy} onChange={event => setStickSource(event.target.value as StickSource)}>
+              <option value="CLAUDE_CLI">Claude Code (CLI local)</option>
+              <option value="ANTIGRAVITY_CLI">Antigravity (Agent CLI)</option>
+              <option value="CODEX_CLI">Codex (CLI local)</option>
+              <option value="API">AI đang chọn trong Settings ({props.aiProvider ?? 'mặc định'})</option>
+            </select>
+          </label>
+          <button
+            className={props.videoFormat === 'REEL' ? 'primary' : 'secondary'}
+            onClick={() => props.onGenerateStickVideo(stickSource)}
+            disabled={props.busy}
+          >
+            {props.videoFormat === 'REEL'
+              ? props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo Short 3D (9:16)' : 'Tạo Short 2D (9:16)'
+              : props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo hoạt hình 3D Engineer' : 'Tạo hoạt hình người que 2D'}
           </button>
-        )}
-        <button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button>
-        <button className="secondary" onClick={()=>props.onChooseBackground('IMAGE')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'IMAGE' ? 'Đổi Ảnh' : 'Chọn Ảnh'}</button>
+          {props.busy && <p role="status">Chưa thể tạo video: {props.busyMessage || 'app đang xử lý tác vụ khác'}. Nút sẽ mở khi tác vụ kết thúc.</p>}
+          {props.onGenerateStickmanSceneImages && (
+            <button className="secondary" onClick={() => props.onGenerateStickmanSceneImages?.(stickSource)} disabled={props.busy}>
+              {props.videoFormat === 'REEL'
+                ? props.stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D (9:16)' : 'Bộ ảnh 2D (9:16)'
+                : props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo bộ ảnh 3D' : 'Tạo bộ ảnh 2D'}
+            </button>
+          )}
+          <button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button>
+          <button className="secondary" onClick={()=>props.onChooseBackground('IMAGE')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'IMAGE' ? 'Đổi Ảnh' : 'Chọn Ảnh'}</button>
+        </div>
       </div>
 
-      <div className="emotion-demo-bar" style={{ marginTop: '12px', padding: '12px 14px', borderRadius: '10px', background: 'linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(168,85,247,0.08) 100%)', border: '1.5px solid rgba(99,102,241,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 700, color: '#4338ca' }}>
+      <div className="emotion-demo-bar">
+        <div className="emotion-demo-controls">
+          <label className="emotion-demo-select-label">
             <span>🎭 CẢM XÚC:</span>
             <select
               value={selectedEmotion}
               disabled={props.busy || isGeneratingDemo}
               onChange={e => setSelectedEmotion(e.target.value)}
-              style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid #c7d2fe', background: '#fff', fontSize: '13px', fontWeight: 600, color: '#1e293b' }}
             >
               <option value="worried">😰 Khủng hoảng / Lo âu (Crisis - Chuẩn ảnh mẫu)</option>
               <option value="crying">😭 Khóc / Đau buồn (Crying)</option>
@@ -367,36 +560,22 @@ export function StoryMediaFlow(props: Props) {
           </label>
           <button
             type="button"
+            className="emotion-demo-btn"
             onClick={handleGenerateEmotionDemo}
             disabled={props.busy || isGeneratingDemo}
-            style={{
-              padding: '7px 18px',
-              borderRadius: '6px',
-              border: 'none',
-              background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-              color: '#ffffff',
-              fontWeight: 700,
-              cursor: isGeneratingDemo ? 'wait' : 'pointer',
-              fontSize: '13px',
-              boxShadow: '0 2px 8px rgba(79, 70, 229, 0.35)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}
           >
             {isGeneratingDemo ? '⏳ Đang gen demo...' : '⚡ Gen Demo Hoạt Ảnh'}
           </button>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#4338ca', cursor: 'pointer', userSelect: 'none' }}>
+          <label className="emotion-auto-bg">
             <input
               type="checkbox"
               checked={autoApplyBackground}
               onChange={e => setAutoApplyBackground(e.target.checked)}
-              style={{ cursor: 'pointer' }}
             />
             <span>Tự đặt làm Background dự án sau khi gen</span>
           </label>
         </div>
-        <span style={{ fontSize: '12px', color: '#6366f1', fontWeight: 500 }}>
+        <span className="emotion-demo-hint">
           ✨ Tạo nhanh clip loop 3s 60fps để xem thử biểu cảm và chuyển động nhân vật.
         </span>
       </div>
@@ -617,7 +796,7 @@ export function StoryMediaFlow(props: Props) {
                 <span className="scene-number">Cảnh {scene.index}</span>
                 <span className="scene-setting-tag">{scene.setting}</span>
               </div>
-              <img src={scene.fileUrl} alt={`Scene ${scene.index}`} />
+              <img src={stickSceneImageUrl(scene)} alt={`Scene ${scene.index}`} />
               <p className="scene-text">{scene.sectionText}</p>
             </div>
           ))}
@@ -625,7 +804,7 @@ export function StoryMediaFlow(props: Props) {
       </div>
     )}
 
-    {props.media?.backgroundUrl && <div className="media-preview">{props.media.backgroundKind === 'IMAGE' ? <img src={props.media.backgroundUrl} alt="Background" /> : <video src={props.media.backgroundUrl} controls muted={props.media.backgroundStyle !== 'STICK_FIGURE'} />}<span>{props.media.backgroundKind === 'IMAGE' ? 'Ảnh tĩnh · tự kéo dài theo voice' : `${props.media.backgroundStyle === 'STICK_FIGURE' ? 'Doodle · Bản tạo mới: 60 fps + lời đọc · ' : ''}Duration: ${formatDuration(props.media.backgroundDuration)}`}</span></div>}
+    {props.media?.backgroundUrl && <div className="media-preview">{props.media.backgroundKind === 'IMAGE' ? <img src={props.media.backgroundUrl} alt="Background" /> : <video src={props.media.backgroundUrl} controls muted={props.media.backgroundStyle !== 'STICK_FIGURE'} />}<span>{props.media.backgroundKind === 'IMAGE' ? 'Ảnh tĩnh · tự kéo dài theo voice' : `${props.media.backgroundStyle === 'STICK_FIGURE' ? `${props.media.backgroundVisualStyle === 'ENGINEER_3D' ? '3D Engineer' : '2D Doodle'} · 60 fps + lời đọc · ` : ''}Duration: ${formatDuration(props.media.backgroundDuration)}`}</span></div>}
 
     {props.media?.backgroundStyle === 'STICK_FIGURE' && <div className="media-step">
       <div><strong>Thumbnail hoạt hình</strong><span>Lấy ảnh từ video đã tạo, giữ đúng tỉ lệ khung hình.</span></div>

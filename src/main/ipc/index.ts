@@ -11,10 +11,12 @@ import type {
   GenerateReelsInput,
   GenerateReelVideosInput,
   GenerateStoryAudioInput,
+  GenerateStoryFromOutlineInput,
   GenerateStoryInput,
   GenerateThumbnailInput,
   ExtractThumbnailFromVideoInput,
   ImportStoryInput,
+  ImportFlowSceneImagesInput,
   Platform,
   PreviewVoiceInput,
   RenderStoryVideoInput,
@@ -145,6 +147,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('scripts:list', (_event, projectId: string) => scripts.list(projectId));
   ipcMain.handle('scripts:generate-story', (_event, input: GenerateStoryInput) => scripts.generateStory(input));
+  ipcMain.handle('scripts:generate-story-from-outline', (_event, input: GenerateStoryFromOutlineInput) =>
+    scripts.generateStoryFromOutline(input),
+  );
   ipcMain.handle('scripts:import-story', (_event, input: ImportStoryInput) => scripts.importStory(input));
   ipcMain.handle('scripts:review', (_event, scriptId: string) => scripts.review(scriptId));
   ipcMain.handle('scripts:rewrite', (_event, input: RewriteScriptInput) => scripts.rewrite(input));
@@ -198,13 +203,35 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('story-media:generate-stick-video', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickVideo']>[0]) =>
     storyMedia.generateStickVideo(input.projectId, input.scriptId, input.format, progress => {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:story-progress', { ...progress, projectId: input.projectId, scriptId: input.scriptId });
-    }, input.source, input.studioOutput === true),
+    }, input.source, input.studioOutput === true, input.visualStyle),
   );
   ipcMain.handle('story-media:generate-stickman-scene-images', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateStickmanSceneImages']>[0]) =>
-    storyMedia.generateStickmanSceneImages(input.projectId, input.scriptId, input.format, input.source),
+    storyMedia.generateStickmanSceneImages(input.projectId, input.scriptId, input.format, input.source, input.visualStyle),
   );
+  ipcMain.handle('story-media:choose-flow-scene-image-files', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Chọn ảnh Google Flow theo thứ tự phân đoạn',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Ảnh', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif'] }],
+    });
+    return result.canceled ? null : result.filePaths;
+  });
+  ipcMain.handle('story-media:import-flow-scene-images', (_event, input: ImportFlowSceneImagesInput) =>
+    storyMedia.importFlowSceneImages(input.projectId, input.scriptId, input.format, input.sources),
+  );
+  ipcMain.handle('story-media:start-google-flow-capture', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['startGoogleFlowCapture']>[0]) =>
+    storyMedia.startGoogleFlowCapture(input.projectId, input.scriptId, input.format, status => {
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:google-flow-capture', status);
+    }),
+  );
+  ipcMain.handle('story-media:start-google-flow-automation', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['startGoogleFlowAutomation']>[0]) =>
+    storyMedia.startGoogleFlowAutomation(input.projectId, input.scriptId, input.format, status => {
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:google-flow-capture', status);
+    }),
+  );
+  ipcMain.handle('story-media:cancel-google-flow-capture', () => storyMedia.cancelGoogleFlowCapture());
   ipcMain.handle('story-media:generate-emotion-demo', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateEmotionDemo']>[0]) =>
-    storyMedia.generateEmotionDemo(input.projectId, input.emotion, input.format),
+    storyMedia.generateEmotionDemo(input.projectId, input.emotion, input.format, input.visualStyle),
   );
   ipcMain.handle('story-media:list-emotion-demos', (_event, input: { projectId?: string }) =>
     storyMedia.listEmotionDemos(input?.projectId),

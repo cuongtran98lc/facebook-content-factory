@@ -298,9 +298,10 @@ export async function extractVideoFrame(videoPath: string, outputPath: string, t
   ])
 }
 
-export async function renderAnimationCycle(pattern: string, output: string, duration: number): Promise<void> {
-  await run('ffmpeg', ['-y', '-loop', '1', '-framerate', '60', '-i', pattern,
-    '-t', duration.toFixed(6), '-an', '-c:v', 'libx264', '-preset', 'veryfast',
+export async function renderAnimationCycle(pattern: string, output: string, duration: number, inputFps = 60, outputFps = inputFps): Promise<void> {
+  const frameCount = Math.max(1, Math.round(duration * outputFps))
+  await run('ffmpeg', ['-y', '-loop', '1', '-framerate', String(inputFps), '-i', pattern,
+    '-vf', `fps=${outputFps}`, '-frames:v', String(frameCount), '-an', '-c:v', 'libx264', '-preset', 'veryfast',
     '-crf', '20', '-pix_fmt', 'yuv420p', output])
 }
 
@@ -312,7 +313,7 @@ export async function renderStillSceneClip(
   zoomDirection: 'in' | 'out' = 'in',
   fps = 60
 ): Promise<void> {
-  const [w, h] = format === 'REEL' ? [1080, 1920] : [1280, 720];
+  const [w, h] = format === 'REEL' ? [1080, 1920] : format === 'SQUARE' ? [1080, 1080] : [1920, 1080];
   const frames = Math.max(fps, Math.ceil(duration * fps));
   const zExpr = zoomDirection === 'in' ? 'min(zoom+0.0004,1.10)' : 'min(zoom+0.0002,1.06)';
   const vf = `scale=3840:-1,zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:fps=${fps}`;

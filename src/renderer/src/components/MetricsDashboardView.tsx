@@ -102,7 +102,7 @@ export function MetricsDashboardView() {
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
         </div>
-        <div className="metrics-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+        <div className="metrics-form-grid">
           {field('subs', 'Subscriber mới')}
           {field('watchHours', 'Giờ xem (rolling 7 ngày)')}
           {field('shortsViews', 'View Shorts')}

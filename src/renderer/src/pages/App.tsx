@@ -9,12 +9,15 @@ import type {
  BackgroundKind,
  CrawlProgress,
  FitMode,
+ FlowSceneSource,
+ GoogleFlowCaptureStatus,
  IdeaDTO,
  ProjectDTO,
  ReelVideoProgress,
  ScriptDTO,
  SoundEffectOptions,
  StickmanSceneImageDTO,
+ StickVisualStyle,
  StoryMediaDTO,
  StoryVideoProgress,
  VideoFormat,
@@ -27,7 +30,7 @@ import { MindsetContentView } from '../components/MindsetContentView';
 import { RenderQueueView } from '../components/RenderQueueView';
 import { SchedulerView } from '../components/SchedulerView';
 import { StickmanEngineView } from '../components/StickmanEngineView';
-import { StoryMediaFlow, stickSourceForProvider } from '../components/StoryMediaFlow';
+import { StoryMediaFlow, stickSceneImageUrl, stickSourceForProvider } from '../components/StoryMediaFlow';
 import { ThumbnailGenerator } from '../components/ThumbnailGenerator';
 
 type View =
@@ -128,6 +131,8 @@ export default function App() {
  const [contentLanguage, setContentLanguage] = useState('en-US');
  const [ideaCount, setIdeaCount] = useState(10);
  const [targetMinutes, setTargetMinutes] = useState(15);
+ const [outlineTitle, setOutlineTitle] = useState('');
+ const [storyOutline, setStoryOutline] = useState('');
  const [importTitle, setImportTitle] = useState('');
  const [importContent, setImportContent] = useState('');
  const [storyUrl, setStoryUrl] = useState('');
@@ -156,6 +161,7 @@ export default function App() {
  const [voiceAudio, setVoiceAudio] = useState('');
  const [storyMedia, setStoryMedia] = useState<StoryMediaDTO | null>(null);
  const [videoFormat, setVideoFormat] = useState<VideoFormat>('LANDSCAPE');
+ const [stickVisualStyle, setStickVisualStyle] = useState<StickVisualStyle>('ENGINEER_3D');
  const [fitMode, setFitMode] = useState<FitMode>('CROP');
  const [soundEffect, setSoundEffect] = useState<SoundEffectOptions>({ preset: 'DYNAMIC', volume: 70 });
  const [includeSubtitles, setIncludeSubtitles] = useState(true);
@@ -166,6 +172,7 @@ export default function App() {
  const [storyVideoGenerating, setStoryVideoGenerating] = useState(false);
  const [estimatedProgress, setEstimatedProgress] = useState(0);
  const [sceneImages, setSceneImages] = useState<StickmanSceneImageDTO[]>([]);
+ const [googleFlowCapture, setGoogleFlowCapture] = useState<GoogleFlowCaptureStatus | null>(null);
 
  const selected = useMemo(
   () => projects.find(project => project.id === selectedId) ?? projects[0],
@@ -270,6 +277,13 @@ export default function App() {
  }, [selected?.id, selected?.voiceId]);
  useEffect(() => window.contentFactory.storyMedia.onReelVideoProgress(setReelProgress), []);
  useEffect(() => window.contentFactory.storyMedia.onStoryVideoProgress(setStoryVideoProgress), []);
+ useEffect(() => window.contentFactory.storyMedia.onGoogleFlowCapture(status => {
+  setGoogleFlowCapture(status);
+  setMessage(status.message);
+  if (status.stage === 'DONE' && selectedRef.current?.id === status.projectId) {
+   void window.contentFactory.storyMedia.get(status.projectId).then(setStoryMedia);
+  }
+ }), []);
  useEffect(() => window.contentFactory.crawler.onProgress(setCrawlProgress), []);
  useEffect(() => {
   return window.contentFactory.renderQueue.onUpdated(() => {
@@ -452,6 +466,30 @@ export default function App() {
    setActiveScriptId(row.id);
    setView('scripts');
    setMessage(`Đã tạo LONG_STORY v${row.version} với thời lượng mục tiêu khoảng ${targetMinutes} phút.`);
+  } catch (error) {
+   setMessage(error instanceof Error ? error.message : String(error));
+  } finally {
+   setBusy(false);
+  }
+ }
+
+ async function generateStoryFromOutline() {
+  if (!selected) return setMessage('Hãy chọn hoặc tạo project trước.');
+  const outline = storyOutline.trim();
+  if (outline.length < 20) return setMessage('Hãy nhập khung truyện có ít nhất 20 ký tự.');
+  setBusy(true);
+  setMessage(`AI đang viết truyện hoàn chỉnh khoảng ${targetMinutes} phút từ khung truyện...`);
+  try {
+   const row = await window.contentFactory.scripts.generateStoryFromOutline({
+    projectId: selected.id,
+    title: outlineTitle.trim() || undefined,
+    outline,
+    targetMinutes,
+   });
+   await loadProjectData(selected.id);
+   await reloadProjects();
+   setActiveScriptId(row.id);
+   setMessage(`Đã tạo LONG_STORY v${row.version} từ khung truyện. Bạn có thể sửa, review hoặc tạo MP3 ngay.`);
   } catch (error) {
    setMessage(error instanceof Error ? error.message : String(error));
   } finally {
@@ -686,7 +724,7 @@ export default function App() {
   if (!health?.ffmpeg) return setMessage('Chưa tìm thấy FFmpeg. Cài FFmpeg rồi khởi động lại app để tạo Story MP3.');
   if (!editorContent.trim()) return setMessage('Story hiện tại đang trống.');
   setBusy(true);
-  setMessage('Đang generate full Story MP3. Story dài sẽ tự chia chunk...');
+  setMessage('Đang tạo Story MP3 tổng và các file audio phân đoạn...');
   try {
    const saved = await window.contentFactory.scripts.update({
     scriptId: activeScript.id,
@@ -699,9 +737,13 @@ export default function App() {
     scriptId: saved.id,
    });
    setStoryMedia(media);
+   const audioSegmentCount = media.audioSegments?.length ?? 0;
+   if (!audioSegmentCount) {
+    throw new Error('Story MP3 đã tạo nhưng main process đang chạy bản cũ nên chưa xuất file phân đoạn. Hãy đóng hoàn toàn app, mở lại rồi bấm Regenerate MP3 + phân đoạn.');
+   }
    await reloadProjects();
    setMessage(
-    '✓ Bước 1/4 hoàn tất: Story MP3 đã sẵn sàng. Tiếp theo hãy tạo hoạt hình người que hoặc chọn Video / Ảnh background.',
+    `✓ Bước 1/4 hoàn tất: Story MP3 và ${audioSegmentCount} file phân đoạn đã sẵn sàng. Tiếp theo hãy tạo hoạt hình người que hoặc chọn Video / Ảnh background.`,
    );
   } catch (error) {
    setMessage(error instanceof Error ? error.message : String(error));
@@ -816,9 +858,9 @@ export default function App() {
    total: 1,
    percent: 0,
    stage: 'VIDEO',
-   message: `Đang chuẩn bị storyboard người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''}...`,
+   message: `Đang chuẩn bị storyboard ${stickVisualStyle === 'ENGINEER_3D' ? '3D Engineer' : 'người que'} ${targetFormat === 'REEL' ? 'Short 9:16' : ''}...`,
   });
-  setMessage(`Đang tạo hoạt hình theo nội dung kịch bản ${targetFormat === 'REEL' ? '(Short 9:16)' : ''}...`);
+  setMessage(`Đang tạo hoạt hình ${stickVisualStyle === 'ENGINEER_3D' ? '3D Engineer' : '2D Doodle'} theo nội dung kịch bản ${targetFormat === 'REEL' ? '(Short 9:16)' : ''}...`);
   try {
    setStoryVideoProgress({
     current: 0,
@@ -833,6 +875,8 @@ export default function App() {
    ]);
    setStoryMedia(currentMedia);
    setHealth(currentHealth);
+   if (stickVisualStyle === 'ENGINEER_3D' && currentMedia.stick3dSupport !== true)
+    throw new Error('Main process đang chạy bản cũ nên chưa hỗ trợ 3D Engineer. Hãy thoát hoàn toàn app rồi mở lại.');
    if (!currentHealth.ffmpeg) throw new Error('Không tìm thấy FFmpeg để dựng video. MP3 hiện có vẫn được giữ.');
    if (!isReel && !currentMedia.audioPath)
     throw new Error('Dự án đang chọn chưa có Story MP3. Hãy chọn đúng dự án đã tạo MP3 hoặc tạo MP3 cho dự án này.');
@@ -842,10 +886,11 @@ export default function App() {
      scriptId: activeScript.id,
      format: targetFormat,
      source,
+     visualStyle: stickVisualStyle,
     }),
    );
    setMessage(
-    `✓ Hoạt hình người que ${targetFormat === 'REEL' ? 'Short 9:16' : ''} 60 fps có lời đọc và thumbnail đã sẵn sàng!`,
+    `✓ Hoạt hình ${stickVisualStyle === 'ENGINEER_3D' ? '3D Engineer' : '2D Doodle'} ${targetFormat === 'REEL' ? 'Short 9:16' : ''} 60 fps có lời đọc và thumbnail đã sẵn sàng!`,
    );
   } catch (error) {
    setMessage(error instanceof Error ? error.message : String(error));
@@ -871,14 +916,20 @@ export default function App() {
         ? 'Antigravity CLI'
         : `AI trong Settings (${settings.provider})`;
   setMessage(
-   `Đang tự động chia phân đoạn và vẽ bộ ảnh người que ${targetFormat === 'REEL' ? 'Short 9:16 ' : ''}bằng ${sourceName}...`,
+   `Đang tự động chia phân đoạn và vẽ bộ ảnh ${stickVisualStyle === 'ENGINEER_3D' ? '3D Engineer' : 'người que 2D'} ${targetFormat === 'REEL' ? 'Short 9:16 ' : ''}bằng ${sourceName}...`,
   );
   try {
+   if (stickVisualStyle === 'ENGINEER_3D') {
+    const currentMedia = await window.contentFactory.storyMedia.get(selected.id);
+    if (currentMedia.stick3dSupport !== true)
+     throw new Error('Main process đang chạy bản cũ nên chưa hỗ trợ ảnh 3D Engineer. Hãy thoát hoàn toàn app rồi mở lại.');
+   }
    const res = await window.contentFactory.storyMedia.generateStickmanSceneImages({
     projectId: selected.id,
     scriptId: activeScript.id,
     format: targetFormat,
     source,
+    visualStyle: stickVisualStyle,
    });
    setSceneImages(res.sceneImages);
    setMessage(`✓ Đã tạo thành công ${res.sceneImages.length} bức ảnh người que theo từng phân đoạn trong kịch bản!`);
@@ -887,6 +938,83 @@ export default function App() {
   } finally {
    setBusy(false);
   }
+ }
+
+ async function importFlowSceneImages(sources: FlowSceneSource[]) {
+  if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
+   return setMessage('Hãy chọn Story script trước khi nhập ảnh Google Flow.');
+  }
+  if (!health?.ffmpeg) return setMessage('Cần FFmpeg để ghép ảnh Google Flow thành video.');
+  if (!storyMedia?.audioSegments?.length) {
+   return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi nhập ảnh Google Flow.');
+  }
+  setBusy(true);
+  setMessage(`Đang tải và ghép ${sources.length} ảnh Google Flow theo audio phân đoạn...`);
+  try {
+   if (storyMedia.flowSceneSupport !== true) {
+    throw new Error('Main process đang chạy bản cũ. Hãy thoát hoàn toàn app rồi mở lại.');
+   }
+   const media = await window.contentFactory.storyMedia.importFlowSceneImages({
+    projectId: selected.id,
+    scriptId: activeScript.id,
+    format: videoFormat,
+    sources,
+   });
+   setStoryMedia(media);
+   setMessage(`✓ Đã ghép ${media.flowSceneImages?.length ?? sources.length} ảnh Google Flow khớp từng audio phân đoạn. Có thể xếp video vào Render Queue.`);
+  } catch (error) {
+   setMessage(error instanceof Error ? error.message : String(error));
+  } finally {
+   setBusy(false);
+  }
+ }
+
+ async function startGoogleFlowCapture() {
+  if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
+   return setMessage('Hãy chọn Story script trước khi kết nối Google Flow.');
+  }
+  if (!health?.ffmpeg) return setMessage('Cần FFmpeg để ghép ảnh Google Flow thành video.');
+  if (!storyMedia?.audioSegments?.length) {
+   return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi kết nối Google Flow.');
+  }
+  try {
+   const status = await window.contentFactory.storyMedia.startGoogleFlowCapture({
+    projectId: selected.id,
+    scriptId: activeScript.id,
+    format: videoFormat,
+   });
+   setGoogleFlowCapture(status);
+   setMessage(status.message);
+  } catch (error) {
+   setMessage(error instanceof Error ? error.message : String(error));
+  }
+ }
+
+ async function startGoogleFlowAutomation() {
+  if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
+   return setMessage('Hãy chọn Story script trước khi tự động tạo ảnh Google Flow.');
+  }
+  if (!health?.ffmpeg) return setMessage('Cần FFmpeg để ghép ảnh Google Flow thành video.');
+  if (!storyMedia?.audioSegments?.length) {
+   return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi tự động tạo ảnh Google Flow.');
+  }
+  try {
+   const status = await window.contentFactory.storyMedia.startGoogleFlowAutomation({
+    projectId: selected.id,
+    scriptId: activeScript.id,
+    format: videoFormat,
+   });
+   setGoogleFlowCapture(status);
+   setMessage(status.message);
+  } catch (error) {
+   setMessage(error instanceof Error ? error.message : String(error));
+  }
+ }
+
+ async function cancelGoogleFlowCapture() {
+  await window.contentFactory.storyMedia.cancelGoogleFlowCapture();
+  setGoogleFlowCapture(current => current ? { ...current, stage: 'CANCELED', message: 'Đã dừng nhận ảnh từ Google Flow.' } : null);
+  setMessage('Đã dừng nhận ảnh từ Google Flow.');
  }
 
  async function chooseBackground(kind: BackgroundKind) {
@@ -1318,7 +1446,7 @@ export default function App() {
      <>
       <section className="card">
        <h2>Khán giả YouTube</h2>
-       <div className="topic-generator-fields">
+       <div className="audience-fields">
         <label>
          Thị trường
          <select
@@ -1347,6 +1475,8 @@ export default function App() {
         </label>
         {selected && (
          <button
+          type="button"
+          className="secondary"
           disabled={busy}
           onClick={async () => {
            setBusy(true);
@@ -1662,7 +1792,7 @@ export default function App() {
          <span>{stories.length} versions</span>
         </div>
        </div>
-       {!stories.length && <div className="empty">Chưa có story. Chọn Idea rồi Generate Story.</div>}
+       {!stories.length && <div className="empty">Chưa có story. Chọn Idea hoặc dùng khung truyện có sẵn.</div>}
        {stories.map(story => (
         <button
          key={story.id}
@@ -1703,6 +1833,64 @@ export default function App() {
        ))}
       </div>
       <div className="card script-main">
+       {selected && (
+        <details className="story-import story-outline-generator">
+         <summary>＋ Viết truyện hoàn chỉnh từ khung truyện (AI)</summary>
+         <div className="story-import-body">
+          <div className="story-import-fields">
+           <label>
+            Tiêu đề (tùy chọn)
+            <input
+             value={outlineTitle}
+             maxLength={300}
+             onChange={event => setOutlineTitle(event.target.value)}
+             placeholder="AI sẽ dùng tên mặc định nếu để trống"
+             disabled={busy}
+            />
+           </label>
+           <label>
+            Thời lượng truyện (phút)
+            <input
+             type="number"
+             min={0.25}
+             max={30}
+             step={0.25}
+             value={targetMinutes}
+             onChange={event =>
+              setTargetMinutes(Math.min(30, Math.max(0.25, Number(event.target.value) || 0.25)))
+             }
+             disabled={busy}
+            />
+           </label>
+          </div>
+          <label>
+           Khung truyện / dàn ý
+           <textarea
+            value={storyOutline}
+            maxLength={50_000}
+            onChange={event => setStoryOutline(event.target.value)}
+            rows={10}
+            placeholder="Dán các nhân vật, bối cảnh, diễn biến chính, cao trào, twist và kết thúc..."
+            disabled={busy}
+           />
+          </label>
+          <div className="story-import-footer">
+           <span>
+            {storyOutline.length.toLocaleString('vi-VN')} / 50.000 ký tự · {settings.provider.toUpperCase()}
+           </span>
+           <button
+            type="button"
+            className="primary"
+            onClick={() => void generateStoryFromOutline()}
+            disabled={
+             busy || storyOutline.trim().length < 20 || !hasAIKey(settings, settings.provider)
+            }>
+            Generate truyện hoàn chỉnh
+           </button>
+          </div>
+         </div>
+        </details>
+       )}
        {selected && (
         <details className="story-import">
          <summary>＋ Nhập truyện trực tiếp từ TXT hoặc dán nội dung</summary>
@@ -1840,14 +2028,14 @@ export default function App() {
              onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
              disabled={busy}
              title={busy ? message || 'Đang xử lý tác vụ khác' : 'Dựng video người que từ kịch bản và MP3 hiện có'}>
-             🎬 Tạo video người que
+             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo video 3D Engineer' : 'Tạo video người que 2D'}
             </button>
             <button
              type="button"
              className="secondary"
              onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
              disabled={busy}>
-             🖼️ Tạo ảnh phân đoạn
+             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo ảnh 3D phân đoạn' : 'Tạo ảnh 2D phân đoạn'}
             </button>
            </div>
           ) : (
@@ -1859,13 +2047,13 @@ export default function App() {
              className="primary"
              onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
              disabled={busy || !selected?.voiceId}>
-             📱 Tạo hoạt hình Short (9:16)
+             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo Short 3D (9:16)' : 'Tạo Short 2D (9:16)'}
             </button>
             <button
              className="secondary"
              onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
              disabled={busy}>
-             🖼️ Bộ ảnh phân đoạn
+             {stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D phân đoạn' : 'Bộ ảnh 2D phân đoạn'}
             </button>
            </div>
           )}
@@ -1913,7 +2101,7 @@ export default function App() {
                <span className="scene-number">Cảnh {scene.index}</span>
                <span className="scene-setting-tag">{scene.setting}</span>
               </div>
-              <img src={scene.fileUrl} alt={`Scene ${scene.index}`} />
+              <img src={stickSceneImageUrl(scene)} alt={`Scene ${scene.index}`} />
               <p className="scene-text">{scene.sectionText}</p>
              </div>
             ))}
@@ -2019,6 +2207,7 @@ export default function App() {
             hasVoice={Boolean(selected?.voiceId)}
             media={storyMedia}
             videoFormat={videoFormat}
+            stickVisualStyle={stickVisualStyle}
             fitMode={fitMode}
             soundEffect={soundEffect}
             includeSubtitles={includeSubtitles}
@@ -2031,9 +2220,15 @@ export default function App() {
             onGenerateVideoThumbnail={() => void generateVideoThumbnail()}
             onGenerateStickVideo={source => void generateStickVideo(source)}
             onGenerateStickmanSceneImages={source => void generateStickmanSceneImages(source)}
+            onImportFlowSceneImages={sources => void importFlowSceneImages(sources)}
+            googleFlowCapture={googleFlowCapture}
+            onStartGoogleFlowAutomation={() => void startGoogleFlowAutomation()}
+            onStartGoogleFlowCapture={() => void startGoogleFlowCapture()}
+            onCancelGoogleFlowCapture={() => void cancelGoogleFlowCapture()}
             onChooseBackground={kind => void chooseBackground(kind)}
             onRender={() => void renderStoryVideo()}
             onVideoFormatChange={setVideoFormat}
+            onStickVisualStyleChange={setStickVisualStyle}
             onFitModeChange={setFitMode}
             onSoundEffectChange={setSoundEffect}
             onIncludeSubtitlesChange={setIncludeSubtitles}

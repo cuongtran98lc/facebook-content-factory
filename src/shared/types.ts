@@ -16,6 +16,7 @@ export type ProjectStatus =
 export type AIProviderName = 'openai' | 'gemini' | 'groq' | 'claude-cli' | 'codex-cli' | 'antigravity-cli';
 export type ScriptType = 'LONG_STORY' | 'REEL';
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE';
+export type StickVisualStyle = 'DOODLE_2D' | 'ENGINEER_3D';
 export type FitMode = 'CROP' | 'FIT';
 export type BackgroundKind = 'VIDEO' | 'IMAGE';
 export type SoundEffectPreset = 'DYNAMIC' | 'WHOOSH' | 'IMPACT' | 'CHIME';
@@ -150,6 +151,12 @@ export interface GenerateStoryInput {
   /** @deprecated Giữ lại để tương thích client cũ; UI mới sử dụng targetMinutes. */
   targetWords?: number;
 }
+export interface GenerateStoryFromOutlineInput {
+  projectId: string;
+  title?: string;
+  outline: string;
+  targetMinutes?: number;
+}
 export interface ImportStoryInput {
   projectId: string;
   title?: string;
@@ -279,6 +286,31 @@ export interface StickmanSceneImageDTO {
   fileUrl: string;
 }
 
+export interface FlowSceneImageDTO {
+  index: number;
+  kind: 'STORY' | 'CTA';
+  sectionText: string;
+  duration: number;
+  fileName: string;
+  filePath: string;
+  fileUrl: string;
+  source: 'URL' | 'FILE';
+}
+
+export interface FlowSceneSource {
+  kind: 'URL' | 'FILE';
+  value: string;
+}
+
+export interface GoogleFlowCaptureStatus {
+  projectId: string;
+  scriptId: string;
+  stage: 'CONNECTING' | 'WAITING_LOGIN' | 'GENERATING' | 'CAPTURING' | 'BUILDING' | 'DONE' | 'ERROR' | 'CANCELED';
+  captured: number;
+  total: number;
+  message: string;
+}
+
 export interface StoryMediaDTO {
   thumbnailPath: string | null;
   thumbnailUrl: string | null;
@@ -291,18 +323,33 @@ export interface StoryMediaDTO {
   audioPath: string | null;
   audioUrl: string | null;
   audioDuration: number | null;
+  audioSegmentSupport?: boolean;
+  stick3dSupport?: boolean;
+  flowSceneSupport?: boolean;
+  audioSegments?: StoryAudioSegmentDTO[];
+  flowSceneImages?: FlowSceneImageDTO[];
   backgroundPath: string | null;
   backgroundUrl: string | null;
   backgroundName: string | null;
   backgroundDuration: number | null;
   backgroundKind: BackgroundKind | null;
   backgroundStyle: 'CUSTOM' | 'STICK_FIGURE';
+  backgroundVisualStyle?: StickVisualStyle | null;
   renderPath: string | null;
   renderUrl: string | null;
   renderStatus: string | null;
   storyVideoParts: StoryVideoPartDTO[];
   storyVideoOutputs: StoryVideoOutputDTO[];
   reels: ReelMediaDTO[];
+}
+export interface StoryAudioSegmentDTO {
+  index: number;
+  total: number;
+  kind: 'STORY' | 'CTA';
+  text: string;
+  path: string;
+  url: string;
+  duration: number;
 }
 export interface StoryVideoOutputDTO {
   format: VideoFormat;
@@ -359,6 +406,12 @@ export interface GenerateStoryAudioInput {
   studioOutput?: boolean;
   projectId: string;
   scriptId: string;
+}
+export interface ImportFlowSceneImagesInput {
+  projectId: string;
+  scriptId: string;
+  format: VideoFormat;
+  sources: FlowSceneSource[];
 }
 export interface RenderStoryVideoInput {
   projectId: string;
@@ -529,6 +582,7 @@ export interface ContentFactoryAPI {
   scripts: {
     list(projectId: string): Promise<ScriptDTO[]>;
     generateStory(input: GenerateStoryInput): Promise<ScriptDTO>;
+    generateStoryFromOutline(input: GenerateStoryFromOutlineInput): Promise<ScriptDTO>;
     importStory(input: ImportStoryInput): Promise<ScriptDTO>;
     review(scriptId: string): Promise<ScriptDTO>;
     rewrite(input: RewriteScriptInput): Promise<ScriptDTO>;
@@ -560,9 +614,15 @@ export interface ContentFactoryAPI {
     onReelVideoProgress(callback: (progress: ReelVideoProgress) => void): () => void;
     onStoryVideoProgress(callback: (progress: StoryVideoProgress) => void): () => void;
     resumePending(): Promise<StoryMediaDTO | null>;
-    generateStickVideo(input: { studioOutput?: boolean; projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<StoryMediaDTO>;
-    generateStickmanSceneImages(input: { projectId: string; scriptId: string; format?: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' }): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }>;
-    generateEmotionDemo(input: { projectId?: string; emotion: string; format?: VideoFormat }): Promise<{ videoPath: string; videoUrl: string; duration: number }>;
+    generateStickVideo(input: { studioOutput?: boolean; projectId: string; scriptId: string; format: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI'; visualStyle?: StickVisualStyle }): Promise<StoryMediaDTO>;
+    generateStickmanSceneImages(input: { projectId: string; scriptId: string; format?: VideoFormat; source?: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI'; visualStyle?: StickVisualStyle }): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }>;
+    chooseFlowSceneImageFiles(): Promise<string[] | null>;
+    importFlowSceneImages(input: ImportFlowSceneImagesInput): Promise<StoryMediaDTO>;
+    startGoogleFlowCapture(input: { projectId: string; scriptId: string; format: VideoFormat }): Promise<GoogleFlowCaptureStatus>;
+    startGoogleFlowAutomation(input: { projectId: string; scriptId: string; format: VideoFormat }): Promise<GoogleFlowCaptureStatus>;
+    cancelGoogleFlowCapture(): Promise<void>;
+    onGoogleFlowCapture(callback: (status: GoogleFlowCaptureStatus) => void): () => void;
+    generateEmotionDemo(input: { projectId?: string; emotion: string; format?: VideoFormat; visualStyle?: StickVisualStyle }): Promise<{ videoPath: string; videoUrl: string; duration: number }>;
     listEmotionDemos?(input: { projectId?: string }): Promise<EmotionDemoDTO[]>;
     useDemoAsBackground?(input: { projectId: string; videoPath: string }): Promise<StoryMediaDTO>;
     generateAudio(input: GenerateStoryAudioInput): Promise<StoryMediaDTO>;

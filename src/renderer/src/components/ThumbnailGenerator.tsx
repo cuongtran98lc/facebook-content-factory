@@ -130,7 +130,7 @@ export function ThumbnailGenerator({
 
       {mode === 'ai' ? (
         <div className="thumbnail-ai-section">
-          <div className="thumbnail-style-badge" style={{ padding: '8px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '12px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="thumbnail-style-badge">
             <span style={{ fontSize: '16px' }}>🎨</span>
             <span><strong>Phong cách: Google Flow 2D Stickman</strong> · Nét vẽ vector 2D tối giản, đầu tròn trắng viền đen, biểu cảm kịch tính, nền sáng tương phản cao.</span>
           </div>
@@ -160,15 +160,14 @@ export function ThumbnailGenerator({
               placeholder="Ví dụ: người mẹ đứng trước căn nhà cũ, ánh sáng điện ảnh, tông xanh lạnh..."
             />
           </label>
-          <label className="thumbnail-direction" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', flexDirection: 'row', marginTop: '4px' }}>
+          <label className="thumbnail-direction thumbnail-checkbox-row">
             <input
               type="checkbox"
               checked={includeTextOverlay}
               disabled={busy}
               onChange={e => setIncludeTextOverlay(e.target.checked)}
-              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
             />
-            <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b' }}>
+            <span>
               ✨ Phủ chữ giật tít nổi bật (Text Hook Overlay · Đậm nét 3D, từ khóa vàng kim, tag kịch tính)
             </span>
           </label>

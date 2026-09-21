@@ -12,9 +12,12 @@ require.extensions['.ts'] = (module, filename) => {
 };
 const {
   storySections,
+  fallbackStickScenes,
   parseStickScenes,
   stickFrame,
+  emotionDemoScene,
   renderStickAnimation,
+  renderEmotionDemoVideo,
   stickConceptFrame,
   stickConceptPrompt,
   parseConceptData
@@ -26,6 +29,16 @@ async function main() {
   const story = 'An chạy về nhà. Mẹ đang khóc.\nAn ngồi xuống cạnh mẹ.';
   assert.equal(storySections(story).join(' '), story.replace(/\n/g, ' '));
   assert.throws(() => storySections('  '));
+  const fallbackScenes = fallbackStickScenes([
+    'Alex chạy vào văn phòng và nhìn thấy hợp đồng trên bàn.',
+    'Anh gọi điện trong lo lắng rồi bật khóc.',
+  ]);
+  assert.equal(fallbackScenes.length, 2);
+  assert.equal(fallbackScenes[0].setting, 'office');
+  assert.equal(fallbackScenes[0].actors[0].action, 'run');
+  assert.equal(fallbackScenes[0].actors[0].prop, 'contract');
+  assert.equal(fallbackScenes[1].actors[0].action, 'cry');
+  assert.equal(fallbackScenes[1].actors[0].emotion, 'crying');
   const scenes = [
     { index: 0, setting: 'street', actors: [{ name: 'An', action: 'run' }] },
     { index: 1, setting: 'home', actors: [{ name: 'An', action: 'sit' }, { name: 'Mẹ', action: 'cry' }] },
@@ -54,6 +67,23 @@ async function main() {
   for (const scene of detailed) for (const format of ['LANDSCAPE', 'REEL']) {
     await sharp(Buffer.from(stickFrame(scene, 20, format, colors))).png().toBuffer();
   }
+  const engineer3d = stickFrame({
+    setting: 'office',
+    actors: [{ name: 'Alex', role: 'MAIN', action: 'carry', emotion: 'neutral', glasses: true }],
+  }, 20, 'LANDSCAPE', colors, true, 'ENGINEER_3D');
+  assert.ok(engineer3d.includes('data-visual-style="ENGINEER_3D"'));
+  assert.ok(engineer3d.includes('blueprint-20'));
+  assert.ok(engineer3d.includes('tie-3d-20'));
+  assert.equal(emotionDemoScene('crying').actors[0].action, 'cry');
+  assert.equal(emotionDemoScene('shocked').actors[0].emotion, 'shocked');
+  assert.notEqual(
+    stickFrame(emotionDemoScene('furious'), 2, 'LANDSCAPE', colors, false, 'ENGINEER_3D'),
+    stickFrame(emotionDemoScene('furious'), 7, 'LANDSCAPE', colors, false, 'ENGINEER_3D'),
+    '3D Engineer emotion motion must vary across demo-derived frames',
+  );
+  const engineerMetadata = await sharp(Buffer.from(engineer3d)).metadata();
+  assert.equal(engineerMetadata.width, 960);
+  assert.equal(engineerMetadata.height, 540);
   assert.notEqual(stickFrame(detailed[0], 20, 'LANDSCAPE', colors), stickFrame({ ...detailed[0], actors: [{ name: 'An', action: 'read' }] }, 20, 'LANDSCAPE', colors));
   const { ROLE_COLORS } = require('../src/main/services/stick-details.ts');
   for (const [role, color] of Object.entries(ROLE_COLORS)) {
@@ -169,6 +199,10 @@ async function main() {
     const streams = file => JSON.parse(execFileSync(ffmpeg.replace(/ffmpeg$/, 'ffprobe'), ['-v', 'error', '-show_streams', '-of', 'json', file], { encoding: 'utf8' })).streams;
     assert.ok(streams(output).some(stream => stream.codec_type === 'audio'), 'Preview must contain narration');
     assert.equal(streams(output).find(stream => stream.codec_type === 'video').r_frame_rate, '60/1');
+    const engineerDemo = path.join(root, 'engineer-demo.mp4');
+    await renderEmotionDemoVideo('shocked', 'LANDSCAPE', engineerDemo, undefined, 'ENGINEER_3D');
+    assert.ok(Math.abs(await probeDuration(engineerDemo) - 3) < .1);
+    assert.equal(streams(engineerDemo).find(stream => stream.codec_type === 'video').r_frame_rate, '60/1');
     const clipped = path.join(root, 'clip.mp4');
     await renderLoopedVideo({ backgroundPath: output, backgroundStartSeconds: 2, audioPath: audio, audioStartSeconds: 2, audioDurationSeconds: 1, outputPath: clipped, format: 'LANDSCAPE', fitMode: 'FIT', frameRate: 60 });
     assert.ok(Math.abs(await probeDuration(clipped) - 1) < .1);

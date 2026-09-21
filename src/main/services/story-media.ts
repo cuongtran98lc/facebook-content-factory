@@ -1,17 +1,17 @@
 import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../shared/thumbnail-concepts'
 import { audiencePrompt } from '../../shared/audience'
 import { createHash, randomUUID } from 'node:crypto'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { nativeImage } from 'electron'
+import { BrowserWindow, nativeImage, session, type DownloadItem, type Session } from 'electron'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, stat, unlink, writeFile, rename, readdir } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, stat, unlink, writeFile, rename, readdir, rm } from 'node:fs/promises'
 import sharp from 'sharp'
 import { pathToFileURL } from 'node:url'
-import type { BackgroundKind, EmotionDemoDTO, FitMode, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
+import type { BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneImageDTO, FlowSceneSource, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getOutputRoot } from './paths'
 import { getPrisma } from './database'
-import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
+import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatAnimationScenes, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, renderStillSceneClip, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
@@ -19,10 +19,11 @@ import { PublishingMetadataService, type PublishMetadata, type PublishMode, type
 import { createAssSubtitles, SUBTITLE_RENDER_VERSION } from './subtitles'
 
 import { AIService } from './ai'
+import type { AIProvider } from './ai/types'
 import { CodexCliService } from './ai/codex-cli'
 import { ClaudeCliService } from './ai/claude-cli'
 import { AntigravityCliService } from './ai/antigravity-cli'
-import { parseStickScenes, renderEmotionDemoVideo, renderStickAnimation, stickFrame, stickPrompt, storySections } from './stick-animation'
+import { fallbackStickScenes, parseStickScenes, renderEmotionDemoVideo, renderStickAnimation, stickFrame, stickPrompt, storySections, type StickScene } from './stick-animation'
 import { buildGoogleFlowThumbnailPrompt } from './stickman-knowledge'
 
 const scriptHash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -33,6 +34,8 @@ const CTA_TEXT = 'If you enjoyed this story, hit like and subscribe for more.'
 const PUBLISH_METADATA_ASSET_TYPE = 'VIDEO_PUBLISH_METADATA'
 const PUBLISH_METADATA_SCHEMA = 1
 const REEL_THUMBNAIL_VERSION = 7
+const FLOW_IMAGE_MAX_BYTES = 30 * 1024 * 1024
+const GOOGLE_FLOW_URL = process.env.GOOGLE_FLOW_URL?.trim() || 'https://labs.google/fx/tools/flow'
 
 interface StoryVideoSegment {
   part: number
@@ -108,6 +111,94 @@ function mediaUrl(path?: string | null, version?: Date | string | number | null)
 function parseMeta(meta?: string | null): Record<string, unknown> {
   if (!meta) return {}
   try { return JSON.parse(meta) as Record<string, unknown> } catch { return {} }
+}
+
+type StoredAudioSegment = {
+  index: number
+  total: number
+  kind: 'STORY' | 'CTA'
+  text: string
+  path: string
+  duration: number
+}
+
+type StoredFlowScene = {
+  index: number
+  kind: 'STORY' | 'CTA'
+  text: string
+  duration: number
+  path: string
+  source: 'URL' | 'FILE'
+}
+
+function parseAudioSegments(value: unknown): StoredAudioSegment[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    if (
+      !Number.isInteger(row.index) ||
+      !Number.isInteger(row.total) ||
+      (row.kind !== 'STORY' && row.kind !== 'CTA') ||
+      typeof row.text !== 'string' ||
+      typeof row.path !== 'string' ||
+      typeof row.duration !== 'number' ||
+      row.duration <= 0
+    ) return []
+    return [{
+      index: row.index as number,
+      total: row.total as number,
+      kind: row.kind,
+      text: row.text,
+      path: row.path,
+      duration: row.duration
+    }]
+  })
+}
+
+function parseFlowScenes(value: unknown): StoredFlowScene[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    if (
+      !Number.isInteger(row.index) ||
+      (row.kind !== 'STORY' && row.kind !== 'CTA') ||
+      typeof row.text !== 'string' ||
+      typeof row.duration !== 'number' ||
+      row.duration <= 0 ||
+      typeof row.path !== 'string' ||
+      (row.source !== 'URL' && row.source !== 'FILE')
+    ) return []
+    return [{
+      index: row.index as number,
+      kind: row.kind,
+      text: row.text,
+      duration: row.duration,
+      path: row.path,
+      source: row.source
+    }]
+  })
+}
+
+function isGoogleImageHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return [
+    'labs.google',
+    'googleusercontent.com',
+    'gstatic.com',
+    'ggpht.com',
+    'googleapis.com'
+  ].some(domain => host === domain || host.endsWith(`.${domain}`))
+}
+
+function validateGoogleFlowImageUrl(value: string): URL {
+  let url: URL
+  try { url = new URL(value.trim()) } catch { throw new Error('URL ảnh Google Flow không hợp lệ.') }
+  if (url.protocol !== 'https:' || url.username || url.password || !isGoogleImageHost(url.hostname)) {
+    throw new Error('Chỉ hỗ trợ link ảnh HTTPS trực tiếp từ Google Flow/Googleusercontent.')
+  }
+  return url
 }
 
 function parsePublishMetadata(meta?: string | null): StoredPublishMetadata | null {
@@ -331,11 +422,501 @@ async function episodeThumbnail(bytes: Buffer, episode: number, storyTitle: stri
 export class StoryMediaService {
   private readonly storage = new ProjectStorageService()
   private readonly activeReelProjects = new Set<string>()
+  private googleFlowWindow: BrowserWindow | null = null
+  private googleFlowCaptureCleanup: (() => void) | null = null
+  private googleFlowCaptureStatus: GoogleFlowCaptureStatus | null = null
+  private googleFlowAutomationAbort: AbortController | null = null
   constructor(
     private readonly voices = new VoiceService(),
     private readonly thumbnails = new ThumbnailService(),
     private readonly publishing = new PublishingMetadataService()
   ) {}
+
+  private async readFlowImageSource(source: FlowSceneSource): Promise<Buffer> {
+    if (source.kind === 'FILE') {
+      const filePath = source.value.trim()
+      const fileStat = await stat(filePath).catch(() => null)
+      if (!fileStat?.isFile()) throw new Error('File ảnh đã chọn không còn tồn tại.')
+      if (fileStat.size > FLOW_IMAGE_MAX_BYTES) throw new Error('Mỗi ảnh Google Flow phải nhỏ hơn 30 MB.')
+      return readFile(filePath)
+    }
+
+    let url = validateGoogleFlowImageUrl(source.value)
+    let response: Response | null = null
+    for (let redirect = 0; redirect <= 5; redirect++) {
+      response = await session.fromPartition('persist:google-flow').fetch(url.toString(), {
+        credentials: 'include',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(60_000)
+      })
+      if (response.status < 300 || response.status >= 400) break
+      const location = response.headers.get('location')
+      if (!location) throw new Error('Link ảnh Google Flow chuyển hướng nhưng thiếu địa chỉ đích.')
+      url = validateGoogleFlowImageUrl(new URL(location, url).toString())
+      response = null
+    }
+    if (!response) throw new Error('Link ảnh Google Flow chuyển hướng quá nhiều lần.')
+    if (!response.ok) throw new Error(`Không tải được ảnh Google Flow (HTTP ${response.status}).`)
+    validateGoogleFlowImageUrl(response.url)
+    const contentLength = Number(response.headers.get('content-length') ?? 0)
+    if (contentLength > FLOW_IMAGE_MAX_BYTES) throw new Error('Mỗi ảnh Google Flow phải nhỏ hơn 30 MB.')
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (!bytes.length || bytes.length > FLOW_IMAGE_MAX_BYTES) throw new Error('Dữ liệu ảnh Google Flow rỗng hoặc vượt quá 30 MB.')
+    return bytes
+  }
+
+  private flowStatus(
+    input: Omit<GoogleFlowCaptureStatus, 'message'> & { message: string },
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+  ): GoogleFlowCaptureStatus {
+    this.googleFlowCaptureStatus = input
+    onProgress?.(input)
+    return input
+  }
+
+  private async ensureGoogleFlowWindow(): Promise<BrowserWindow> {
+    if (!this.googleFlowWindow || this.googleFlowWindow.isDestroyed()) {
+      this.googleFlowWindow = new BrowserWindow({
+        width: 1320,
+        height: 900,
+        minWidth: 900,
+        minHeight: 650,
+        title: 'Google Flow - Content Factory',
+        backgroundColor: '#111315',
+        webPreferences: {
+          partition: 'persist:google-flow',
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true
+        }
+      })
+      this.googleFlowWindow.webContents.setWindowOpenHandler(details => {
+        try {
+          const target = new URL(details.url)
+          const allowed = target.protocol === 'https:' && (target.hostname === 'accounts.google.com' || target.hostname === 'labs.google')
+          return allowed ? { action: 'allow' } : { action: 'deny' }
+        } catch { return { action: 'deny' } }
+      })
+      this.googleFlowWindow.on('closed', () => { this.googleFlowWindow = null })
+      await this.googleFlowWindow.loadURL(GOOGLE_FLOW_URL)
+    } else {
+      this.googleFlowWindow.show()
+      this.googleFlowWindow.focus()
+    }
+    return this.googleFlowWindow
+  }
+
+  private async googleFlowPromptReady(): Promise<boolean> {
+    const win = this.googleFlowWindow
+    if (!win || win.isDestroyed() || win.webContents.isLoading()) return false
+    return win.webContents.executeJavaScript(`(() => {
+      const visible = element => {
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return rect.width > 180 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const fields = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')]
+        .filter(visible)
+        .filter(element => !String(element.getAttribute('placeholder') || element.getAttribute('aria-label') || '').toLowerCase().includes('search'))
+      return fields.length > 0
+    })()`, true) as Promise<boolean>
+  }
+
+  private async waitForGoogleFlowPrompt(signal: AbortSignal): Promise<void> {
+    const deadline = Date.now() + 10 * 60_000
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
+      if (await this.googleFlowPromptReady().catch(() => false)) return
+      await sleep(2_000)
+    }
+    throw new Error('Không tìm thấy ô prompt trong Google Flow sau 10 phút. Hãy đăng nhập, mở project và vào màn hình tạo ảnh rồi thử lại.')
+  }
+
+  private async googleFlowImageCandidates(): Promise<Array<{ src: string; width: number; height: number; score: number }>> {
+    const win = this.googleFlowWindow
+    if (!win || win.isDestroyed()) return []
+    return win.webContents.executeJavaScript(`(() => {
+      const visible = element => {
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return rect.width >= 180 && rect.height >= 180 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const rows = []
+      for (const image of document.querySelectorAll('img')) {
+        if (!visible(image) || image.naturalWidth < 384 || image.naturalHeight < 384 || !image.currentSrc) continue
+        const rect = image.getBoundingClientRect()
+        rows.push({ src: image.currentSrc, width: image.naturalWidth, height: image.naturalHeight, score: image.naturalWidth * image.naturalHeight + rect.width * rect.height })
+      }
+      for (const video of document.querySelectorAll('video[poster]')) {
+        if (!visible(video) || !video.poster) continue
+        const rect = video.getBoundingClientRect()
+        rows.push({ src: video.poster, width: video.videoWidth || Math.round(rect.width), height: video.videoHeight || Math.round(rect.height), score: rect.width * rect.height })
+      }
+      return rows.filter((row, index) => rows.findIndex(other => other.src === row.src) === index)
+    })()`, true) as Promise<Array<{ src: string; width: number; height: number; score: number }>>
+  }
+
+  private async submitGoogleFlowPrompt(prompt: string): Promise<void> {
+    const win = this.googleFlowWindow
+    if (!win || win.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng.')
+    const result = await win.webContents.executeJavaScript(`(() => {
+      const visible = element => {
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const descriptor = element => String(element.getAttribute('placeholder') || element.getAttribute('aria-label') || element.textContent || '').trim().toLowerCase()
+      const fields = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')]
+        .filter(visible)
+        .filter(element => !descriptor(element).includes('search'))
+        .map(element => {
+          const rect = element.getBoundingClientRect()
+          const label = descriptor(element)
+          const hint = /prompt|describe|imagine|create|generate/.test(label) ? 1000000 : 0
+          const kind = element.tagName === 'TEXTAREA' || element.isContentEditable ? 500000 : 0
+          return { element, rect, score: hint + kind + rect.width * rect.height }
+        })
+        .sort((left, right) => right.score - left.score)
+      const selected = fields[0]
+      if (!selected) return { ok: false, reason: 'PROMPT_NOT_FOUND' }
+      const field = selected.element
+      field.focus()
+      const value = ${JSON.stringify(prompt)}
+      if (field.isContentEditable) {
+        field.textContent = value
+      } else {
+        const prototype = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+        setter ? setter.call(field, value) : field.value = value
+      }
+      field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
+      field.dispatchEvent(new Event('change', { bubbles: true }))
+
+      const buttons = [...document.querySelectorAll('button, [role="button"]')]
+        .filter(visible)
+        .filter(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true')
+        .map(button => {
+          const rect = button.getBoundingClientRect()
+          const label = descriptor(button)
+          const match = /(^|\\s)(generate|create|send|submit|run|imagine)(\\s|$)/.test(label) ? 1000000 : 0
+          const sameForm = field.closest('form') && field.closest('form') === button.closest('form') ? 500000 : 0
+          const distance = Math.abs(rect.left - selected.rect.right) + Math.abs(rect.top - selected.rect.top)
+          return { button, score: match + sameForm - distance }
+        })
+        .sort((left, right) => right.score - left.score)
+      const button = buttons.find(item => item.score > 100000)?.button
+      if (button) {
+        button.click()
+        return { ok: true, method: 'BUTTON' }
+      }
+      const form = field.closest('form')
+      if (form?.requestSubmit) {
+        form.requestSubmit()
+        return { ok: true, method: 'FORM' }
+      }
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, ctrlKey: true }))
+      field.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, ctrlKey: true }))
+      return { ok: true, method: 'KEYBOARD' }
+    })()`, true) as { ok: boolean; reason?: string }
+    if (!result.ok) throw new Error('Không tìm thấy ô prompt của Google Flow. Hãy mở màn hình tạo ảnh và thử lại.')
+  }
+
+  private async waitForGoogleFlowImage(previousSources: Set<string>, signal: AbortSignal): Promise<string> {
+    const deadline = Date.now() + 6 * 60_000
+    const stablePolls = new Map<string, number>()
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
+      const candidates = await this.googleFlowImageCandidates().catch(() => [])
+      const fresh = candidates
+        .filter(candidate => !previousSources.has(candidate.src))
+        .sort((left, right) => right.score - left.score)
+      for (const candidate of fresh) stablePolls.set(candidate.src, (stablePolls.get(candidate.src) ?? 0) + 1)
+      const stable = fresh.find(candidate => (stablePolls.get(candidate.src) ?? 0) >= 2)
+      if (stable) return stable.src
+      await sleep(3_000)
+    }
+    throw new Error('Google Flow không trả ảnh mới sau 6 phút. Kiểm tra credit, model tạo ảnh và trạng thái project.')
+  }
+
+  private async readGoogleFlowBrowserImage(source: string): Promise<Buffer> {
+    if (source.startsWith('https://')) return this.readFlowImageSource({ kind: 'URL', value: source })
+    const win = this.googleFlowWindow
+    if (!win || win.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng trước khi lấy ảnh.')
+    const dataUrl = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      fetch(${JSON.stringify(source)})
+        .then(response => {
+          if (!response.ok) throw new Error('HTTP ' + response.status)
+          return response.blob()
+        })
+        .then(blob => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result)
+          reader.onerror = () => reject(reader.error || new Error('Không đọc được ảnh'))
+          reader.readAsDataURL(blob)
+        })
+        .catch(error => reject(error))
+    })`, true) as string
+    const match = /^data:image\/[^;]+;base64,(.+)$/s.exec(dataUrl)
+    if (!match) throw new Error('Google Flow trả dữ liệu ảnh không hợp lệ.')
+    const bytes = Buffer.from(match[1], 'base64')
+    if (!bytes.length || bytes.length > FLOW_IMAGE_MAX_BYTES) throw new Error('Ảnh Google Flow rỗng hoặc vượt quá 30 MB.')
+    return bytes
+  }
+
+  async cancelGoogleFlowCapture(): Promise<void> {
+    const current = this.googleFlowCaptureStatus
+    this.googleFlowAutomationAbort?.abort()
+    this.googleFlowAutomationAbort = null
+    this.googleFlowCaptureCleanup?.()
+    this.googleFlowCaptureCleanup = null
+    if (current && !['DONE', 'ERROR', 'CANCELED'].includes(current.stage)) {
+      this.googleFlowCaptureStatus = { ...current, stage: 'CANCELED', message: 'Đã dừng nhận ảnh từ Google Flow.' }
+    }
+  }
+
+  async startGoogleFlowCapture(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+  ): Promise<GoogleFlowCaptureStatus> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video Google Flow không hợp lệ.')
+    await this.cancelGoogleFlowCapture()
+
+    const prisma = getPrisma()
+    const [script, audio] = await Promise.all([
+      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+    ])
+    if (!script) throw new Error('Hãy chọn Story script trước khi kết nối Google Flow.')
+    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi kết nối Google Flow.')
+    const audioMeta = parseMeta(audio.metadata)
+    const segments = parseAudioSegments(audioMeta.segments)
+    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content) || !segments.length) {
+      throw new Error('Story MP3 không khớp kịch bản hoặc chưa có audio phân đoạn. Hãy Generate lại trước.')
+    }
+
+    const total = segments.length
+    const baseStatus = { projectId, scriptId, captured: 0, total }
+    this.flowStatus({ ...baseStatus, stage: 'CONNECTING', message: 'Đang mở Google Flow...' }, onProgress)
+
+    const flowSession: Session = session.fromPartition('persist:google-flow')
+    const captureDir = this.storage.getProjectPath(projectId, 'images', '.google-flow-capture', `${Date.now()}-${randomUUID().slice(0, 8)}`)
+    await mkdir(captureDir, { recursive: true })
+    const captures: Array<{ path: string; done: boolean }> = []
+    let building = false
+    let stopped = false
+
+    const cleanup = () => {
+      stopped = true
+      flowSession.removeListener('will-download', downloadListener)
+      if (this.googleFlowCaptureCleanup === cleanup) this.googleFlowCaptureCleanup = null
+    }
+    const fail = (message: string) => {
+      cleanup()
+      this.flowStatus({ ...baseStatus, captured: captures.filter(item => item.done).length, stage: 'ERROR', message }, onProgress)
+    }
+    const downloadListener = (_event: Electron.Event, item: DownloadItem) => {
+      if (stopped) return
+      const mime = item.getMimeType().toLowerCase()
+      const originalName = item.getFilename()
+      const originalExt = originalName.toLowerCase().match(/\.(jpe?g|png|webp|avif)$/)?.[0]
+      if (!mime.startsWith('image/') && !originalExt) return
+      if (captures.length >= total || building) {
+        item.cancel()
+        return
+      }
+
+      const extension = originalExt || (mime.includes('png') ? '.png' : mime.includes('webp') ? '.webp' : mime.includes('avif') ? '.avif' : '.jpg')
+      const capture = { path: join(captureDir, `${String(captures.length + 1).padStart(3, '0')}${extension}`), done: false }
+      captures.push(capture)
+      item.setSavePath(capture.path)
+      item.once('done', async (_doneEvent, state) => {
+        if (stopped && !building) return
+        if (state !== 'completed') {
+          const captureIndex = captures.indexOf(capture)
+          if (captureIndex >= 0) captures.splice(captureIndex, 1)
+          fail(`Tải ảnh Google Flow bị gián đoạn (${state}). Bấm kết nối để thử lại.`)
+          return
+        }
+        try {
+          const metadata = await sharp(capture.path).metadata()
+          if (!metadata.width || !metadata.height) throw new Error('file không có kích thước ảnh hợp lệ')
+          capture.done = true
+          const captured = captures.filter(entry => entry.done).length
+          this.flowStatus({
+            ...baseStatus,
+            captured,
+            stage: captured === total ? 'BUILDING' : 'CAPTURING',
+            message: captured === total
+              ? `Đã nhận đủ ${total} ảnh. Đang ghép video theo audio...`
+              : `Đã nhận ảnh ${captured}/${total}. Tải ảnh tiếp theo trong Google Flow.`
+          }, onProgress)
+          if (captured !== total || building) return
+          building = true
+          cleanup()
+          await this.importFlowSceneImages(projectId, scriptId, format, captures.map(entry => ({ kind: 'FILE', value: entry.path })))
+          this.flowStatus({
+            ...baseStatus,
+            captured: total,
+            stage: 'DONE',
+            message: `Đã nhận và ghép đủ ${total} ảnh Google Flow theo phân đoạn.`
+          }, onProgress)
+        } catch (error) {
+          fail(`Không xử lý được ảnh Google Flow: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+    }
+    flowSession.on('will-download', downloadListener)
+    this.googleFlowCaptureCleanup = cleanup
+
+    try {
+      await this.ensureGoogleFlowWindow()
+      return this.flowStatus({
+        ...baseStatus,
+        stage: 'CAPTURING',
+        message: `Google Flow đã mở. Tải ${total} ảnh theo đúng thứ tự audio phân đoạn.`
+      }, onProgress)
+    } catch (error) {
+      cleanup()
+      const message = `Không mở được Google Flow: ${error instanceof Error ? error.message : String(error)}`
+      this.flowStatus({ ...baseStatus, stage: 'ERROR', message }, onProgress)
+      throw new Error(message)
+    }
+  }
+
+  async startGoogleFlowAutomation(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+  ): Promise<GoogleFlowCaptureStatus> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video Google Flow không hợp lệ.')
+    await this.cancelGoogleFlowCapture()
+    const prisma = getPrisma()
+    const [script, audio] = await Promise.all([
+      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+    ])
+    if (!script) throw new Error('Hãy chọn Story script trước khi tự động tạo ảnh Google Flow.')
+    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi tự động tạo ảnh Google Flow.')
+    const audioMeta = parseMeta(audio.metadata)
+    const segments = parseAudioSegments(audioMeta.segments)
+    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content) || !segments.length) {
+      throw new Error('Story MP3 không khớp kịch bản hoặc chưa có audio phân đoạn. Hãy Generate lại trước.')
+    }
+
+    const total = segments.length
+    const baseStatus = { projectId, scriptId, captured: 0, total }
+    const abortController = new AbortController()
+    this.googleFlowAutomationAbort = abortController
+    this.flowStatus({ ...baseStatus, stage: 'CONNECTING', message: 'Đang mở phiên Google Flow...' }, onProgress)
+
+    try {
+      await this.ensureGoogleFlowWindow()
+    } catch (error) {
+      this.googleFlowAutomationAbort = null
+      const message = `Không mở được Google Flow: ${error instanceof Error ? error.message : String(error)}`
+      this.flowStatus({ ...baseStatus, stage: 'ERROR', message }, onProgress)
+      throw new Error(message)
+    }
+
+    this.flowStatus({
+      ...baseStatus,
+      stage: 'WAITING_LOGIN',
+      message: 'Đang chờ đăng nhập và màn hình tạo ảnh Google Flow...'
+    }, onProgress)
+
+    void (async () => {
+      const sources: FlowSceneSource[] = []
+      try {
+        await this.waitForGoogleFlowPrompt(abortController.signal)
+        for (const [index, segment] of segments.entries()) {
+          if (abortController.signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
+          const previousSources = new Set((await this.googleFlowImageCandidates()).map(candidate => candidate.src))
+          const ratio = format === 'REEL' ? 'vertical 9:16' : format === 'SQUARE' ? 'square 1:1' : 'landscape 16:9'
+          const prompt = [
+            `Create one polished cinematic still image in ${ratio} format for this story scene.`,
+            'No captions, subtitles, logos, watermarks, split panels, or text in the image.',
+            'Use expressive characters, clear storytelling, strong composition, natural lighting, and keep recurring characters visually consistent with earlier images in this project.',
+            `Scene ${index + 1} of ${total}: ${segment.text}`
+          ].join(' ')
+          this.flowStatus({
+            ...baseStatus,
+            captured: index,
+            stage: 'GENERATING',
+            message: `Google Flow đang tạo ảnh ${index + 1}/${total}...`
+          }, onProgress)
+          await this.submitGoogleFlowPrompt(prompt)
+          const imageSource = await this.waitForGoogleFlowImage(previousSources, abortController.signal)
+          const bytes = await this.readGoogleFlowBrowserImage(imageSource)
+          const sourcePath = await this.storage.writeBuffer(projectId, `images/.google-flow-auto/${Date.now()}-${String(index + 1).padStart(3, '0')}.png`, await sharp(bytes).png().toBuffer())
+          sources.push({ kind: 'FILE', value: sourcePath })
+          this.flowStatus({
+            ...baseStatus,
+            captured: index + 1,
+            stage: index + 1 === total ? 'BUILDING' : 'GENERATING',
+            message: index + 1 === total
+              ? `Đã lấy đủ ${total} ảnh. Đang ghép video theo audio...`
+              : `Đã lấy ảnh ${index + 1}/${total}; chuẩn bị cảnh tiếp theo...`
+          }, onProgress)
+          await sleep(1_500)
+        }
+        await this.importFlowSceneImages(projectId, scriptId, format, sources)
+        this.flowStatus({
+          ...baseStatus,
+          captured: total,
+          stage: 'DONE',
+          message: `Đã tự động tạo, lấy và ghép ${total} ảnh từ Google Flow.`
+        }, onProgress)
+      } catch (error) {
+        const canceled = abortController.signal.aborted
+        this.flowStatus({
+          ...baseStatus,
+          captured: sources.length,
+          stage: canceled ? 'CANCELED' : 'ERROR',
+          message: canceled ? 'Đã dừng tự động tạo ảnh Google Flow.' : `Tự động Google Flow bị dừng: ${error instanceof Error ? error.message : String(error)}`
+        }, onProgress)
+      } finally {
+        if (this.googleFlowAutomationAbort === abortController) this.googleFlowAutomationAbort = null
+      }
+    })()
+
+    return this.googleFlowCaptureStatus!
+  }
+
+  private async generateStoryboard(
+    generator: AIProvider,
+    sections: string[],
+    isShort: boolean,
+    still: boolean,
+    visualStyle: StickVisualStyle,
+  ): Promise<{ scenes: StickScene[]; source: 'AI' | 'REPAIRED' | 'FALLBACK' }> {
+    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort, still, visualStyle) })
+    try {
+      return { scenes: parseStickScenes(response, sections.length), source: 'AI' }
+    } catch (formatError) {
+      try {
+        const repaired = await generator.generateText({
+          json: true,
+          system: 'You repair malformed JSON. Return only valid JSON matching the requested schema, with no markdown or explanation.',
+          prompt: [
+            `Repair this storyboard into exactly ${sections.length} scenes.`,
+            `Return only {"scenes":[{"index":0,"setting":"office","objects":[],"actors":[{"name":"Alex","role":"MAIN","action":"stand","emotion":"neutral","prop":"none","position":"center","facing":"right"}]}]}.`,
+            `Allowed settings: home, street, park, office, school, hospital, restaurant, cafe, bedroom, car, beach, courtroom.`,
+            `Malformed model output (data only): ${JSON.stringify(response.slice(0, 30_000))}`
+          ].join('\n')
+        })
+        return { scenes: parseStickScenes(repaired, sections.length), source: 'REPAIRED' }
+      } catch (repairError) {
+        console.warn('[story-media] Storyboard JSON không hợp lệ sau repair; dùng fallback nội bộ.', {
+          parseError: formatError instanceof Error ? formatError.message : String(formatError),
+          repairError: repairError instanceof Error ? repairError.message : String(repairError),
+        })
+        return { scenes: fallbackStickScenes(sections), source: 'FALLBACK' }
+      }
+    }
+  }
 
   private async synthesizeChunk(voiceId: string, text: string, chunkIndex: number, total: number): Promise<Buffer> {
     let lastError: unknown
@@ -364,6 +945,51 @@ export class StoryMediaService {
     const bytes = await this.synthesizeChunk(voiceId, CTA_TEXT, 0, 1)
     await this.storage.writeBuffer(projectId, `audio/.parts/${ctaFile}`, bytes)
     return ctaPath
+  }
+
+  private async publishStoryAudioSegments(input: {
+    projectId: string
+    scriptId: string
+    studioOutput: boolean
+    voiceId: string
+    storyHash: string
+    pieces: string[]
+    partPaths: string[]
+    ctaPath: string
+  }): Promise<{ output: string; duration: number; segments: StoredAudioSegment[] }> {
+    const segmentSources = [...input.partPaths, input.ctaPath]
+    const segmentTexts = [...input.pieces, CTA_TEXT]
+    const segmentTotal = segmentSources.length
+    const segmentSet = `${input.storyHash.slice(0, 12)}-${createHash('sha256').update(input.voiceId).digest('hex').slice(0, 8)}`
+    const segments: StoredAudioSegment[] = []
+    for (let i = 0; i < segmentSources.length; i++) {
+      const fileName = i === segmentSources.length - 1
+        ? `${String(i + 1).padStart(3, '0')}-cta.mp3`
+        : `${String(i + 1).padStart(3, '0')}-story.mp3`
+      const segmentPath = input.studioOutput
+        ? await this.storage.getStudioOutputPath(input.projectId, input.scriptId, 'audio', 'segments', segmentSet, fileName)
+        : await this.storage.getOutputPath(input.projectId, 'audio', 'segments', segmentSet, fileName)
+      await copyFile(segmentSources[i], segmentPath)
+      const segmentDuration = await probeDuration(segmentPath)
+      if (segmentDuration <= 0) throw new Error(`Audio phân đoạn ${i + 1}/${segmentTotal} có duration không hợp lệ.`)
+      segments.push({
+        index: i + 1,
+        total: segmentTotal,
+        kind: i === segmentSources.length - 1 ? 'CTA' : 'STORY',
+        text: segmentTexts[i],
+        path: segmentPath,
+        duration: segmentDuration
+      })
+    }
+
+    const output = input.studioOutput
+      ? await this.storage.getStudioOutputPath(input.projectId, input.scriptId, 'audio', 'story.mp3')
+      : await this.storage.getOutputPath(input.projectId, 'audio', 'story.mp3')
+    const listFile = this.storage.getProjectPath(input.projectId, 'audio', '.parts', 'concat.txt')
+    await concatMp3Parts(segments.map(segment => segment.path), output, listFile)
+    const duration = await probeDuration(output)
+    if (duration <= 0) throw new Error('Story MP3 đã tạo nhưng duration không hợp lệ.')
+    return { output, duration, segments }
   }
 
   async resumePending(onProgress?: (progress: ReelVideoProgress) => void): Promise<StoryMediaDTO | null> {
@@ -397,7 +1023,9 @@ export class StoryMediaService {
       prisma.asset.findMany({ where: { projectId, type: PUBLISH_METADATA_ASSET_TYPE }, orderBy: { createdAt: 'desc' } })
     ])
     const audioMeta = parseMeta(audio?.metadata)
+    const audioSegments = parseAudioSegments(audioMeta.segments)
     const bgMeta = parseMeta(background?.metadata)
+    const flowScenes = bgMeta.source === 'GOOGLE_FLOW_SCENES' ? parseFlowScenes(bgMeta.scenes) : []
     const thumbnailMeta = parseMeta(thumbnail?.metadata)
     const publishByRenderId = new Map<string, { path: string; data: StoredPublishMetadata }>()
     for (const asset of publishAssets) {
@@ -457,11 +1085,29 @@ export class StoryMediaService {
       audioPath: audio?.path ?? null,
       audioUrl: mediaUrl(audio?.path, audio?.createdAt),
       audioDuration: typeof audioMeta.duration === 'number' ? audioMeta.duration : null,
+      audioSegmentSupport: true,
+      stick3dSupport: true,
+      flowSceneSupport: true,
+      audioSegments: audioSegments.map(segment => ({
+        ...segment,
+        url: mediaUrl(segment.path, audio?.createdAt)!
+      })),
+      flowSceneImages: flowScenes.map((scene): FlowSceneImageDTO => ({
+        index: scene.index,
+        kind: scene.kind,
+        sectionText: scene.text,
+        duration: scene.duration,
+        fileName: basename(scene.path),
+        filePath: scene.path,
+        fileUrl: mediaUrl(scene.path, background?.createdAt)!,
+        source: scene.source
+      })),
       backgroundPath: background?.path ?? null,
       backgroundUrl: mediaUrl(background?.path, background?.createdAt),
       backgroundName: background?.path ? basename(background.path) : null,
       backgroundDuration: typeof bgMeta.duration === 'number' ? bgMeta.duration : null,
       backgroundStyle: bgMeta.style === 'STICK_FIGURE' ? 'STICK_FIGURE' : 'CUSTOM',
+      backgroundVisualStyle: bgMeta.visualStyle === 'ENGINEER_3D' ? 'ENGINEER_3D' : bgMeta.style === 'STICK_FIGURE' ? 'DOODLE_2D' : null,
       backgroundKind: bgMeta.kind === 'IMAGE' ? 'IMAGE' : background ? 'VIDEO' : null,
       renderPath: firstStoryVideo?.path ?? null,
       renderUrl: firstStoryVideo?.url ?? null,
@@ -707,7 +1353,9 @@ export class StoryMediaService {
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } }),
       prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: [{ approved: 'desc' }, { version: 'desc' }] })
     ])
-    const isStickBackground = parseMeta(background?.metadata).style === 'STICK_FIGURE'
+    const backgroundMeta = parseMeta(background?.metadata)
+    const isStickBackground = backgroundMeta.style === 'STICK_FIGURE'
+    const stickVisualStyle: StickVisualStyle = backgroundMeta.visualStyle === 'ENGINEER_3D' ? 'ENGINEER_3D' : 'DOODLE_2D'
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_REEL_VIDEOS', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
     const savedSoundEffect = normalizeSoundEffectOptions(typeof jobMeta.soundEffect === 'object' ? jobMeta.soundEffect as Partial<SoundEffectOptions> : undefined)
@@ -887,20 +1535,16 @@ export class StoryMediaService {
             const generator = new AIService().provider()
             let reelScenes: any[] = []
             try {
-              const res = await generator.generateText({ json: true, prompt: stickPrompt(reelSections, true) })
-              reelScenes = parseStickScenes(res, reelSections.length)
+              reelScenes = (await this.generateStoryboard(generator, reelSections, true, false, stickVisualStyle)).scenes
             } catch {
-              reelScenes = reelSections.map((_, sIdx) => ({
-                setting: sIdx === 0 ? 'home' : sIdx % 2 === 0 ? 'street' : 'office',
-                actors: [{ name: 'An', action: sIdx === 0 ? 'wave' : 'talk', role: 'MAIN' }]
-              }))
+              reelScenes = fallbackStickScenes(reelSections)
             }
             reelScenes.push({ setting: reelScenes[reelScenes.length - 1].setting, actors: [{ ...reelScenes[reelScenes.length - 1].actors[0], action: 'wave' }] })
             reelSections.push(CTA_TEXT)
             const stickReelPath = await this.storage.getOutputPath(projectId, 'background', `stick-${slug}-${randomUUID()}.mp4`)
             await renderStickAnimation(reelScenes, reelSections, reelAudioDuration, 'REEL', stickReelPath, pct => {
               report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: dựng hoạt hình người que ${pct}%...`)
-            }, audioPath)
+            }, audioPath, stickVisualStyle)
             reelBgPath = stickReelPath
             reelBgKind = 'VIDEO'
             reelFrameRate = 60
@@ -1065,13 +1709,61 @@ export class StoryMediaService {
     const chunkSize = this.voices.getMaxTextLength()
     const pieces = chunks(script.content, chunkSize)
     if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
+    const currentScriptHash = scriptHash(script.content)
+    const existingAudio = await prisma.asset.findFirst({
+      where: { projectId, type: 'STORY_AUDIO' },
+      orderBy: { createdAt: 'desc' }
+    })
+    const existingAudioMeta = parseMeta(existingAudio?.metadata)
+    if (
+      existingAudio &&
+      parseAudioSegments(existingAudioMeta.segments).length === 0 &&
+      existingAudioMeta.scriptId === scriptId &&
+      existingAudioMeta.scriptHash === currentScriptHash &&
+      existingAudioMeta.voiceId === project.voiceId
+    ) {
+      const cachedPartPaths = pieces.map((_, index) =>
+        this.storage.getProjectPath(projectId, 'audio', '.parts', `story-${String(index + 1).padStart(3, '0')}.mp3`)
+      )
+      const cachedPartsReady = (await Promise.all(cachedPartPaths.map(async path => {
+        try { return (await stat(path)).size > 0 } catch { return false }
+      }))).every(Boolean)
+      if (cachedPartsReady) {
+        const published = await this.publishStoryAudioSegments({
+          projectId,
+          scriptId,
+          studioOutput,
+          voiceId: project.voiceId,
+          storyHash: currentScriptHash,
+          pieces,
+          partPaths: cachedPartPaths,
+          ctaPath: await this.makeCta(project.voiceId, projectId)
+        })
+        await prisma.asset.update({
+          where: { id: existingAudio.id },
+          data: {
+            path: published.output,
+            metadata: JSON.stringify({
+              ...existingAudioMeta,
+              duration: published.duration,
+              scriptHash: currentScriptHash,
+              chunks: pieces.length,
+              chunkSize,
+              segments: published.segments
+            })
+          }
+        })
+        await prisma.project.update({ where: { id: projectId }, data: { status: 'MEDIA_READY' } })
+        return this.get(projectId)
+      }
+    }
     let job = await prisma.job.findFirst({ where: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING' }, orderBy: { createdAt: 'desc' } })
     const jobMeta = parseMeta(job?.payload)
-    const resuming = Boolean(job && jobMeta.scriptId === scriptId && jobMeta.scriptHash === scriptHash(script.content) && jobMeta.voiceId === project.voiceId)
+    const resuming = Boolean(job && jobMeta.scriptId === scriptId && jobMeta.scriptHash === currentScriptHash && jobMeta.voiceId === project.voiceId)
     if (job && !resuming) {
       await prisma.job.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'Script hoặc voice đã thay đổi; không resume chunk audio cũ.' } })
     }
-    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, studioOutput, scriptHash: scriptHash(script.content), voiceId: project.voiceId }) } })
+    if (!resuming) job = await prisma.job.create({ data: { projectId, type: 'GENERATE_STORY_AUDIO', status: 'RUNNING', progress: 0, payload: JSON.stringify({ projectId, scriptId, studioOutput, scriptHash: currentScriptHash, voiceId: project.voiceId }) } })
 
     await prisma.project.update({ where: { id: projectId }, data: { status: 'GENERATING_MEDIA' } })
     const partPaths: string[] = []
@@ -1089,23 +1781,25 @@ export class StoryMediaService {
           await this.storage.writeBuffer(projectId, relativePath, bytes)
         }
         partPaths.push(path)
-        await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, studioOutput, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
+        await prisma.job.update({ where: { id: job!.id }, data: { progress: Math.round(((i + 1) / pieces.length) * 90), payload: JSON.stringify({ projectId, scriptId, studioOutput, scriptHash: currentScriptHash, voiceId: project.voiceId, chunk: i + 1, total: pieces.length }) } })
       }
 
-      // Append CTA at the end of the story audio
-      partPaths.push(await this.makeCta(project.voiceId, projectId, !resuming))
-
-      const output = studioOutput
-        ? await this.storage.getStudioOutputPath(projectId, scriptId, 'audio', 'story.mp3')
-        : await this.storage.getOutputPath(projectId, 'audio', 'story.mp3')
-      const listFile = this.storage.getProjectPath(projectId, 'audio', '.parts', 'concat.txt')
-      await concatMp3Parts(partPaths, output, listFile)
-      const duration = await probeDuration(output)
-      if (duration <= 0) throw new Error('Story MP3 đã tạo nhưng duration không hợp lệ.')
+      // Publish each TTS chunk as a first-class audio segment, then concatenate
+      // those exact files so the individual outputs always match story.mp3.
+      const published = await this.publishStoryAudioSegments({
+        projectId,
+        scriptId,
+        studioOutput,
+        voiceId: project.voiceId,
+        storyHash: currentScriptHash,
+        pieces,
+        partPaths,
+        ctaPath: await this.makeCta(project.voiceId, projectId, !resuming)
+      })
 
       await prisma.asset.deleteMany({ where: { projectId, type: 'STORY_AUDIO' } })
       await prisma.render.updateMany({ where: { projectId, type: 'STORY_VIDEO' }, data: { status: 'STALE' } })
-      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: output, metadata: JSON.stringify({ duration, scriptId, scriptHash: scriptHash(script.content), voiceId: project.voiceId, chunks: pieces.length, chunkSize }) } })
+      await prisma.asset.create({ data: { projectId, type: 'STORY_AUDIO', path: published.output, metadata: JSON.stringify({ duration: published.duration, scriptId, scriptHash: currentScriptHash, voiceId: project.voiceId, chunks: pieces.length, chunkSize, segments: published.segments }) } })
       await prisma.project.update({ where: { id: projectId }, data: { status: 'MEDIA_READY' } })
       await prisma.job.update({ where: { id: job!.id }, data: { status: 'DONE', progress: 100 } })
       return this.get(projectId)
@@ -1118,9 +1812,10 @@ export class StoryMediaService {
 
   private readonly stickRuns = new Set<string>()
 
-  async generateStickVideo(projectId: string, scriptId: string, format: VideoFormat, onProgress?: (progress: StoryVideoProgress) => void, source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API', studioOutput = false): Promise<StoryMediaDTO> {
+  async generateStickVideo(projectId: string, scriptId: string, format: VideoFormat, onProgress?: (progress: StoryVideoProgress) => void, source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API', studioOutput = false, visualStyle: StickVisualStyle = 'DOODLE_2D'): Promise<StoryMediaDTO> {
     if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video không hợp lệ.')
     if (!['API', 'CODEX_CLI', 'CLAUDE_CLI', 'ANTIGRAVITY_CLI'].includes(source)) throw new Error('Nguồn tạo storyboard không hợp lệ.')
+    if (!['DOODLE_2D', 'ENGINEER_3D'].includes(visualStyle)) throw new Error('Phong cách hoạt hình không hợp lệ.')
     if (this.stickRuns.has(projectId)) throw new Error('Dự án đang tạo hoạt hình người que.')
     this.stickRuns.add(projectId)
     const prisma = getPrisma()
@@ -1188,8 +1883,9 @@ export class StoryMediaService {
       const sourceLabel = source === 'CODEX_CLI' ? 'Codex CLI' : source === 'CLAUDE_CLI' ? 'Claude CLI' : source === 'ANTIGRAVITY_CLI' ? 'Antigravity CLI' : 'AI API'
       report(2, `${sourceLabel} đang phân tích ${sections.length} cảnh ${isShort ? 'Short 9:16 ' : ''}từ kịch bản...`)
       const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
-      const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort) })
-      const scenes = parseStickScenes(response, sections.length)
+      const storyboard = await this.generateStoryboard(generator, sections, isShort, false, visualStyle)
+      const scenes = storyboard.scenes
+      if (storyboard.source !== 'AI') report(4, storyboard.source === 'REPAIRED' ? 'Đã tự sửa JSON storyboard; đang tiếp tục dựng video...' : 'Model trả JSON lỗi; đang dùng storyboard fallback nội bộ...')
       // Narration ends with the app CTA. Give it a separate scene and timing weight.
       scenes.push({ setting: scenes[scenes.length - 1].setting, actors: [{ ...scenes[scenes.length - 1].actors[0], action: 'wave' }] })
       sections.push(CTA_TEXT)
@@ -1197,7 +1893,7 @@ export class StoryMediaService {
       output = studioOutput
         ? await this.storage.getStudioOutputPath(projectId, scriptId, 'videos', `stick-${runId}.mp4`)
         : await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.mp4`)
-      await renderStickAnimation(scenes, sections, duration, effectiveFormat, output, percent => report(5 + Math.round(percent * .65), `Đang dựng hoạt hình người que ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''}: ${percent}%`), audioPath)
+      await renderStickAnimation(scenes, sections, duration, effectiveFormat, output, percent => report(5 + Math.round(percent * .65), `Đang dựng hoạt hình ${visualStyle === 'ENGINEER_3D' ? '3D Engineer' : 'người que'} ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''}: ${percent}%`), audioPath, visualStyle)
       report(72, 'Đang tạo caption từ lời đọc và CTA...')
       const subtitlePath = studioOutput
         ? await this.storage.getStudioOutputPath(projectId, scriptId, 'subtitles', `stick-${runId}.ass`)
@@ -1210,17 +1906,19 @@ export class StoryMediaService {
         await rename(captionedOutput, output)
       } finally { await unlink(captionedOutput).catch(() => undefined) }
       const measured = await probeDuration(output)
-      if (Math.abs(measured - duration) > .2) throw new Error('Thời lượng hoạt hình không khớp lời đọc.')
+      if (Math.abs(measured - duration) > .2) {
+        throw new Error(`Thời lượng hoạt hình không khớp lời đọc: video ${measured.toFixed(3)}s, audio ${duration.toFixed(3)}s, lệch ${Math.abs(measured - duration).toFixed(3)}s.`)
+      }
       const latestScript = await prisma.script.findUnique({ where: { id: scriptId } })
       if (latestScript?.content !== script.content) throw new Error('Truyện hoặc lời đọc đã thay đổi. Hãy tạo lại hoạt hình.')
-      const storyboardData = JSON.stringify({ scriptId, audioAssetId: audioId, format: effectiveFormat, duration: measured, timing: 'word-weighted', subtitlePath, subtitleTiming: 'estimated-from-text', scenes: scenes.map((scene, index) => ({ ...scene, text: sections[index] })), isShort }, null, 2)
+      const storyboardData = JSON.stringify({ scriptId, audioAssetId: audioId, format: effectiveFormat, duration: measured, timing: 'word-weighted', storyboardSource: storyboard.source, visualStyle, subtitlePath, subtitleTiming: 'estimated-from-text', scenes: scenes.map((scene, index) => ({ ...scene, text: sections[index] })), isShort }, null, 2)
       const storyboardPath = studioOutput
         ? await this.storage.getStudioOutputPath(projectId, scriptId, 'storyboard', `stick-${runId}.json`)
         : await this.storage.getOutputPath(projectId, 'background', `stick-${runId}.json`)
       await writeFile(storyboardPath, storyboardData, 'utf8')
       await prisma.$transaction([
         prisma.asset.deleteMany({ where: { projectId, type: 'BACKGROUND_VIDEO' } }),
-        prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: output, metadata: JSON.stringify({ kind: 'VIDEO', style: 'STICK_FIGURE', format: effectiveFormat, duration: measured, audioAssetId: audioId, scriptId: script.id, scriptHash: scriptHash(script.content), storyboardPath, subtitlePath, captionsBurnedIn: true, isShort }) } }),
+        prisma.asset.create({ data: { projectId, type: 'BACKGROUND_VIDEO', path: output, metadata: JSON.stringify({ kind: 'VIDEO', style: 'STICK_FIGURE', visualStyle, format: effectiveFormat, duration: measured, audioAssetId: audioId, scriptId: script.id, scriptHash: scriptHash(script.content), storyboardPath, subtitlePath, captionsBurnedIn: true, isShort }) } }),
         prisma.render.updateMany({ where: { projectId, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } }, data: { status: 'STALE' } })
       ])
       published = true
@@ -1230,7 +1928,7 @@ export class StoryMediaService {
       const existingThumbnail = await prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' } })
       if (!existingThumbnail) {
         const coverScene = { ...scenes[0], overlay: undefined }
-        const cover = await sharp(Buffer.from(stickFrame(coverScene, 0, 'LANDSCAPE', new Map(), true)))
+        const cover = await sharp(Buffer.from(stickFrame(coverScene, 0, 'LANDSCAPE', new Map(), true, visualStyle)))
           .resize(1280, 720).png().toBuffer()
         const coverPath = studioOutput
           ? await this.storage.getStudioOutputPath(projectId, scriptId, 'images', 'thumbnail.png')
@@ -1255,7 +1953,9 @@ export class StoryMediaService {
     scriptId: string,
     format: VideoFormat = 'LANDSCAPE',
     source: 'API' | 'CODEX_CLI' | 'CLAUDE_CLI' | 'ANTIGRAVITY_CLI' = 'API',
+    visualStyle: StickVisualStyle = 'DOODLE_2D',
   ): Promise<{ sceneImages: StickmanSceneImageDTO[]; outputDir: string }> {
+    if (!['DOODLE_2D', 'ENGINEER_3D'].includes(visualStyle)) throw new Error('Phong cách ảnh phân đoạn không hợp lệ.')
     const prisma = getPrisma()
     const script = await prisma.script.findFirst({ where: { id: scriptId, projectId } })
     if (!script) throw new Error('Hãy chọn kịch bản để tạo bộ ảnh phân đoạn.')
@@ -1264,8 +1964,7 @@ export class StoryMediaService {
     const effectiveFormat = script.type === 'REEL' ? 'REEL' : format
     const sections = storySections(script.content, isShort)
     const generator = source === 'CODEX_CLI' ? new CodexCliService() : source === 'CLAUDE_CLI' ? new ClaudeCliService() : source === 'ANTIGRAVITY_CLI' ? new AntigravityCliService() : new AIService().provider()
-    const response = await generator.generateText({ json: true, prompt: stickPrompt(sections, isShort, true) })
-    const scenes = parseStickScenes(response, sections.length)
+    const scenes = (await this.generateStoryboard(generator, sections, isShort, true, visualStyle)).scenes
 
     const colors = new Map<string, string>()
     const palette = ['#334155', '#c45b50', '#397b86', '#8961a5', '#a27025', '#487c46']
@@ -1281,11 +1980,11 @@ export class StoryMediaService {
       const scene = scenes[i]
       const sectionText = sections[i]
       const fileName = `scene_${String(i + 1).padStart(2, '0')}_${scene.setting}.png`
-      const svgText = stickFrame(scene, 0, effectiveFormat, colors, true)
+      const svgText = stickFrame(scene, 0, effectiveFormat, colors, true, visualStyle)
       const pngBuffer = await sharp(Buffer.from(svgText)).png().toBuffer()
       const relativePath = `images/scenes/${timestamp}/${fileName}`
       const filePath = await this.storage.writeOutputBuffer(projectId, relativePath, pngBuffer)
-      const fileUrl = pathToFileURL(filePath).href
+      const fileUrl = mediaUrl(filePath, timestamp)!
 
       sceneImages.push({
         index: i + 1,
@@ -1297,14 +1996,123 @@ export class StoryMediaService {
       })
     }
 
-    const outputDir = this.storage.getProjectPath(projectId, `images/scenes/${timestamp}`)
+    const outputDir = sceneImages.length
+      ? dirname(sceneImages[0].filePath)
+      : await this.storage.getOutputPath(projectId, 'images', 'scenes', String(timestamp))
     return { sceneImages, outputDir }
+  }
+
+  async importFlowSceneImages(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    sources: FlowSceneSource[],
+  ): Promise<StoryMediaDTO> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video Google Flow không hợp lệ.')
+    const prisma = getPrisma()
+    const [script, audio] = await Promise.all([
+      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+    ])
+    if (!script) throw new Error('Hãy chọn Story script trước khi nhập ảnh Google Flow.')
+    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi nhập ảnh Google Flow.')
+    const audioMeta = parseMeta(audio.metadata)
+    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content)) {
+      throw new Error('Story hoặc audio đã thay đổi. Hãy Generate Story MP3 + phân đoạn lại trước.')
+    }
+    const audioSegments = parseAudioSegments(audioMeta.segments)
+    if (!audioSegments.length) throw new Error('Story MP3 hiện tại chưa có audio phân đoạn.')
+    if (sources.length !== audioSegments.length) {
+      throw new Error(`Cần đúng ${audioSegments.length} ảnh Google Flow, tương ứng ${audioSegments.length} audio phân đoạn.`)
+    }
+    if (sources.some(source => !source?.value?.trim() || (source.kind !== 'URL' && source.kind !== 'FILE'))) {
+      throw new Error('Danh sách nguồn ảnh Google Flow không hợp lệ.')
+    }
+
+    const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`
+    const imageRelativeDir = `images/flow-scenes/${runId}`
+    const tempDir = this.storage.getProjectPath(projectId, 'background', '.flow-scenes', runId)
+    const finalVideo = await this.storage.getOutputPath(projectId, 'background', `google-flow-${format.toLowerCase()}.mp4`)
+    const dims = format === 'REEL' ? [1080, 1920] : format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
+    const storedScenes: StoredFlowScene[] = []
+    await mkdir(tempDir, { recursive: true })
+
+    try {
+      for (const [index, segment] of audioSegments.entries()) {
+        let png: Buffer
+        try {
+          const sourceBytes = await this.readFlowImageSource(sources[index])
+          png = await sharp(sourceBytes)
+            .rotate()
+            .resize(dims[0], dims[1], { fit: 'cover', position: 'attention' })
+            .png({ compressionLevel: 8 })
+            .toBuffer()
+        } catch (error) {
+          throw new Error(`Ảnh cho phân đoạn ${index + 1} không hợp lệ: ${error instanceof Error ? error.message : String(error)} Nếu link Flow cần đăng nhập, hãy tải ảnh về máy rồi dùng "Chọn ảnh đã tải".`)
+        }
+
+        const fileName = `${String(index + 1).padStart(3, '0')}-${segment.kind === 'CTA' ? 'cta' : 'story'}.png`
+        const imagePath = await this.storage.writeOutputBuffer(projectId, `${imageRelativeDir}/${fileName}`, png)
+        const clipPath = join(tempDir, `${String(index + 1).padStart(3, '0')}.mp4`)
+        await renderStillSceneClip(imagePath, clipPath, segment.duration, format, index % 2 ? 'out' : 'in', 30)
+        storedScenes.push({
+          index: segment.index,
+          kind: segment.kind,
+          text: segment.text,
+          duration: segment.duration,
+          path: imagePath,
+          source: sources[index].kind
+        })
+      }
+
+      const listPath = join(tempDir, 'concat.txt')
+      const clipList = storedScenes.map((_, index) => {
+        const clipPath = join(tempDir, `${String(index + 1).padStart(3, '0')}.mp4`)
+        return `file '${clipPath.replace(/'/g, "'\\''")}'`
+      }).join('\n')
+      await writeFile(listPath, clipList, 'utf8')
+      await concatAnimationScenes(listPath, finalVideo)
+      const duration = await probeDuration(finalVideo)
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error('Video ảnh Google Flow đã ghép nhưng duration không hợp lệ.')
+
+      const copied = await this.storage.copyBackgroundMedia(projectId, finalVideo)
+      await prisma.$transaction([
+        prisma.asset.deleteMany({ where: { projectId, type: 'BACKGROUND_VIDEO' } }),
+        prisma.render.updateMany({ where: { projectId, type: { in: ['STORY_VIDEO', 'REEL_VIDEO'] } }, data: { status: 'STALE' } }),
+        prisma.asset.create({ data: {
+          projectId,
+          type: 'BACKGROUND_VIDEO',
+          path: copied,
+          metadata: JSON.stringify({
+            duration,
+            sourceName: basename(finalVideo),
+            source: 'GOOGLE_FLOW_SCENES',
+            kind: 'VIDEO',
+            format,
+            scriptId,
+            audioAssetId: audio.id,
+            scenes: storedScenes
+          })
+        } })
+      ])
+      await this.storage.writeOutputText(projectId, `${imageRelativeDir}/manifest.json`, JSON.stringify({
+        source: 'GOOGLE_FLOW_SCENES',
+        format,
+        scriptId,
+        audioAssetId: audio.id,
+        scenes: storedScenes
+      }, null, 2))
+      return this.get(projectId)
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   async generateEmotionDemo(
     projectId?: string,
     emotion: string = 'worried',
     format: VideoFormat = 'REEL',
+    visualStyle: StickVisualStyle = 'DOODLE_2D',
   ): Promise<{ videoPath: string; videoUrl: string; duration: number }> {
     const timestamp = Date.now()
     const fileName = `demo-emotion-${emotion.toLowerCase()}-${timestamp}.mp4`
@@ -1316,7 +2124,7 @@ export class StoryMediaService {
       await mkdir(fallbackDir, { recursive: true })
       outputPath = join(fallbackDir, fileName)
     }
-    await renderEmotionDemoVideo(emotion, format, outputPath)
+    await renderEmotionDemoVideo(emotion, format, outputPath, undefined, visualStyle)
     return {
       videoPath: outputPath,
       videoUrl: mediaUrl(outputPath) || pathToFileURL(outputPath).href,
@@ -1389,16 +2197,19 @@ export class StoryMediaService {
     ])
     if (!audio) throw new Error('Chưa có story.mp3. Generate Story MP3 trước.')
     if (!background) throw new Error('Chưa chọn video hoặc ảnh background.')
-    const backgroundKind: BackgroundKind = parseMeta(background.metadata).kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
+    const backgroundMeta = parseMeta(background.metadata)
+    const backgroundKind: BackgroundKind = backgroundMeta.kind === 'IMAGE' ? 'IMAGE' : 'VIDEO'
     const sourceAudioMeta = parseMeta(audio.metadata)
     const sourceScriptId = typeof sourceAudioMeta.scriptId === 'string' ? sourceAudioMeta.scriptId : undefined
     const sourceScript = sourceScriptId
       ? await prisma.script.findFirst({ where: { id: sourceScriptId, projectId, type: 'LONG_STORY' } })
       : await prisma.script.findFirst({ where: { projectId, type: 'LONG_STORY' }, orderBy: { version: 'desc' } })
     if (includeSubtitles && !sourceScript) throw new Error('Không tìm thấy Story script để tạo phụ đề.')
-    const stickBackground = parseMeta(background.metadata).style === 'STICK_FIGURE'
-    if (stickBackground && (parseMeta(background.metadata).audioAssetId !== audio.id || !sourceScript || parseMeta(background.metadata).scriptHash !== scriptHash(sourceScript.content))) throw new Error('Truyện hoặc lời đọc đã đổi. Hãy tạo lại hoạt hình người que.')
-    if (stickBackground && parseMeta(background.metadata).format !== format) throw new Error('Hãy tạo lại hoạt hình theo định dạng output đã chọn.')
+    const stickBackground = backgroundMeta.style === 'STICK_FIGURE'
+    const flowSceneBackground = backgroundMeta.source === 'GOOGLE_FLOW_SCENES'
+    if (stickBackground && (backgroundMeta.audioAssetId !== audio.id || !sourceScript || backgroundMeta.scriptHash !== scriptHash(sourceScript.content))) throw new Error('Truyện hoặc lời đọc đã đổi. Hãy tạo lại hoạt hình người que.')
+    if (flowSceneBackground && (backgroundMeta.audioAssetId !== audio.id || backgroundMeta.scriptId !== sourceScriptId)) throw new Error('Truyện hoặc lời đọc đã đổi. Hãy ghép lại ảnh Google Flow theo phân đoạn.')
+    if ((stickBackground || flowSceneBackground) && backgroundMeta.format !== format) throw new Error(`Hãy tạo lại ${flowSceneBackground ? 'video ảnh Google Flow' : 'hoạt hình'} theo định dạng output đã chọn.`)
     const audioPath = await this.storage.copyToOutput(projectId, 'audio/story.mp3', audio.path)
     if (audioPath !== audio.path) await prisma.asset.update({ where: { id: audio.id }, data: { path: audioPath } })
     if (thumbnail) {
@@ -1447,7 +2258,7 @@ export class StoryMediaService {
         await renderLoopedVideo({
           backgroundPath: background.path,
           frameRate: stickBackground ? 60 : 30,
-          backgroundStartSeconds: stickBackground ? segment.startMs / 1000 : undefined,
+          backgroundStartSeconds: stickBackground || flowSceneBackground ? segment.startMs / 1000 : undefined,
           backgroundKind,
           audioPath,
           outputPath: output,

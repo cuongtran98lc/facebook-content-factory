@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ContentFactoryAPI, CrawlProgress, ReelVideoProgress, StoryVideoProgress } from '../shared/types';
+import type { ContentFactoryAPI, CrawlProgress, GoogleFlowCaptureStatus, ReelVideoProgress, StoryVideoProgress } from '../shared/types';
 
 const api: ContentFactoryAPI = {
   app: {
@@ -59,6 +59,7 @@ const api: ContentFactoryAPI = {
   scripts: {
     list: projectId => ipcRenderer.invoke('scripts:list', projectId),
     generateStory: input => ipcRenderer.invoke('scripts:generate-story', input),
+    generateStoryFromOutline: input => ipcRenderer.invoke('scripts:generate-story-from-outline', input),
     importStory: input => ipcRenderer.invoke('scripts:import-story', input),
     review: scriptId => ipcRenderer.invoke('scripts:review', scriptId),
     rewrite: input => ipcRenderer.invoke('scripts:rewrite', input),
@@ -104,6 +105,16 @@ const api: ContentFactoryAPI = {
     resumePending: () => ipcRenderer.invoke('story-media:resume-pending'),
     generateStickVideo: input => ipcRenderer.invoke('story-media:generate-stick-video', input),
     generateStickmanSceneImages: input => ipcRenderer.invoke('story-media:generate-stickman-scene-images', input),
+    chooseFlowSceneImageFiles: () => ipcRenderer.invoke('story-media:choose-flow-scene-image-files'),
+    importFlowSceneImages: input => ipcRenderer.invoke('story-media:import-flow-scene-images', input),
+    startGoogleFlowCapture: input => ipcRenderer.invoke('story-media:start-google-flow-capture', input),
+    startGoogleFlowAutomation: input => ipcRenderer.invoke('story-media:start-google-flow-automation', input),
+    cancelGoogleFlowCapture: () => ipcRenderer.invoke('story-media:cancel-google-flow-capture'),
+    onGoogleFlowCapture: callback => {
+      const listener = (_event: Electron.IpcRendererEvent, status: GoogleFlowCaptureStatus) => callback(status);
+      ipcRenderer.on('story-media:google-flow-capture', listener);
+      return () => ipcRenderer.removeListener('story-media:google-flow-capture', listener);
+    },
     generateEmotionDemo: input => ipcRenderer.invoke('story-media:generate-emotion-demo', input),
     listEmotionDemos: input => ipcRenderer.invoke('story-media:list-emotion-demos', input),
     useDemoAsBackground: input => ipcRenderer.invoke('story-media:use-demo-as-background', input),
@@ -170,4 +181,3 @@ const api: ContentFactoryAPI = {
 };
 
 contextBridge.exposeInMainWorld('contentFactory', api);
-
