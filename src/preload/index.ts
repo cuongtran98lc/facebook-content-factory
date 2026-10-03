@@ -109,6 +109,7 @@ const api: ContentFactoryAPI = {
     importFlowSceneImages: input => ipcRenderer.invoke('story-media:import-flow-scene-images', input),
     startGoogleFlowCapture: input => ipcRenderer.invoke('story-media:start-google-flow-capture', input),
     startGoogleFlowAutomation: input => ipcRenderer.invoke('story-media:start-google-flow-automation', input),
+    startFluxSceneAutomation: input => ipcRenderer.invoke('story-media:start-flux-automation', input),
     cancelGoogleFlowCapture: () => ipcRenderer.invoke('story-media:cancel-google-flow-capture'),
     onGoogleFlowCapture: callback => {
       const listener = (_event: Electron.IpcRendererEvent, status: GoogleFlowCaptureStatus) => callback(status);
@@ -123,6 +124,8 @@ const api: ContentFactoryAPI = {
     render: input => ipcRenderer.invoke('story-media:render', input),
     generateMetadata: input => ipcRenderer.invoke('story-media:generate-metadata', input),
     openOutput: projectId => ipcRenderer.invoke('story-media:open-output', projectId),
+    generateSingleImage: input => ipcRenderer.invoke('story-media:generate-single-image', input),
+    saveImageToProjectScene: input => ipcRenderer.invoke('story-media:save-image-to-project-scene', input),
   },
   settings: {
     getAI: () => ipcRenderer.invoke('settings:ai:get'),
@@ -130,6 +133,8 @@ const api: ContentFactoryAPI = {
     testAI: provider => ipcRenderer.invoke('settings:ai:test', provider),
     getVoice: () => ipcRenderer.invoke('settings:voice:get'),
     saveVoice: input => ipcRenderer.invoke('settings:voice:save', input),
+    getHuggingFaceToken: () => ipcRenderer.invoke('settings:hf:get'),
+    saveHuggingFaceToken: token => ipcRenderer.invoke('settings:hf:save', token),
   },
   pipeline: {
     generateDemo: projectId => ipcRenderer.invoke('pipeline:demo', projectId),

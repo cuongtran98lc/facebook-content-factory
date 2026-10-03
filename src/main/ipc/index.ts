@@ -229,6 +229,11 @@ export function registerIpcHandlers(): void {
       if (!event.sender.isDestroyed()) event.sender.send('story-media:google-flow-capture', status);
     }),
   );
+  ipcMain.handle('story-media:start-flux-automation', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['startFluxSceneAutomation']>[0]) =>
+    storyMedia.startFluxSceneAutomation(input.projectId, input.scriptId, input.format, status => {
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:google-flow-capture', status);
+    }, input.hfToken, input.stylePreset, input.customPrompt, input.cleanPrevious),
+  );
   ipcMain.handle('story-media:cancel-google-flow-capture', () => storyMedia.cancelGoogleFlowCapture());
   ipcMain.handle('story-media:generate-emotion-demo', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateEmotionDemo']>[0]) =>
     storyMedia.generateEmotionDemo(input.projectId, input.emotion, input.format, input.visualStyle),
@@ -240,7 +245,7 @@ export function registerIpcHandlers(): void {
     storyMedia.setBackground(input.projectId, input.videoPath, 'VIDEO'),
   );
   ipcMain.handle('story-media:generate-audio', (_event, input: GenerateStoryAudioInput) =>
-    storyMedia.generateStoryAudio(input.projectId, input.scriptId, input.studioOutput === true),
+    storyMedia.generateStoryAudio(input.projectId, input.scriptId, input.studioOutput === true, input.customCta),
   );
   ipcMain.handle('story-media:choose-background', async (_event, projectId: string, kind: BackgroundKind = 'VIDEO') => {
     const image = kind === 'IMAGE';
@@ -268,11 +273,19 @@ export function registerIpcHandlers(): void {
     const output = await storage.ensureOutputProject(projectId);
     await openFolder(output, 'output của truyện');
   });
+  ipcMain.handle('story-media:generate-single-image', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateSingleImage']>[0]) =>
+    storyMedia.generateSingleImage(input),
+  );
+  ipcMain.handle('story-media:save-image-to-project-scene', (_event, input: { projectId: string; dataUrl: string; targetFolder?: 'better-mind-scenes' | 'flux-scenes' }) =>
+    storyMedia.saveImageToProjectScene(input.projectId, input.dataUrl, input.targetFolder),
+  );
 
   ipcMain.handle('settings:ai:get', () => settings.getAI());
   ipcMain.handle('settings:voice:get', () => settings.getVoice());
   ipcMain.handle('settings:voice:save', (_event, input: SaveVoiceSettingsInput) => settings.saveVoice(input));
   ipcMain.handle('settings:ai:save', (_event, input: SaveAISettingsInput) => settings.saveAI(input));
+  ipcMain.handle('settings:hf:get', () => settings.getHuggingFaceToken());
+  ipcMain.handle('settings:hf:save', (_event, token: string) => settings.saveHuggingFaceToken(token));
   ipcMain.handle('settings:ai:test', async (_event, provider?: AIProviderName) => {
     try {
       return await ai.test(provider);

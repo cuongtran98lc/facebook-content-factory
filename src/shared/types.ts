@@ -16,6 +16,27 @@ export type ProjectStatus =
 export type AIProviderName = 'openai' | 'gemini' | 'groq' | 'claude-cli' | 'codex-cli' | 'antigravity-cli';
 export type ScriptType = 'LONG_STORY' | 'REEL';
 export type VideoFormat = 'LANDSCAPE' | 'REEL' | 'SQUARE';
+export type FlowSceneStylePreset = 'FLUX_CINEMATIC' | 'BETTER_MIND';
+export type SingleImageAspectRatio = '9:16' | '16:9' | '1:1';
+
+export interface GenerateSingleImageInput {
+  prompt: string;
+  aspectRatio?: SingleImageAspectRatio;
+  stylePreset?: FlowSceneStylePreset | 'CUSTOM';
+  hfToken?: string;
+  projectId?: string;
+}
+
+export interface GenerateSingleImageResult {
+  dataUrl: string;
+  filePath?: string;
+  fileName?: string;
+  width: number;
+  height: number;
+  engineUsed: 'HUGGING_FACE' | 'POLLINATIONS_FREE';
+  modelUsed: string;
+}
+
 export type StickVisualStyle = 'DOODLE_2D' | 'ENGINEER_3D';
 export type FitMode = 'CROP' | 'FIT';
 export type BackgroundKind = 'VIDEO' | 'IMAGE';
@@ -309,6 +330,7 @@ export interface GoogleFlowCaptureStatus {
   captured: number;
   total: number;
   message: string;
+  recentImages?: FlowSceneImageDTO[];
 }
 
 export interface StoryMediaDTO {
@@ -350,6 +372,7 @@ export interface StoryAudioSegmentDTO {
   path: string;
   url: string;
   duration: number;
+  textPath?: string;
 }
 export interface StoryVideoOutputDTO {
   format: VideoFormat;
@@ -406,6 +429,7 @@ export interface GenerateStoryAudioInput {
   studioOutput?: boolean;
   projectId: string;
   scriptId: string;
+  customCta?: string;
 }
 export interface ImportFlowSceneImagesInput {
   projectId: string;
@@ -620,6 +644,7 @@ export interface ContentFactoryAPI {
     importFlowSceneImages(input: ImportFlowSceneImagesInput): Promise<StoryMediaDTO>;
     startGoogleFlowCapture(input: { projectId: string; scriptId: string; format: VideoFormat }): Promise<GoogleFlowCaptureStatus>;
     startGoogleFlowAutomation(input: { projectId: string; scriptId: string; format: VideoFormat }): Promise<GoogleFlowCaptureStatus>;
+    startFluxSceneAutomation(input: { projectId: string; scriptId: string; format: VideoFormat; hfToken?: string; stylePreset?: FlowSceneStylePreset; customPrompt?: string; cleanPrevious?: boolean }): Promise<GoogleFlowCaptureStatus>;
     cancelGoogleFlowCapture(): Promise<void>;
     onGoogleFlowCapture(callback: (status: GoogleFlowCaptureStatus) => void): () => void;
     generateEmotionDemo(input: { projectId?: string; emotion: string; format?: VideoFormat; visualStyle?: StickVisualStyle }): Promise<{ videoPath: string; videoUrl: string; duration: number }>;
@@ -630,6 +655,8 @@ export interface ContentFactoryAPI {
     render(input: RenderStoryVideoInput): Promise<StoryMediaDTO>;
     generateMetadata(input: GeneratePublishMetadataInput): Promise<StoryMediaDTO>;
     openOutput(projectId: string): Promise<void>;
+    generateSingleImage(input: GenerateSingleImageInput): Promise<GenerateSingleImageResult>;
+    saveImageToProjectScene?(input: { projectId: string; dataUrl: string; targetFolder?: 'better-mind-scenes' | 'flux-scenes' }): Promise<{ filePath: string; fileName: string; fileUrl: string }>;
   };
   settings: {
     getAI(): Promise<AISettingsDTO>;
@@ -637,6 +664,8 @@ export interface ContentFactoryAPI {
     testAI(provider?: AIProviderName): Promise<AIConnectionResult>;
     getVoice(): Promise<VoiceSettingsDTO>;
     saveVoice(input: SaveVoiceSettingsInput): Promise<VoiceSettingsDTO>;
+    getHuggingFaceToken(): Promise<string | null>;
+    saveHuggingFaceToken(token: string): Promise<void>;
   };
   pipeline: { generateDemo(projectId: string): Promise<{ jobId: string }> };
   scheduler: {

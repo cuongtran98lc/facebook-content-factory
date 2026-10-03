@@ -29,6 +29,7 @@ interface SettingsSchema {
   youtubeChannelTitle?: string;
   facebookPageId?: string;
   facebookAccessTokenEncrypted?: string;
+  huggingFaceTokenEncrypted?: string;
 }
 
 const DEFAULT_SETTINGS: SettingsSchema = {
@@ -298,6 +299,21 @@ export class SettingsService {
     const s = readSettings();
     delete s.facebookPageId;
     delete s.facebookAccessTokenEncrypted;
+    writeSettings(s);
+  }
+
+  getHuggingFaceToken(): string | null {
+    const s = readSettings();
+    return decrypt(s.huggingFaceTokenEncrypted) || getEnvKey('HUGGINGFACE_TOKEN') || getEnvKey('HF_TOKEN');
+  }
+
+  saveHuggingFaceToken(token: string): void {
+    const s = readSettings();
+    if (token.trim()) {
+      s.huggingFaceTokenEncrypted = encrypt(token.trim());
+    } else {
+      delete s.huggingFaceTokenEncrypted;
+    }
     writeSettings(s);
   }
 }

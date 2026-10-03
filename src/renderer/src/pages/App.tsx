@@ -10,6 +10,7 @@ import type {
  CrawlProgress,
  FitMode,
  FlowSceneSource,
+ FlowSceneStylePreset,
  GoogleFlowCaptureStatus,
  IdeaDTO,
  ProjectDTO,
@@ -718,7 +719,7 @@ export default function App() {
   }
  }
 
- async function generateStoryMp3() {
+ async function generateStoryMp3(customCta?: string) {
   if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') return;
   if (!selected.voiceId) return setMessage('Hãy Test voice và chọn Use this voice trước khi tạo Story MP3.');
   if (!health?.ffmpeg) return setMessage('Chưa tìm thấy FFmpeg. Cài FFmpeg rồi khởi động lại app để tạo Story MP3.');
@@ -735,6 +736,7 @@ export default function App() {
    const media = await window.contentFactory.storyMedia.generateAudio({
     projectId: selected.id,
     scriptId: saved.id,
+    customCta: customCta?.trim() || undefined,
    });
    setStoryMedia(media);
    const audioSegmentCount = media.audioSegments?.length ?? 0;
@@ -1008,6 +1010,73 @@ export default function App() {
    setMessage(status.message);
   } catch (error) {
    setMessage(error instanceof Error ? error.message : String(error));
+  }
+ }
+
+ async function startFluxSceneAutomation(
+  stylePreset: FlowSceneStylePreset = 'FLUX_CINEMATIC',
+  customToken?: string,
+  customPrompt?: string,
+  cleanPrevious?: boolean,
+ ) {
+  const isBetterMind = stylePreset === 'BETTER_MIND';
+  const styleLabel = isBetterMind ? 'Người que 2D (A Better Mind)' : 'FLUX';
+
+  if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
+   alert(`Hãy chọn Story script (loại LONG_STORY) trước khi tự động tạo ảnh ${styleLabel}.`);
+   return setMessage(`Hãy chọn Story script trước khi tự động tạo ảnh ${styleLabel}.`);
+  }
+  if (!health?.ffmpeg) {
+   alert('Cần FFmpeg để ghép ảnh thành video. Hãy kiểm tra cài đặt FFmpeg.');
+   return setMessage('Cần FFmpeg để ghép ảnh thành video.');
+  }
+  if (!storyMedia?.audioSegments?.length) {
+   alert('Hãy bấm "Generate Story MP3" ở Bước 1 để tạo audio phân đoạn trước khi tạo ảnh.');
+   return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi tạo ảnh.');
+  }
+  if (typeof window.contentFactory?.storyMedia?.startFluxSceneAutomation !== 'function') {
+   alert(`⚠️ Ứng dụng Desktop đang chạy bản cũ.\n\n👉 Vui lòng tắt ứng dụng và chạy lại yarn start để nạp tính năng Tạo ảnh ${styleLabel}!`);
+   return;
+  }
+
+  let hfToken = customToken?.trim() || '';
+  if (!hfToken && typeof window.contentFactory?.settings?.getHuggingFaceToken === 'function') {
+   hfToken = (await window.contentFactory.settings.getHuggingFaceToken()) || '';
+  }
+
+  try {
+   setMessage(`⚡ Đang khởi động tiến trình tạo hoạt cảnh ${styleLabel}...`);
+   const status = await window.contentFactory.storyMedia.startFluxSceneAutomation({
+    projectId: selected.id,
+    scriptId: activeScript.id,
+    format: videoFormat,
+    hfToken,
+    stylePreset,
+    customPrompt,
+    cleanPrevious,
+   });
+   setGoogleFlowCapture(status);
+   setMessage(status.message);
+  } catch (error) {
+   const errMsg = error instanceof Error ? error.message : String(error);
+   setMessage(errMsg);
+   alert(`Lỗi khi tạo ảnh ${styleLabel}: ${errMsg}`);
+  }
+ }
+
+ async function promptChangeHfToken() {
+  const currentToken = typeof window.contentFactory?.settings?.getHuggingFaceToken === 'function'
+   ? await window.contentFactory.settings.getHuggingFaceToken()
+   : '';
+  const prompted = window.prompt(
+   '🔑 Cập nhật Hugging Face Access Token mới (bắt đầu bằng hf_...):\n(Tạo token miễn phí tại: https://huggingface.co/settings/tokens)',
+   currentToken || ''
+  );
+  if (prompted !== null) {
+   if (typeof window.contentFactory?.settings?.saveHuggingFaceToken === 'function') {
+    await window.contentFactory.settings.saveHuggingFaceToken(prompted.trim());
+   }
+   alert(prompted.trim() ? '✓ Đã lưu Hugging Face Token thành công!' : 'Đã xoá Hugging Face Token.');
   }
  }
 
@@ -2213,7 +2282,8 @@ export default function App() {
             includeSubtitles={includeSubtitles}
             reelProgress={reelProgress}
             sceneImages={sceneImages}
-            onGenerateAudio={() => void generateStoryMp3()}
+            contentLanguage={selected?.contentLanguage ?? 'vi-VN'}
+            onGenerateAudio={customCta => void generateStoryMp3(customCta)}
             onGenerateReelVideos={() => void generateReelVideos()}
             onRegenerateReelThumbnails={() => void regenerateReelThumbnails()}
             onGenerateMetadata={() => void generateVideoMetadata()}
@@ -2222,7 +2292,9 @@ export default function App() {
             onGenerateStickmanSceneImages={source => void generateStickmanSceneImages(source)}
             onImportFlowSceneImages={sources => void importFlowSceneImages(sources)}
             googleFlowCapture={googleFlowCapture}
-            onStartGoogleFlowAutomation={() => void startGoogleFlowAutomation()}
+            onStartFluxSceneAutomation={token => void startFluxSceneAutomation('FLUX_CINEMATIC', token)}
+            onStartBetterMindAutomation={(token, prompt, clean) => void startFluxSceneAutomation('BETTER_MIND', token, prompt, clean)}
+            onChangeHfToken={() => void promptChangeHfToken()}
             onStartGoogleFlowCapture={() => void startGoogleFlowCapture()}
             onCancelGoogleFlowCapture={() => void cancelGoogleFlowCapture()}
             onChooseBackground={kind => void chooseBackground(kind)}

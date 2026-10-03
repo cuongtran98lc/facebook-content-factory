@@ -26,6 +26,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@huggingface/inference": "^4.13.30",
     "@prisma/client": "^6.19.0",
     "cheerio": "^1.1.2",
     "nanoid": "^5.1.5",

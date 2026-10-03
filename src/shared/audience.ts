@@ -23,3 +23,27 @@ export function audiencePrompt(audience: Audience = {}): string {
   if (!market || !language) throw new Error('Thị trường hoặc ngôn ngữ không được hỗ trợ.')
   return `Target YouTube audience: ${market.label} (${market.value}). Output language: ${language.label} (${language.value}). Write all audience-facing titles, hooks, narration and descriptions naturally in this language. Adapt idioms, examples and units to the audience while preserving established story facts and character identities. For new characters choose culturally appropriate proper names. ${MARKET_CONTEXT[market.value]} These are optional setting examples, not required plots. Ground each new concept in a specific place and believable daily-life details, without national stereotypes, forced slang or mixing unrelated countries' customs. Keep the emotional conflict accessible to international viewers. Keep JSON keys, taxonomy category values and role codes unchanged. This language requirement overrides Vietnamese examples in the creative guide.`
 }
+
+export function getCtaText(contentLanguage?: string | null, customCta?: string | null): string {
+  if (customCta && customCta.trim().length > 0) return customCta.trim()
+  const lang = (contentLanguage || '').toLowerCase()
+  if (lang.startsWith('vi')) {
+    return 'Nếu bạn thấy câu chuyện này ý nghĩa, hãy nhấn like và đăng ký kênh để đón xem những video tiếp theo nhé.'
+  }
+  if (lang.startsWith('de')) {
+    return 'Wenn dir diese Geschichte gefallen hat, lass gerne ein Like da und abonniere den Kanal.'
+  }
+  if (lang.startsWith('fr')) {
+    return "Si cette histoire vous a plu, n'hésitez pas à liker et à vous abonner pour ne rien manquer."
+  }
+  if (lang.startsWith('es')) {
+    return 'Si te ha gustado esta historia, dale a like y suscríbete para ver más.'
+  }
+  if (lang.startsWith('ja')) {
+    return '動画が気に入っていただけたら、高評価とチャンネル登録をよろしくお願いします。'
+  }
+  if (lang.startsWith('ko')) {
+    return '영상이 마음에 드셨다면 좋아요와 구독 부탁드립니다.'
+  }
+  return 'If you enjoyed this story, hit like and subscribe for more.'
+}

@@ -1,5 +1,5 @@
 import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../shared/thumbnail-concepts'
-import { audiencePrompt } from '../../shared/audience'
+import { audiencePrompt, getCtaText } from '../../shared/audience'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, stat, unlink, writeFile, rename, readdir, rm } from 'node:fs/promises'
 import sharp from 'sharp'
 import { pathToFileURL } from 'node:url'
-import type { BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneImageDTO, FlowSceneSource, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
+import type { BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneImageDTO, FlowSceneSource, FlowSceneStylePreset, GenerateSingleImageInput, GenerateSingleImageResult, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getOutputRoot } from './paths'
 import { getPrisma } from './database'
 import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatAnimationScenes, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, renderStillSceneClip, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
@@ -17,6 +17,7 @@ import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
 import { PublishingMetadataService, type PublishMetadata, type PublishMode, type PublishTarget } from './video-metadata'
 import { createAssSubtitles, SUBTITLE_RENDER_VERSION } from './subtitles'
+import { SettingsService } from './settings'
 
 import { AIService } from './ai'
 import type { AIProvider } from './ai/types'
@@ -36,6 +37,62 @@ const PUBLISH_METADATA_SCHEMA = 1
 const REEL_THUMBNAIL_VERSION = 7
 const FLOW_IMAGE_MAX_BYTES = 30 * 1024 * 1024
 const GOOGLE_FLOW_URL = process.env.GOOGLE_FLOW_URL?.trim() || 'https://labs.google/fx/tools/flow'
+// Google's newer web apps (chat-style creation UIs, Material/Lit components) commonly
+// render their actual inputs inside open shadow roots and same-origin iframes, which a
+// plain document.querySelectorAll cannot see even though the element is visibly on screen.
+// Injected into each Google Flow automation script so field/button/image lookups pierce
+// through shadow DOM and same-origin iframes instead of silently finding nothing.
+const DEEP_QUERY_ALL_JS = `
+  const deepQueryAll = (selector, root) => {
+    root = root || document
+    const results = [...root.querySelectorAll(selector)]
+    for (const host of root.querySelectorAll('*')) {
+      if (host.shadowRoot) results.push(...deepQueryAll(selector, host.shadowRoot))
+    }
+    // Recurse at every document level (top document AND every nested same-origin
+    // iframe document), not just the top level, since Flow's editor can sit inside
+    // an iframe nested within another iframe. Iframes are looked up on the current
+    // root (not the outer document) so this scopes correctly at each nesting level.
+    if (root.nodeType === 9) {
+      for (const frame of root.querySelectorAll('iframe')) {
+        try {
+          const frameDoc = frame.contentDocument
+          if (frameDoc) results.push(...deepQueryAll(selector, frameDoc))
+        } catch (error) { /* cross-origin iframe, skip */ }
+      }
+    }
+    return results
+  };
+`
+
+interface GoogleFlowPromptFieldDetail {
+  tag: string
+  w: number
+  h: number
+  display: string
+  visibility: string
+  label: string
+}
+
+interface GoogleFlowPromptDiagnostic {
+  ready: boolean
+  fieldsFound: number
+  rawFieldsFound: number
+  rawFieldDetails: GoogleFlowPromptFieldDetail[]
+  iframeCount: number
+  blockedIframeCount: number
+  shadowHostCount: number
+  title: string
+  url: string
+}
+
+function formatGoogleFlowFieldDetails(details: GoogleFlowPromptFieldDetail[]): string {
+  if (!details.length) return ''
+  const summary = details
+    .map(field => `${field.tag}${field.label ? `[${field.label}]` : ''} ${field.w}x${field.h}${field.display === 'none' ? ' display:none' : ''}${field.visibility === 'hidden' ? ' visibility:hidden' : ''}`)
+    .join('; ')
+  return ` Chi tiết: ${summary}.`
+}
 
 interface StoryVideoSegment {
   part: number
@@ -69,6 +126,12 @@ interface StoredPublishMetadata extends PublishMetadata {
   totalParts?: number
   videoFile: string
   generatedAt: string
+}
+
+interface StickyManSceneDetail {
+  action: string
+  expression: string
+  setting: string
 }
 
 function sleep(ms: number): Promise<void> {
@@ -120,6 +183,7 @@ type StoredAudioSegment = {
   text: string
   path: string
   duration: number
+  textPath?: string
 }
 
 type StoredFlowScene = {
@@ -151,7 +215,8 @@ function parseAudioSegments(value: unknown): StoredAudioSegment[] {
       kind: row.kind,
       text: row.text,
       path: row.path,
-      duration: row.duration
+      duration: row.duration,
+      ...(typeof row.textPath === 'string' ? { textPath: row.textPath } : {})
     }]
   })
 }
@@ -185,6 +250,8 @@ function isGoogleImageHost(hostname: string): boolean {
   const host = hostname.toLowerCase()
   return [
     'labs.google',
+    'flow-content.google',
+    'flow.google.com',
     'googleusercontent.com',
     'gstatic.com',
     'ggpht.com',
@@ -194,9 +261,9 @@ function isGoogleImageHost(hostname: string): boolean {
 
 function validateGoogleFlowImageUrl(value: string): URL {
   let url: URL
-  try { url = new URL(value.trim()) } catch { throw new Error('URL ảnh Google Flow không hợp lệ.') }
+  try { url = new URL(value.trim()) } catch { throw new Error(`URL ảnh Google Flow không hợp lệ: "${value.slice(0, 300)}".`) }
   if (url.protocol !== 'https:' || url.username || url.password || !isGoogleImageHost(url.hostname)) {
-    throw new Error('Chỉ hỗ trợ link ảnh HTTPS trực tiếp từ Google Flow/Googleusercontent.')
+    throw new Error(`Chỉ hỗ trợ link ảnh HTTPS trực tiếp từ Google Flow/Googleusercontent (domain nhận được: "${url.hostname || value}").`)
   }
   return url
 }
@@ -426,6 +493,8 @@ export class StoryMediaService {
   private googleFlowCaptureCleanup: (() => void) | null = null
   private googleFlowCaptureStatus: GoogleFlowCaptureStatus | null = null
   private googleFlowAutomationAbort: AbortController | null = null
+  private fluxAutomationAbort: AbortController | null = null
+  private readonly settings = new SettingsService()
   constructor(
     private readonly voices = new VoiceService(),
     private readonly thumbnails = new ThumbnailService(),
@@ -452,7 +521,9 @@ export class StoryMediaService {
       if (response.status < 300 || response.status >= 400) break
       const location = response.headers.get('location')
       if (!location) throw new Error('Link ảnh Google Flow chuyển hướng nhưng thiếu địa chỉ đích.')
-      url = validateGoogleFlowImageUrl(new URL(location, url).toString())
+      let redirectTarget: URL
+      try { redirectTarget = new URL(location, url) } catch { throw new Error(`Link ảnh Google Flow chuyển hướng đến địa chỉ không hợp lệ: "${location.slice(0, 300)}".`) }
+      url = validateGoogleFlowImageUrl(redirectTarget.toString())
       response = null
     }
     if (!response) throw new Error('Link ảnh Google Flow chuyển hướng quá nhiều lần.')
@@ -493,7 +564,11 @@ export class StoryMediaService {
       this.googleFlowWindow.webContents.setWindowOpenHandler(details => {
         try {
           const target = new URL(details.url)
-          const allowed = target.protocol === 'https:' && (target.hostname === 'accounts.google.com' || target.hostname === 'labs.google')
+          const allowed = target.protocol === 'https:' && (isGoogleImageHost(target.hostname) || target.hostname === 'accounts.google.com')
+          // A denied popup during login/account-chooser is otherwise a silent
+          // dead end that just looks like a stuck WAITING_LOGIN state; log it
+          // so that report is diagnosable instead of another blind spot.
+          if (!allowed) console.warn(`[google-flow] Đã chặn popup không rõ: ${details.url}`)
           return allowed ? { action: 'allow' } : { action: 'deny' }
         } catch { return { action: 'deny' } }
       })
@@ -506,48 +581,97 @@ export class StoryMediaService {
     return this.googleFlowWindow
   }
 
-  private async googleFlowPromptReady(): Promise<boolean> {
+  private async googleFlowPromptReady(): Promise<GoogleFlowPromptDiagnostic> {
+    const empty: GoogleFlowPromptDiagnostic = { ready: false, fieldsFound: 0, rawFieldsFound: 0, rawFieldDetails: [], iframeCount: 0, blockedIframeCount: 0, shadowHostCount: 0, title: '', url: '' }
     const win = this.googleFlowWindow
-    if (!win || win.isDestroyed() || win.webContents.isLoading()) return false
+    if (!win || win.isDestroyed() || win.webContents.isLoading()) return empty
     return win.webContents.executeJavaScript(`(() => {
+      ${DEEP_QUERY_ALL_JS}
       const visible = element => {
-        const rect = element.getBoundingClientRect()
+        // Auto-growing contenteditable/textarea fields can legitimately report
+        // 0 height while empty, so don't require a minimum pixel size here —
+        // only that the element isn't actually hidden. The prompt-related
+        // label scoring elsewhere picks the right candidate among matches.
         const style = getComputedStyle(element)
-        return rect.width > 180 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'
+        if (style.visibility === 'hidden' || style.display === 'none') return false
+        return Number(style.opacity || '1') !== 0
       }
-      const fields = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')]
+      const rawFields = deepQueryAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')
+      const fields = rawFields
         .filter(visible)
         .filter(element => !String(element.getAttribute('placeholder') || element.getAttribute('aria-label') || '').toLowerCase().includes('search'))
-      return fields.length > 0
-    })()`, true) as Promise<boolean>
+      const rawFieldDetails = rawFields.slice(0, 8).map(element => {
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return {
+          tag: element.tagName.toLowerCase(),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          display: style.display,
+          visibility: style.visibility,
+          label: String(element.getAttribute('placeholder') || element.getAttribute('aria-label') || '').slice(0, 40)
+        }
+      })
+      const iframes = [...document.querySelectorAll('iframe')]
+      let blockedIframeCount = 0
+      for (const frame of iframes) {
+        try { void frame.contentDocument?.title } catch (error) { blockedIframeCount++ }
+      }
+      let shadowHostCount = 0
+      for (const host of document.querySelectorAll('*')) {
+        if (host.shadowRoot) shadowHostCount++
+      }
+      return {
+        ready: fields.length > 0,
+        fieldsFound: fields.length,
+        rawFieldsFound: rawFields.length,
+        rawFieldDetails,
+        iframeCount: iframes.length,
+        blockedIframeCount,
+        shadowHostCount,
+        title: document.title,
+        url: location.href
+      }
+    })()`, true) as Promise<GoogleFlowPromptDiagnostic>
   }
 
-  private async waitForGoogleFlowPrompt(signal: AbortSignal): Promise<void> {
+  private async waitForGoogleFlowPrompt(signal: AbortSignal, onDiagnostic?: (diagnostic: GoogleFlowPromptDiagnostic) => void): Promise<void> {
     const deadline = Date.now() + 10 * 60_000
+    let lastDiagnostic: GoogleFlowPromptDiagnostic | null = null
     while (Date.now() < deadline) {
       if (signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
-      if (await this.googleFlowPromptReady().catch(() => false)) return
+      if (!this.googleFlowWindow || this.googleFlowWindow.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng.')
+      const diagnostic = await this.googleFlowPromptReady().catch(() => null)
+      if (diagnostic) {
+        lastDiagnostic = diagnostic
+        onDiagnostic?.(diagnostic)
+        if (diagnostic.ready) return
+      }
       await sleep(2_000)
     }
-    throw new Error('Không tìm thấy ô prompt trong Google Flow sau 10 phút. Hãy đăng nhập, mở project và vào màn hình tạo ảnh rồi thử lại.')
+    const hint = lastDiagnostic
+      ? ` Trang "${lastDiagnostic.title || lastDiagnostic.url}": ${lastDiagnostic.fieldsFound}/${lastDiagnostic.rawFieldsFound} ô nhập (khớp selector, không tính đến kích thước), ${lastDiagnostic.iframeCount} iframe${lastDiagnostic.blockedIframeCount ? `, ${lastDiagnostic.blockedIframeCount} iframe không truy cập được (khác domain)` : ''}, ${lastDiagnostic.shadowHostCount} shadow root.${formatGoogleFlowFieldDetails(lastDiagnostic.rawFieldDetails)}`
+      : ''
+    throw new Error(`Không tìm thấy ô prompt trong Google Flow sau 10 phút.${hint} Hãy đăng nhập, mở project và vào màn hình tạo ảnh rồi thử lại.`)
   }
 
   private async googleFlowImageCandidates(): Promise<Array<{ src: string; width: number; height: number; score: number }>> {
     const win = this.googleFlowWindow
     if (!win || win.isDestroyed()) return []
     return win.webContents.executeJavaScript(`(() => {
+      ${DEEP_QUERY_ALL_JS}
       const visible = element => {
         const rect = element.getBoundingClientRect()
         const style = getComputedStyle(element)
         return rect.width >= 180 && rect.height >= 180 && style.visibility !== 'hidden' && style.display !== 'none'
       }
       const rows = []
-      for (const image of document.querySelectorAll('img')) {
+      for (const image of deepQueryAll('img')) {
         if (!visible(image) || image.naturalWidth < 384 || image.naturalHeight < 384 || !image.currentSrc) continue
         const rect = image.getBoundingClientRect()
         rows.push({ src: image.currentSrc, width: image.naturalWidth, height: image.naturalHeight, score: image.naturalWidth * image.naturalHeight + rect.width * rect.height })
       }
-      for (const video of document.querySelectorAll('video[poster]')) {
+      for (const video of deepQueryAll('video[poster]')) {
         if (!visible(video) || !video.poster) continue
         const rect = video.getBoundingClientRect()
         rows.push({ src: video.poster, width: video.videoWidth || Math.round(rect.width), height: video.videoHeight || Math.round(rect.height), score: rect.width * rect.height })
@@ -560,14 +684,39 @@ export class StoryMediaService {
     const win = this.googleFlowWindow
     if (!win || win.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng.')
     const result = await win.webContents.executeJavaScript(`(() => {
-      const visible = element => {
-        const rect = element.getBoundingClientRect()
+      ${DEEP_QUERY_ALL_JS}
+      const isRendered = element => {
         const style = getComputedStyle(element)
-        return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'
+        return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || '1') !== 0
+      }
+      // Auto-growing contenteditable/textarea fields can legitimately report 0
+      // height while empty, so field detection only checks it isn't hidden.
+      // Buttons aren't expected to auto-grow from zero size, so still require
+      // a small minimum footprint there to filter out decoy/hidden buttons.
+      const visibleField = isRendered
+      const visibleButton = element => {
+        const rect = element.getBoundingClientRect()
+        return isRendered(element) && rect.width > 20 && rect.height > 20
       }
       const descriptor = element => String(element.getAttribute('placeholder') || element.getAttribute('aria-label') || element.textContent || '').trim().toLowerCase()
-      const fields = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')]
-        .filter(visible)
+      // Coordinates relative to the top-level page (what webContents.sendInputEvent
+      // expects), summing offsets up through any nested same-origin iframes so a
+      // real, trusted OS-level click can be dispatched from the main process.
+      const getAbsoluteRect = element => {
+        const rect = element.getBoundingClientRect()
+        let x = rect.left + rect.width / 2
+        let y = rect.top + rect.height / 2
+        let frameWin = element.ownerDocument.defaultView
+        while (frameWin && frameWin.frameElement) {
+          const frameRect = frameWin.frameElement.getBoundingClientRect()
+          x += frameRect.left
+          y += frameRect.top
+          frameWin = frameWin.frameElement.ownerDocument.defaultView
+        }
+        return { x, y }
+      }
+      const fields = deepQueryAll('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]')
+        .filter(visibleField)
         .filter(element => !descriptor(element).includes('search'))
         .map(element => {
           const rect = element.getBoundingClientRect()
@@ -582,18 +731,37 @@ export class StoryMediaService {
       const field = selected.element
       field.focus()
       const value = ${JSON.stringify(prompt)}
+      const probe = value.slice(0, 30)
+      let textApplied = false
       if (field.isContentEditable) {
-        field.textContent = value
+        // Rich-text editors like Lexical/Draft.js ignore a raw textContent
+        // assignment (their internal model never sees it as real input), so
+        // simulate real typing via execCommand, which fires the native
+        // beforeinput/input events these editors actually listen for. There is
+        // no safe fallback for when this fails: a plain textContent assignment
+        // is exactly the broken technique this works around, so if execCommand
+        // doesn't land we must fail loudly rather than silently resubmit it.
+        const selection = window.getSelection()
+        if (selection) {
+          const range = document.createRange()
+          range.selectNodeContents(field)
+          selection.removeAllRanges()
+          selection.addRange(range)
+          document.execCommand('insertText', false, value)
+        }
+        textApplied = field.textContent.includes(probe)
       } else {
         const prototype = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
         const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
         setter ? setter.call(field, value) : field.value = value
+        field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
+        textApplied = field.value.includes(probe)
       }
-      field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
+      if (!textApplied) return { ok: false, reason: 'TEXT_NOT_INSERTED' }
       field.dispatchEvent(new Event('change', { bubbles: true }))
 
-      const buttons = [...document.querySelectorAll('button, [role="button"]')]
-        .filter(visible)
+      const buttons = deepQueryAll('button, [role="button"]')
+        .filter(visibleButton)
         .filter(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true')
         .map(button => {
           const rect = button.getBoundingClientRect()
@@ -606,19 +774,47 @@ export class StoryMediaService {
         .sort((left, right) => right.score - left.score)
       const button = buttons.find(item => item.score > 100000)?.button
       if (button) {
-        button.click()
-        return { ok: true, method: 'BUTTON' }
+        // Don't button.click() here: that dispatches an untrusted synthetic
+        // click (isTrusted: false), which modern component frameworks (Lit/
+        // Material-style pointer-gesture buttons in particular) can silently
+        // ignore. Report the button's screen position instead so the caller
+        // dispatches a real OS-level click via webContents.sendInputEvent.
+        return { ok: true, method: 'BUTTON', clickAt: getAbsoluteRect(button) }
       }
       const form = field.closest('form')
       if (form?.requestSubmit) {
+        // HTMLFormElement.requestSubmit() fires a spec-trusted submit event,
+        // unlike synthetic dispatchEvent calls, so this is safe as-is.
         form.requestSubmit()
         return { ok: true, method: 'FORM' }
       }
-      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, ctrlKey: true }))
-      field.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, ctrlKey: true }))
+      // Same trust concern as the button click: fire a real Ctrl+Enter from
+      // the caller instead of a synthetic KeyboardEvent. The field already
+      // has focus from above, so the caller's key event lands on it.
       return { ok: true, method: 'KEYBOARD' }
-    })()`, true) as { ok: boolean; reason?: string }
-    if (!result.ok) throw new Error('Không tìm thấy ô prompt của Google Flow. Hãy mở màn hình tạo ảnh và thử lại.')
+    })()`, true) as { ok: boolean; reason?: string; method?: 'BUTTON' | 'FORM' | 'KEYBOARD'; clickAt?: { x: number; y: number } }
+    if (!result.ok) {
+      if (result.reason === 'TEXT_NOT_INSERTED') {
+        throw new Error('Không nhập được nội dung prompt vào ô nhập của Google Flow (giao diện Flow có thể đã thay đổi). Hãy thử nhập tay một prompt rồi bấm lại tự động.')
+      }
+      throw new Error('Không tìm thấy ô prompt của Google Flow. Hãy mở màn hình tạo ảnh và thử lại.')
+    }
+    if (result.method === 'BUTTON' || result.method === 'KEYBOARD') {
+      // sendInputEvent only reaches the page while the BrowserWindow is OS-focused;
+      // the window can lose focus during the minutes-long wait for a generated
+      // image, so re-focus right before dispatching or the click/keypress silently
+      // no-ops and the run stalls with no clear error.
+      win.focus()
+    }
+    if (result.method === 'BUTTON' && result.clickAt) {
+      const { x, y } = result.clickAt
+      win.webContents.sendInputEvent({ type: 'mouseMove', x, y })
+      win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
+      win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+    } else if (result.method === 'KEYBOARD') {
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter', modifiers: ['control'] })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter', modifiers: ['control'] })
+    }
   }
 
   private async waitForGoogleFlowImage(previousSources: Set<string>, signal: AbortSignal): Promise<string> {
@@ -626,6 +822,7 @@ export class StoryMediaService {
     const stablePolls = new Map<string, number>()
     while (Date.now() < deadline) {
       if (signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
+      if (!this.googleFlowWindow || this.googleFlowWindow.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng.')
       const candidates = await this.googleFlowImageCandidates().catch(() => [])
       const fresh = candidates
         .filter(candidate => !previousSources.has(candidate.src))
@@ -640,10 +837,18 @@ export class StoryMediaService {
 
   private async readGoogleFlowBrowserImage(source: string): Promise<Buffer> {
     if (source.startsWith('https://')) return this.readFlowImageSource({ kind: 'URL', value: source })
+    // blob:/data: sources are renderer-local (scoped to the page's own origin or
+    // inline data, not a fetch to an arbitrary remote host), so they're exempt
+    // from the domain allowlist by design. Anything else is an unexpected scheme
+    // this code has no business fetching — reject it instead of silently
+    // bypassing the allowlist that every other codepath here honors.
+    if (!source.startsWith('blob:') && !source.startsWith('data:')) {
+      throw new Error(`Nguồn ảnh Google Flow không được hỗ trợ: "${source.slice(0, 200)}".`)
+    }
     const win = this.googleFlowWindow
     if (!win || win.isDestroyed()) throw new Error('Cửa sổ Google Flow đã đóng trước khi lấy ảnh.')
     const dataUrl = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
-      fetch(${JSON.stringify(source)})
+      fetch(${JSON.stringify(source)}, { signal: AbortSignal.timeout(60_000) })
         .then(response => {
           if (!response.ok) throw new Error('HTTP ' + response.status)
           return response.blob()
@@ -667,10 +872,12 @@ export class StoryMediaService {
     const current = this.googleFlowCaptureStatus
     this.googleFlowAutomationAbort?.abort()
     this.googleFlowAutomationAbort = null
+    this.fluxAutomationAbort?.abort()
+    this.fluxAutomationAbort = null
     this.googleFlowCaptureCleanup?.()
     this.googleFlowCaptureCleanup = null
     if (current && !['DONE', 'ERROR', 'CANCELED'].includes(current.stage)) {
-      this.googleFlowCaptureStatus = { ...current, stage: 'CANCELED', message: 'Đã dừng nhận ảnh từ Google Flow.' }
+      this.googleFlowCaptureStatus = { ...current, stage: 'CANCELED', message: 'Đã dừng xử lý tạo ảnh.' }
     }
   }
 
@@ -830,7 +1037,18 @@ export class StoryMediaService {
     void (async () => {
       const sources: FlowSceneSource[] = []
       try {
-        await this.waitForGoogleFlowPrompt(abortController.signal)
+        await this.waitForGoogleFlowPrompt(abortController.signal, diagnostic => {
+          const parts = [
+            `${diagnostic.fieldsFound}/${diagnostic.rawFieldsFound} ô nhập tìm thấy (khớp selector, không tính đến kích thước)`,
+            `${diagnostic.iframeCount} iframe${diagnostic.blockedIframeCount ? ` (${diagnostic.blockedIframeCount} khác domain)` : ''}`,
+            `${diagnostic.shadowHostCount} shadow root`
+          ]
+          this.flowStatus({
+            ...baseStatus,
+            stage: 'WAITING_LOGIN',
+            message: `Đang chờ màn hình tạo ảnh Google Flow... (${parts.join(', ')}) — trang: ${diagnostic.title || diagnostic.url || 'đang tải'}.${formatGoogleFlowFieldDetails(diagnostic.rawFieldDetails)}`
+          }, onProgress)
+        })
         for (const [index, segment] of segments.entries()) {
           if (abortController.signal.aborted) throw new Error('Đã dừng tự động tạo ảnh Google Flow.')
           const previousSources = new Set((await this.googleFlowImageCandidates()).map(candidate => candidate.src))
@@ -885,6 +1103,599 @@ export class StoryMediaService {
     return this.googleFlowCaptureStatus!
   }
 
+  private async findExistingSceneImages(
+    projectId: string,
+    folderName: string,
+    totalSegments: number
+  ): Promise<Map<number, string>> {
+    const map = new Map<number, string>()
+    const dirPath = this.storage.getProjectPath(projectId, 'images', folderName)
+    if (!existsSync(dirPath)) return map
+    try {
+      const files = await readdir(dirPath)
+      files.sort()
+      for (const file of files) {
+        const match = file.match(/-(\d{3})\.(jpg|jpeg|png)$/i)
+        if (match) {
+          const sceneNum = parseInt(match[1], 10)
+          if (sceneNum >= 1 && sceneNum <= totalSegments) {
+            const fullPath = join(dirPath, file)
+            try {
+              const st = await stat(fullPath)
+              if (st.size > 1000) {
+                map.set(sceneNum, fullPath)
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+    return map
+  }
+
+  private async extractStickyManSceneDetails(
+    segments: StoredAudioSegment[],
+    aiService: AIService,
+    contentLanguage?: string | null
+  ): Promise<Map<number, StickyManSceneDetail>> {
+  const result = new Map<number, StickyManSceneDetail>()
+
+  try {
+    const provider = aiService.provider()
+    const promptLines = segments
+      .map(seg => `Scene ${seg.index} (${seg.kind}): "${seg.text.replace(/"/g, "'")}"`)
+      .join('\n')
+
+    const prompt = `You are a visual director creating storyboard scenes for "Sticky Man" animated stories (iconic 2D character with a smooth round white circle head, expressive cartoon eyebrows, eyes, and mouth, wearing a black business suit and red necktie).
+
+For each narration scene below (which may be in Vietnamese or English), output a JSON array describing the character's facial expression, specific action, and setting/environment in concise, vivid English.
+
+Story segments:
+${promptLines}
+
+Rules:
+- "expression": describe the cartoon eyebrows, eyes, and mouth (e.g., "confident smirk, sharp arched eyebrows, ambitious eyes", "tired droopy eyes with dark circles, exhausted mouth line", "wide shocked cartoon eyes with open mouth", "warm friendly smile, cheerful gaze")
+- "action": describe exactly what Sticky Man is doing in this scene, matching the narrative details (e.g., "Sticky Man sitting at a wooden desk typing furiously on a glowing laptop", "walking in the heavy rain holding a black umbrella", "standing on a stage explaining a glowing whiteboard chart", "drinking a cup of coffee while looking out the window", "if CTA: smiling warmly, waving to viewer and pointing with thumbs up to subscribe")
+- "setting": describe the environment, props, and lighting (e.g., "dark modern office room at night with city skyline lights outside", "crowded sunlit classroom with chalkboard", "rainy city street with red neon signs", "presentation conference room with large screen")
+
+Respond ONLY with valid JSON array:
+[
+  { "index": 1, "expression": "...", "action": "...", "setting": "..." }
+]
+`
+    const raw = await provider.generateText({ prompt })
+    const jsonMatch = raw.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      const items = JSON.parse(jsonMatch[0]) as Array<{ index?: number; expression?: string; action?: string; setting?: string }>
+      if (Array.isArray(items)) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          const segIndex = item.index ?? (i + 1)
+          if (item.action && item.expression) {
+            result.set(segIndex, {
+              action: item.action.trim(),
+              expression: item.expression.trim(),
+              setting: (item.setting || 'dramatic red and black atmospheric background').trim()
+            })
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('AI extraction of scene details failed, using smart heuristic fallback:', err)
+  }
+
+  // Smart heuristic fallback for any missing scenes
+  for (const seg of segments) {
+    if (!result.has(seg.index)) {
+      if (seg.kind === 'CTA') {
+        result.set(seg.index, {
+          action: 'Sticky Man waving warmly to the viewer with one hand and pointing with a thumbs up to the subscribe button',
+          expression: 'friendly warm smile, wink, and cheerful cartoon eyebrows',
+          setting: 'dramatic stage with glowing subscribe button and neon accents'
+        })
+      } else {
+        const text = seg.text.toLowerCase()
+        let expression = 'determined focused cartoon eyes, thick black eyebrows, and serious mouth line'
+        let action = 'Sticky Man standing attentively, gesturing with hand to explain the situation'
+        let setting = 'modern city room with dramatic red and black lighting'
+
+        if (/buồn|khóc|thất bại|tuyệt vọng|bế tắc|sad|cry|fail|hopeless/i.test(text)) {
+          expression = 'sad downturned mouth, droopy curved eyebrows, teary cartoon eyes'
+          action = 'Sticky Man sitting slouched with head bowed in deep contemplation'
+          setting = 'dimly lit room with heavy shadows and rain outside the window'
+        } else if (/mệt|áp lực|stress|thức đêm|khó khăn|tired|exhausted|pressure|night/i.test(text)) {
+          expression = 'tired droopy cartoon eyes with dark eye bags, exhausted flat mouth line, furrowed eyebrows'
+          action = 'Sticky Man sitting at a messy wooden desk working late on a glowing laptop, surrounded by coffee mugs'
+          setting = 'dark office late at night with red neon skyline outside the window'
+        } else if (/tiền|giàu|thành công|đạt được|chiến thắng|tự tin|money|rich|success|win/i.test(text)) {
+          expression = 'confident smirk, sharp arched eyebrows, ambitious gleam in cartoon eyes'
+          action = 'Sticky Man standing tall with arms crossed proudly or holding a briefcase'
+          setting = 'luxury modern skyscraper office overlooking a glowing metropolis'
+        } else if (/học|đọc|sách|nghĩ|ý tưởng|mindset|tư duy|book|think|idea/i.test(text)) {
+          expression = 'curious wide cartoon eyes, raised inquiring eyebrows, thoughtful smile'
+          action = 'Sticky Man looking at an open book with glowing neon diagrams and lightbulb idea above head'
+          setting = 'cozy study room with bookshelves and soft ambient glow'
+        } else if (/bạn|nói|gặp|chia sẻ|người khác|friend|talk|meet|people/i.test(text)) {
+          expression = 'expressive talking mouth, animated eyebrows, attentive cartoon eyes'
+          action = 'Sticky Man in a conversation, gesturing with hands to explain'
+          setting = 'modern cafe or meeting table with dramatic atmospheric lighting'
+        }
+
+        result.set(seg.index, { action, expression, setting })
+      }
+    }
+  }
+
+  return result
+}
+
+  async startFluxSceneAutomation(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+    hfToken?: string,
+    stylePreset: FlowSceneStylePreset = 'FLUX_CINEMATIC',
+    customPrompt?: string,
+    cleanPrevious?: boolean
+  ): Promise<GoogleFlowCaptureStatus> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video không hợp lệ.')
+    await this.cancelGoogleFlowCapture()
+
+    const token = hfToken?.trim() || this.settings.getHuggingFaceToken()
+    if (hfToken?.trim()) {
+      this.settings.saveHuggingFaceToken(hfToken.trim())
+    }
+
+    const prisma = getPrisma()
+    const [project, script, audio] = await Promise.all([
+      prisma.project.findUnique({ where: { id: projectId } }),
+      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+    ])
+    if (!script) throw new Error('Hãy chọn Story script trước khi tạo ảnh chi tiết.')
+    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi tạo ảnh chi tiết.')
+    const audioMeta = parseMeta(audio.metadata)
+    const segments = parseAudioSegments(audioMeta.segments)
+    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content) || !segments.length) {
+      throw new Error('Story MP3 không khớp kịch bản hoặc chưa có audio phân đoạn. Hãy Generate lại trước.')
+    }
+
+    const total = segments.length
+    const baseStatus = { projectId, scriptId, captured: 0, total }
+    const abortController = new AbortController()
+    this.fluxAutomationAbort = abortController
+
+    const width = format === 'REEL' ? 768 : format === 'LANDSCAPE' ? 1344 : 1024
+    const height = format === 'REEL' ? 1344 : format === 'LANDSCAPE' ? 768 : 1024
+
+    const isBetterMind = stylePreset === 'BETTER_MIND'
+    const styleLabel = isBetterMind ? 'Sticky Man 2D (@abettermind)' : 'FLUX'
+    const folderName = isBetterMind ? 'better-mind-scenes' : 'flux-scenes'
+
+    const targetDir = this.storage.getProjectPath(projectId, 'images', folderName)
+    await mkdir(targetDir, { recursive: true }).catch(() => undefined)
+
+    if (cleanPrevious) {
+      try {
+        const oldFiles = await readdir(targetDir)
+        for (const file of oldFiles) {
+          await unlink(join(targetDir, file)).catch(() => undefined)
+        }
+      } catch {}
+    }
+
+    const existingMap = cleanPrevious ? new Map<number, string>() : await this.findExistingSceneImages(projectId, folderName, total)
+
+    this.flowStatus({
+      ...baseStatus,
+      stage: 'GENERATING',
+      message: token
+        ? `Bắt đầu tạo ${total} ảnh hoạt cảnh ${styleLabel} (HF + Fallback)...`
+        : `Bắt đầu tạo ${total} ảnh hoạt cảnh ${styleLabel} (Free Engine)...`
+    }, onProgress)
+
+    void (async () => {
+      const sources: FlowSceneSource[] = []
+      const recentImages: FlowSceneImageDTO[] = []
+      try {
+        let stickyManDetailsMap = new Map<number, StickyManSceneDetail>()
+        if (isBetterMind) {
+          this.flowStatus({
+            ...baseStatus,
+            stage: 'GENERATING',
+            message: 'Đang phân tích kịch bản để tạo bối cảnh chi tiết và biểu cảm cho từng phân đoạn (Sticky Man)...'
+          }, onProgress)
+          stickyManDetailsMap = await this.extractStickyManSceneDetails(segments, new AIService(), project?.contentLanguage)
+        }
+
+        for (const [index, segment] of segments.entries()) {
+          if (abortController.signal.aborted) throw new Error(`Đã dừng tạo ảnh ${styleLabel}.`)
+
+          const sceneNum = index + 1
+          const existingPath = existingMap.get(sceneNum)
+
+          // 0. Tự động tái sử dụng nếu phân đoạn này đã có ảnh hợp lệ trên đĩa
+          if (existingPath && existsSync(existingPath)) {
+            sources.push({ kind: 'FILE', value: existingPath })
+            recentImages.push({
+              index: segment.index,
+              kind: segment.kind,
+              sectionText: segment.text,
+              duration: segment.duration,
+              fileName: basename(existingPath),
+              filePath: existingPath,
+              fileUrl: mediaUrl(existingPath) || pathToFileURL(existingPath).href,
+              source: 'FILE'
+            })
+
+            this.flowStatus({
+              ...baseStatus,
+              captured: sources.length,
+              recentImages: [...recentImages],
+              stage: sources.length === total ? 'BUILDING' : 'GENERATING',
+              message: sources.length === total
+                ? `Đã có đủ ${total} ảnh phong cách ${styleLabel}. Đang ghép video...`
+                : `Đã có sẵn ảnh phân đoạn ${sceneNum}/${total} (tái sử dụng)...`
+            }, onProgress)
+
+            await sleep(40)
+            continue
+          }
+
+          const defaultStickmanPrompt =
+            '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
+
+          const sceneDetail = stickyManDetailsMap.get(sceneNum)
+          const prompt = isBetterMind
+            ? sceneDetail
+              ? [
+                  customPrompt?.trim() || defaultStickmanPrompt,
+                  `In this specific scene: Character facial expression has ${sceneDetail.expression}.`,
+                  `Action: ${sceneDetail.action}.`,
+                  `Environment and props: ${sceneDetail.setting}.`,
+                  'Maintain 2D vector comic illustration, cell-shaded, high contrast, clean bold ink outlines, no 3D, no CGI.'
+                ].join(' ')
+              : [
+                  customPrompt?.trim() || defaultStickmanPrompt,
+                  `Action in this scene: ${segment.text}`
+                ].join(' ')
+            : [
+                'Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens.',
+                `Scene ${index + 1} of ${total}: ${segment.text}`
+              ].join(' ')
+
+          const actionSnippet = sceneDetail ? ` (${sceneDetail.action.slice(0, 32)}...)` : ''
+          this.flowStatus({
+            ...baseStatus,
+            captured: sources.length,
+            recentImages: [...recentImages],
+            stage: 'GENERATING',
+            message: `Đang vẽ chi tiết ${styleLabel} cho phân đoạn ${sceneNum}/${total}${actionSnippet}...`
+          }, onProgress)
+
+          let imageBuffer: Buffer | null = null
+          let lastErr: unknown = null
+
+          // 1. Thử qua Hugging Face InferenceClient nếu người dùng có Token
+          if (token) {
+            try {
+              const { InferenceClient } = await import('@huggingface/inference')
+              const hfClient = new InferenceClient(token)
+              const candidateModels = [
+                'black-forest-labs/FLUX.1-schnell',
+                'black-forest-labs/FLUX.1-dev',
+                'Tongyi-MAI/Z-Image-Turbo'
+              ]
+              for (const model of candidateModels) {
+                if (imageBuffer) break
+                try {
+                  const timeoutSignal = AbortSignal.timeout(90_000)
+                  const fetchSignal = AbortSignal.any
+                    ? AbortSignal.any([abortController.signal, timeoutSignal])
+                    : abortController.signal
+
+                  const blob = await hfClient.textToImage({
+                    model,
+                    inputs: prompt
+                  }, { signal: fetchSignal })
+
+                  const rawBuf = Buffer.from(await blob.arrayBuffer())
+                  const meta = await sharp(rawBuf).metadata()
+                  if (meta.width && meta.height) {
+                    imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer()
+                    break
+                  }
+                } catch (hfErr) {
+                  lastErr = hfErr
+                }
+              }
+            } catch (importErr) {
+              lastErr = importErr
+            }
+          }
+
+          // 2. Tự động Fallback sang Free Engine (Pollinations) chất lượng cao
+          if (!imageBuffer) {
+            if (abortController.signal.aborted) throw new Error(`Đã dừng tạo ảnh ${styleLabel}.`)
+
+            this.flowStatus({
+              ...baseStatus,
+              captured: sources.length,
+              recentImages: [...recentImages],
+              stage: 'GENERATING',
+              message: token
+                ? `HF đang bận, đang tạo ảnh qua Engine Free cho cảnh ${sceneNum}/${total}...`
+                : `Đang tạo ảnh phong cách ${styleLabel} qua Free Engine cho phân đoạn ${sceneNum}/${total}...`
+            }, onProgress)
+
+            for (let attempt = 1; attempt <= 6; attempt++) {
+              if (abortController.signal.aborted) throw new Error(`Đã dừng tạo ảnh ${styleLabel}.`)
+              try {
+                const timeoutSignal = AbortSignal.timeout(90_000)
+                const fetchSignal = AbortSignal.any
+                  ? AbortSignal.any([abortController.signal, timeoutSignal])
+                  : abortController.signal
+
+                const seed = Math.floor(Math.random() * 10_000_000)
+                const encodedPrompt = encodeURIComponent(prompt)
+                // Tuyệt đối dùng model=sana vì đây là model miễn phí duy nhất hoạt động của pollinations, không đòi thanh toán 402!
+                const modelQuery = '&model=sana'
+
+                const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&nologo=true&seed=${seed}${modelQuery}`
+
+                const res = await fetch(url, {
+                  signal: fetchSignal,
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                    'Accept': 'image/jpeg,image/webp,image/png,*/*',
+                    'Referer': 'https://pollinations.ai/'
+                  }
+                })
+
+                if (!res.ok) {
+                  const txt = await res.text().catch(() => '')
+                  if (res.status === 402 || res.status === 429) {
+                    throw new Error(`Engine tạm bận giới hạn tần suất (Mã ${res.status}).`)
+                  }
+                  throw new Error(`Engine trả về mã ${res.status}: ${txt || res.statusText}`)
+                }
+                const rawBuf = Buffer.from(await res.arrayBuffer())
+                const meta = await sharp(rawBuf).metadata()
+                if (!meta.width || !meta.height) throw new Error('Dữ liệu ảnh trả về không hợp lệ.')
+                imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer()
+                break
+              } catch (pollErr) {
+                lastErr = pollErr
+                if (abortController.signal.aborted) throw new Error(`Đã dừng tạo ảnh ${styleLabel}.`)
+                const isRateLimit = /402|429/i.test(pollErr instanceof Error ? pollErr.message : String(pollErr))
+                const backoffMs = isRateLimit ? 10_000 + (attempt * 4_000) : attempt * 3_000
+                this.flowStatus({
+                  ...baseStatus,
+                  captured: sources.length,
+                  recentImages: [...recentImages],
+                  stage: 'GENERATING',
+                  message: isRateLimit
+                    ? `Engine tạm bận (Mã 402/429). Đang tự động nghỉ ${Math.round(backoffMs / 1000)}s rồi thử lại phân đoạn ${sceneNum}/${total} (lần ${attempt}/6)...`
+                    : `Thử lần ${attempt}/6 cảnh ${sceneNum}/${total}: ${pollErr instanceof Error ? pollErr.message : String(pollErr)}. Đợi ${Math.round(backoffMs / 1000)}s rồi thử lại...`
+                }, onProgress)
+                await sleep(backoffMs)
+              }
+            }
+          }
+
+          if (!imageBuffer) {
+            throw new Error(`Không tạo được ảnh phân đoạn ${sceneNum}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
+          }
+
+          const relativePath = `images/${folderName}/${Date.now()}-${String(sceneNum).padStart(3, '0')}.jpg`
+          const savedPath = await this.storage.writeBuffer(projectId, relativePath, imageBuffer)
+          sources.push({ kind: 'FILE', value: savedPath })
+          recentImages.push({
+            index: segment.index,
+            kind: segment.kind,
+            sectionText: segment.text,
+            duration: segment.duration,
+            fileName: basename(savedPath),
+            filePath: savedPath,
+            fileUrl: mediaUrl(savedPath) || pathToFileURL(savedPath).href,
+            source: 'FILE'
+          })
+
+          this.flowStatus({
+            ...baseStatus,
+            captured: sources.length,
+            recentImages: [...recentImages],
+            stage: sources.length === total ? 'BUILDING' : 'GENERATING',
+            message: sources.length === total
+              ? `Đã tạo đủ ${total} ảnh phong cách ${styleLabel}. Đang ghép video theo audio...`
+              : `Đã xong ảnh ${sceneNum}/${total}; đang chuẩn bị tạo cảnh tiếp theo...`
+          }, onProgress)
+
+          if (sceneNum < total) {
+            await sleep(2500)
+          }
+
+          // Nghỉ 1.2s giữa các lần tạo mới để không bị rate limit bởi server miễn phí
+          await sleep(1200)
+        }
+
+        await this.importFlowSceneImages(projectId, scriptId, format, sources)
+        this.flowStatus({
+          ...baseStatus,
+          captured: total,
+          recentImages: [...recentImages],
+          stage: 'DONE',
+          message: `Đã tạo và ghép thành công ${total} ảnh phong cách ${styleLabel} theo phân đoạn.`
+        }, onProgress)
+      } catch (error) {
+        const canceled = abortController.signal.aborted
+        this.flowStatus({
+          ...baseStatus,
+          captured: sources.length,
+          recentImages: [...recentImages],
+          stage: canceled ? 'CANCELED' : 'ERROR',
+          message: canceled ? `Đã dừng tạo ảnh ${styleLabel}.` : `Tạo ảnh ${styleLabel} bị lỗi: ${error instanceof Error ? error.message : String(error)}`
+        }, onProgress)
+      } finally {
+        if (this.fluxAutomationAbort === abortController) this.fluxAutomationAbort = null
+      }
+    })()
+
+    return this.googleFlowCaptureStatus!
+  }
+
+  async generateSingleImage(input: GenerateSingleImageInput): Promise<GenerateSingleImageResult> {
+    const promptText = (input.prompt || '').trim()
+    if (!promptText) throw new Error('Vui lòng nhập mô tả (prompt) để tạo ảnh.')
+
+    const token = input.hfToken?.trim() || this.settings.getHuggingFaceToken()
+    if (input.hfToken?.trim()) {
+      this.settings.saveHuggingFaceToken(input.hfToken.trim())
+    }
+
+    const aspect = input.aspectRatio || '9:16'
+    const width = aspect === '9:16' ? 768 : aspect === '16:9' ? 1344 : 1024
+    const height = aspect === '9:16' ? 1344 : aspect === '16:9' ? 768 : 1024
+
+    let cleanPrompt = promptText
+    if (input.stylePreset === 'BETTER_MIND' && !cleanPrompt.toLowerCase().includes('sticky man')) {
+      const defaultStickman =
+        '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
+      cleanPrompt = `${defaultStickman} Specific scene action and details: ${cleanPrompt}`
+    } else if (input.stylePreset === 'FLUX_CINEMATIC' && !cleanPrompt.toLowerCase().includes('cinematic')) {
+      cleanPrompt = `Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens. Scene: ${cleanPrompt}`
+    }
+
+    let imageBuffer: Buffer | null = null
+    let engineUsed: 'HUGGING_FACE' | 'POLLINATIONS_FREE' = 'POLLINATIONS_FREE'
+    let modelUsed = 'sana'
+    let lastErr: unknown = null
+
+    // 1. Thử qua Hugging Face InferenceClient nếu có token
+    if (token) {
+      try {
+        const { InferenceClient } = await import('@huggingface/inference')
+        const hfClient = new InferenceClient(token)
+        const candidateModels = [
+          'black-forest-labs/FLUX.1-schnell',
+          'black-forest-labs/FLUX.1-dev',
+          'Tongyi-MAI/Z-Image-Turbo'
+        ]
+        for (const model of candidateModels) {
+          if (imageBuffer) break
+          try {
+            const blob = await hfClient.textToImage(
+              { model, inputs: cleanPrompt },
+              { signal: AbortSignal.timeout(90_000) }
+            )
+            const rawBuf = Buffer.from(await blob.arrayBuffer())
+            const meta = await sharp(rawBuf).metadata()
+            if (meta.width && meta.height) {
+              imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 95 }).toBuffer()
+              engineUsed = 'HUGGING_FACE'
+              modelUsed = model
+              break
+            }
+          } catch (hfErr) {
+            lastErr = hfErr
+          }
+        }
+      } catch (importErr) {
+        lastErr = importErr
+      }
+    }
+
+    // 2. Fallback sang Free Engine Pollinations (model=sana)
+    if (!imageBuffer) {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          const seed = Math.floor(Math.random() * 9999999) + 1
+          const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=false&model=sana`
+          const res = await fetch(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+              Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+            },
+            signal: AbortSignal.timeout(90_000)
+          })
+
+          if (!res.ok) {
+            const errStatus = res.status
+            if (errStatus === 402 || errStatus === 429) {
+              const backoffMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 2000, 20000)
+              await sleep(backoffMs)
+              continue
+            }
+            throw new Error(`Engine trả về HTTP ${errStatus}`)
+          }
+
+          const rawBuf = Buffer.from(await res.arrayBuffer())
+          const meta = await sharp(rawBuf).metadata()
+          if (!meta.width || !meta.height) {
+            throw new Error('Dữ liệu ảnh trả về không hợp lệ.')
+          }
+
+          imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 95 }).toBuffer()
+          engineUsed = 'POLLINATIONS_FREE'
+          modelUsed = 'sana'
+          break
+        } catch (pollErr) {
+          lastErr = pollErr
+          if (attempt < 6) {
+            await sleep(2000)
+          }
+        }
+      }
+    }
+
+    if (!imageBuffer) {
+      throw new Error(`Không tạo được ảnh: ${lastErr instanceof Error ? lastErr.message : String(lastErr || 'Lỗi không xác định')}`)
+    }
+
+    let savedFilePath: string | undefined
+    let savedFileName: string | undefined
+    if (input.projectId) {
+      try {
+        savedFileName = `custom_${Date.now()}.jpg`
+        const relativePath = `images/custom-studio/${savedFileName}`
+        savedFilePath = await this.storage.writeBuffer(input.projectId, relativePath, imageBuffer)
+      } catch (saveErr) {
+        console.warn('[single-image] Lưu ảnh vào project thất bại (bỏ qua):', saveErr)
+      }
+    }
+
+    const dataUrl = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`
+
+    return {
+      dataUrl,
+      filePath: savedFilePath,
+      fileName: savedFileName,
+      width,
+      height,
+      engineUsed,
+      modelUsed
+    }
+  }
+
+  async saveImageToProjectScene(
+    projectId: string,
+    dataUrl: string,
+    targetFolder: 'better-mind-scenes' | 'flux-scenes' = 'better-mind-scenes'
+  ): Promise<{ filePath: string; fileName: string; fileUrl: string }> {
+    const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '')
+    const buffer = Buffer.from(base64Data, 'base64')
+    const fileName = `${Date.now()}-custom.jpg`
+    const relativePath = `images/${targetFolder}/${fileName}`
+    const savedPath = await this.storage.writeBuffer(projectId, relativePath, buffer)
+    return {
+      filePath: savedPath,
+      fileName,
+      fileUrl: mediaUrl(savedPath) || pathToFileURL(savedPath).href
+    }
+  }
+
   private async generateStoryboard(
     generator: AIProvider,
     sections: string[],
@@ -936,13 +1747,14 @@ export class StoryMediaService {
     throw new Error(`Generate voice thất bại ở chunk ${chunkIndex + 1}/${total} sau ${TTS_CHUNK_ATTEMPTS} lần thử: ${reason}`)
   }
 
-  private async makeCta(voiceId: string, projectId: string, forceRegen = false): Promise<string> {
-    const ctaFile = `cta-${createHash('sha256').update(`${voiceId}:${CTA_TEXT}`).digest('hex').slice(0, 16)}.mp3`
+  private async makeCta(voiceId: string, projectId: string, contentLanguage?: string | null, customCta?: string | null, forceRegen = false): Promise<string> {
+    const text = getCtaText(contentLanguage, customCta)
+    const ctaFile = `cta-${createHash('sha256').update(`${voiceId}:${text}`).digest('hex').slice(0, 16)}.mp3`
     const ctaPath = this.storage.getProjectPath(projectId, 'audio', '.parts', ctaFile)
     if (!forceRegen) {
       try { if ((await stat(ctaPath)).size > 0) return ctaPath } catch {}
     }
-    const bytes = await this.synthesizeChunk(voiceId, CTA_TEXT, 0, 1)
+    const bytes = await this.synthesizeChunk(voiceId, text, 0, 1)
     await this.storage.writeBuffer(projectId, `audio/.parts/${ctaFile}`, bytes)
     return ctaPath
   }
@@ -956,11 +1768,13 @@ export class StoryMediaService {
     pieces: string[]
     partPaths: string[]
     ctaPath: string
+    ctaText?: string
   }): Promise<{ output: string; duration: number; segments: StoredAudioSegment[] }> {
+    const resolvedCtaText = input.ctaText || CTA_TEXT
     const segmentSources = [...input.partPaths, input.ctaPath]
-    const segmentTexts = [...input.pieces, CTA_TEXT]
+    const segmentTexts = [...input.pieces, resolvedCtaText]
     const segmentTotal = segmentSources.length
-    const segmentSet = `${input.storyHash.slice(0, 12)}-${createHash('sha256').update(input.voiceId).digest('hex').slice(0, 8)}`
+    const segmentSet = `${input.storyHash.slice(0, 12)}-${createHash('sha256').update(`${input.voiceId}:${resolvedCtaText}`).digest('hex').slice(0, 8)}`
     const segments: StoredAudioSegment[] = []
     for (let i = 0; i < segmentSources.length; i++) {
       const fileName = i === segmentSources.length - 1
@@ -972,15 +1786,32 @@ export class StoryMediaService {
       await copyFile(segmentSources[i], segmentPath)
       const segmentDuration = await probeDuration(segmentPath)
       if (segmentDuration <= 0) throw new Error(`Audio phân đoạn ${i + 1}/${segmentTotal} có duration không hợp lệ.`)
+      const textFileName = i === segmentSources.length - 1
+        ? `${String(i + 1).padStart(3, '0')}-cta.txt`
+        : `${String(i + 1).padStart(3, '0')}-story.txt`
+      const segmentTextPath = input.studioOutput
+        ? await this.storage.getStudioOutputPath(input.projectId, input.scriptId, 'audio', 'segments', segmentSet, textFileName)
+        : await this.storage.getOutputPath(input.projectId, 'audio', 'segments', segmentSet, textFileName)
+      await writeFile(segmentTextPath, segmentTexts[i], 'utf8')
+
       segments.push({
         index: i + 1,
         total: segmentTotal,
         kind: i === segmentSources.length - 1 ? 'CTA' : 'STORY',
         text: segmentTexts[i],
         path: segmentPath,
+        textPath: segmentTextPath,
         duration: segmentDuration
       })
     }
+
+    const allSegmentsText = segments
+      .map(seg => `[${seg.kind === 'CTA' ? 'CTA' : `Phân đoạn ${seg.index}`}]\n${seg.text}`)
+      .join('\n\n')
+    const allSegmentsPath = input.studioOutput
+      ? await this.storage.getStudioOutputPath(input.projectId, input.scriptId, 'audio', 'segments', segmentSet, 'all-segments.txt')
+      : await this.storage.getOutputPath(input.projectId, 'audio', 'segments', segmentSet, 'all-segments.txt')
+    await writeFile(allSegmentsPath, allSegmentsText, 'utf8')
 
     const output = input.studioOutput
       ? await this.storage.getStudioOutputPath(input.projectId, input.scriptId, 'audio', 'story.mp3')
@@ -1026,6 +1857,29 @@ export class StoryMediaService {
     const audioSegments = parseAudioSegments(audioMeta.segments)
     const bgMeta = parseMeta(background?.metadata)
     const flowScenes = bgMeta.source === 'GOOGLE_FLOW_SCENES' ? parseFlowScenes(bgMeta.scenes) : []
+    let activeFlowScenes = flowScenes
+    if (activeFlowScenes.length === 0 && audioSegments.length > 0) {
+      const betterMindMap = await this.findExistingSceneImages(projectId, 'better-mind-scenes', audioSegments.length)
+      const fluxMap = await this.findExistingSceneImages(projectId, 'flux-scenes', audioSegments.length)
+      const chosenMap = betterMindMap.size >= fluxMap.size ? betterMindMap : fluxMap
+      if (chosenMap.size > 0) {
+        const fallbackScenes: StoredFlowScene[] = []
+        for (const seg of audioSegments) {
+          const p = chosenMap.get(seg.index)
+          if (p) {
+            fallbackScenes.push({
+              index: seg.index,
+              kind: seg.kind,
+              text: seg.text,
+              duration: seg.duration,
+              path: p,
+              source: 'FILE'
+            })
+          }
+        }
+        activeFlowScenes = fallbackScenes
+      }
+    }
     const thumbnailMeta = parseMeta(thumbnail?.metadata)
     const publishByRenderId = new Map<string, { path: string; data: StoredPublishMetadata }>()
     for (const asset of publishAssets) {
@@ -1090,16 +1944,17 @@ export class StoryMediaService {
       flowSceneSupport: true,
       audioSegments: audioSegments.map(segment => ({
         ...segment,
+        textPath: segment.textPath ?? segment.path.replace(/\.mp3$/i, '.txt'),
         url: mediaUrl(segment.path, audio?.createdAt)!
       })),
-      flowSceneImages: flowScenes.map((scene): FlowSceneImageDTO => ({
+      flowSceneImages: activeFlowScenes.map((scene): FlowSceneImageDTO => ({
         index: scene.index,
         kind: scene.kind,
         sectionText: scene.text,
         duration: scene.duration,
         fileName: basename(scene.path),
         filePath: scene.path,
-        fileUrl: mediaUrl(scene.path, background?.createdAt)!,
+        fileUrl: mediaUrl(scene.path, background?.createdAt) || pathToFileURL(scene.path).href,
         source: scene.source
       })),
       backgroundPath: background?.path ?? null,
@@ -1459,7 +2314,7 @@ export class StoryMediaService {
           }
         }
         if (!audioPath) {
-          ctaPath ??= await this.makeCta(project.voiceId, projectId)
+          ctaPath ??= await this.makeCta(project.voiceId, projectId, project.contentLanguage)
           const reelChunks = chunks(reel.content, this.voices.getMaxTextLength())
           if (!reelChunks.length) throw new Error(`Reel ${episode} đang trống.`)
           const partPaths: string[] = []
@@ -1517,9 +2372,10 @@ export class StoryMediaService {
         } else {
           const render = await prisma.render.create({ data: { projectId, type: 'REEL_VIDEO', path: videoPath, status: 'RUNNING', preset: reel.id } })
           const reelAudioDuration = await probeDuration(audioPath)
+          const reelCtaText = getCtaText(project.contentLanguage)
           const subtitlePath = includeSubtitles
             ? await this.storage.writeOutputText(projectId, `subtitles/${slug}.ass`, createAssSubtitles({
-                text: `${reel.content}\n\n${CTA_TEXT}`,
+                text: `${reel.content}\n\n${reelCtaText}`,
                 totalDuration: reelAudioDuration,
                 format: 'REEL'
               }))
@@ -1540,7 +2396,7 @@ export class StoryMediaService {
               reelScenes = fallbackStickScenes(reelSections)
             }
             reelScenes.push({ setting: reelScenes[reelScenes.length - 1].setting, actors: [{ ...reelScenes[reelScenes.length - 1].actors[0], action: 'wave' }] })
-            reelSections.push(CTA_TEXT)
+            reelSections.push(reelCtaText)
             const stickReelPath = await this.storage.getOutputPath(projectId, 'background', `stick-${slug}-${randomUUID()}.mp4`)
             await renderStickAnimation(reelScenes, reelSections, reelAudioDuration, 'REEL', stickReelPath, pct => {
               report(episode, 'VIDEO', `Tập ${episode}/${reels.length}: dựng hoạt hình người que ${pct}%...`)
@@ -1698,7 +2554,7 @@ export class StoryMediaService {
   }
 
 
-  async generateStoryAudio(projectId: string, scriptId: string, studioOutput = false): Promise<StoryMediaDTO> {
+  async generateStoryAudio(projectId: string, scriptId: string, studioOutput = false, customCta?: string): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const [project, script] = await Promise.all([
       prisma.project.findUniqueOrThrow({ where: { id: projectId } }),
@@ -1706,6 +2562,7 @@ export class StoryMediaService {
     ])
     if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ cho Story MP3.')
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
+    const ctaText = getCtaText(project.contentLanguage, customCta)
     const chunkSize = this.voices.getMaxTextLength()
     const pieces = chunks(script.content, chunkSize)
     if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
@@ -1737,7 +2594,8 @@ export class StoryMediaService {
           storyHash: currentScriptHash,
           pieces,
           partPaths: cachedPartPaths,
-          ctaPath: await this.makeCta(project.voiceId, projectId)
+          ctaPath: await this.makeCta(project.voiceId, projectId, project.contentLanguage, customCta),
+          ctaText
         })
         await prisma.asset.update({
           where: { id: existingAudio.id },
@@ -1794,7 +2652,8 @@ export class StoryMediaService {
         storyHash: currentScriptHash,
         pieces,
         partPaths,
-        ctaPath: await this.makeCta(project.voiceId, projectId, !resuming)
+        ctaPath: await this.makeCta(project.voiceId, projectId, project.contentLanguage, customCta, !resuming),
+        ctaText
       })
 
       await prisma.asset.deleteMany({ where: { projectId, type: 'STORY_AUDIO' } })
@@ -1828,6 +2687,7 @@ export class StoryMediaService {
         script = await prisma.script.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' } })
       }
       if (!script) throw new Error('Không tìm thấy kịch bản để tạo hoạt hình.')
+      const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
       const isReel = script.type === 'REEL'
       const effectiveFormat = isReel ? 'REEL' : format
       let audioPath: string | undefined
@@ -1843,7 +2703,6 @@ export class StoryMediaService {
           audioPath = existingAudio.path
           audioId = existingAudio.id
         } else {
-          const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId } })
           if (!project.voiceId) throw new Error('Hãy chọn voice trước khi tạo hoạt hình cho Reel.')
           report(1, 'Đang tạo voice cho kịch bản Reel...')
           const episode = script.version || 1
@@ -1851,7 +2710,7 @@ export class StoryMediaService {
           const expectedAudioPath = studioOutput
             ? await this.storage.getStudioOutputPath(projectId, scriptId, 'audio', 'reel.mp3')
             : await this.storage.getOutputPath(projectId, 'audio', 'reels', `${slug}.mp3`)
-          const ctaPath = await this.makeCta(project.voiceId, projectId)
+          const ctaPath = await this.makeCta(project.voiceId, projectId, project.contentLanguage)
           const reelChunks = chunks(script.content, this.voices.getMaxTextLength())
           const partPaths: string[] = []
           for (const [chunkIndex, text] of reelChunks.entries()) {
@@ -1888,7 +2747,8 @@ export class StoryMediaService {
       if (storyboard.source !== 'AI') report(4, storyboard.source === 'REPAIRED' ? 'Đã tự sửa JSON storyboard; đang tiếp tục dựng video...' : 'Model trả JSON lỗi; đang dùng storyboard fallback nội bộ...')
       // Narration ends with the app CTA. Give it a separate scene and timing weight.
       scenes.push({ setting: scenes[scenes.length - 1].setting, actors: [{ ...scenes[scenes.length - 1].actors[0], action: 'wave' }] })
-      sections.push(CTA_TEXT)
+      const stickCtaText = getCtaText(project.contentLanguage)
+      sections.push(stickCtaText)
       const runId = randomUUID()
       output = studioOutput
         ? await this.storage.getStudioOutputPath(projectId, scriptId, 'videos', `stick-${runId}.mp4`)
@@ -1898,7 +2758,7 @@ export class StoryMediaService {
       const subtitlePath = studioOutput
         ? await this.storage.getStudioOutputPath(projectId, scriptId, 'subtitles', `stick-${runId}.ass`)
         : await this.storage.getOutputPath(projectId, 'subtitles', `stick-${runId}.ass`)
-      await writeFile(subtitlePath, createAssSubtitles({ text: `${script.content}\n\n${CTA_TEXT}`, totalDuration: duration, format: effectiveFormat }), 'utf8')
+      await writeFile(subtitlePath, createAssSubtitles({ text: `${script.content}\n\n${stickCtaText}`, totalDuration: duration, format: effectiveFormat }), 'utf8')
       const captionedOutput = output.replace(/\.mp4$/i, '-captioned.mp4')
       try {
         await burnVideoCaptions(output, subtitlePath, captionedOutput, duration,
@@ -2190,7 +3050,8 @@ export class StoryMediaService {
   async render(projectId: string, format: VideoFormat, fitMode: FitMode, soundEffectInput: SoundEffectOptions = DEFAULT_SOUND_EFFECT_OPTIONS, includeSubtitles = true, onProgress?: (progress: StoryVideoProgress) => void, signal?: AbortSignal): Promise<StoryMediaDTO> {
     const prisma = getPrisma()
     const soundEffect = normalizeSoundEffectOptions(soundEffectInput)
-    const [audio, background, thumbnail] = await Promise.all([
+    const [project, audio, background, thumbnail] = await Promise.all([
+      prisma.project.findUnique({ where: { id: projectId } }),
       prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'BACKGROUND_VIDEO' }, orderBy: { createdAt: 'desc' } }),
       prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' }, orderBy: { createdAt: 'desc' } })
@@ -2235,6 +3096,7 @@ export class StoryMediaService {
     if (previousFormatIds.length) await prisma.render.updateMany({ where: { id: { in: previousFormatIds } }, data: { status: 'STALE' } })
     report(0, 0, 'STARTING', format === 'REEL' ? `Đang chuẩn bị ${segments.length} video Short 9:16...` : 'Đang chuẩn bị Story video...')
     let currentRenderId: string | null = null
+    const renderCtaText = getCtaText(project?.contentLanguage)
     try {
       for (const [index, segment] of segments.entries()) {
         if (signal?.aborted) throw new Error('Render đã bị hủy.')
@@ -2248,7 +3110,7 @@ export class StoryMediaService {
         report(segment.part, (index / segments.length) * 92, 'VIDEO', `${label}: render ${Math.round(segment.durationMs / 1000)} giây + SFX${includeSubtitles ? ' + phụ đề' : ''}...`)
         const subtitlePath = includeSubtitles && sourceScript
           ? await this.storage.writeOutputText(projectId, `subtitles/${basename(output).replace(/\.mp4$/i, '.ass')}`, createAssSubtitles({
-              text: `${sourceScript.content}\n\n${CTA_TEXT}`,
+              text: `${sourceScript.content}\n\n${renderCtaText}`,
               totalDuration: audioDuration,
               format,
               clipStart: segment.startMs / 1000,

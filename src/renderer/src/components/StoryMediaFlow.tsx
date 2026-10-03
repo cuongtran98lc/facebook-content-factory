@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import type { AIProviderName, BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneSource, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, SoundEffectPreset, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AIProviderName, BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneImageDTO, FlowSceneSource, GenerateSingleImageResult, GoogleFlowCaptureStatus, ReelVideoProgress, SingleImageAspectRatio, SoundEffectOptions, SoundEffectPreset, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoOutputDTO, VideoFormat } from '../../../shared/types'
+import { getCtaText } from '../../../shared/audience'
 
 export function stickSceneImageUrl(scene: Pick<StickmanSceneImageDTO, 'filePath' | 'fileUrl'>): string {
   if (scene.fileUrl.startsWith('local-media://')) return scene.fileUrl
@@ -15,8 +16,15 @@ export function stickSourceForProvider(provider?: AIProviderName): StickSource {
   return 'API'
 }
 
+export const DEFAULT_STICKY_MAN_PROMPT =
+  '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
+export const DEFAULT_BETTER_MIND_PROMPT = DEFAULT_STICKY_MAN_PROMPT
+export const DEFAULT_FLUX_PROMPT =
+  'Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens.'
+
 type Props = {
   projectId?: string
+  contentLanguage?: string
   busy: boolean
   busyMessage?: string
   ffmpegReady: boolean
@@ -35,10 +43,13 @@ type Props = {
   onImportFlowSceneImages?(sources: FlowSceneSource[]): void
   googleFlowCapture?: GoogleFlowCaptureStatus | null
   onStartGoogleFlowAutomation?(): void
+  onStartFluxSceneAutomation?(hfToken?: string): void
+  onStartBetterMindAutomation?(hfToken?: string, customPrompt?: string, cleanPrevious?: boolean): void
+  onChangeHfToken?(): void
   onStartGoogleFlowCapture?(): void
   onCancelGoogleFlowCapture?(): void
   onGenerateVideoThumbnail(): void
-  onGenerateAudio(): void
+  onGenerateAudio(customCta?: string): void
   onGenerateReelVideos(): void
   onRegenerateReelThumbnails(): void
   onGenerateMetadata(): void
@@ -145,6 +156,56 @@ export function StoryMediaFlow(props: Props) {
   const [videoLoadError, setVideoLoadError] = useState<boolean>(false)
   const [flowImageUrls, setFlowImageUrls] = useState<string[]>([])
   const [flowInputError, setFlowInputError] = useState('')
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [expandedSegments, setExpandedSegments] = useState<Record<string, boolean>>({})
+  const [hfModalOpen, setHfModalOpen] = useState(false)
+  const [hfTokenInput, setHfTokenInput] = useState('')
+  const [activeStylePreset, setActiveStylePreset] = useState<'FLUX_CINEMATIC' | 'BETTER_MIND'>('FLUX_CINEMATIC')
+  const [betterMindPromptInput, setBetterMindPromptInput] = useState<string>(DEFAULT_BETTER_MIND_PROMPT)
+  const [cleanPreviousScenes, setCleanPreviousScenes] = useState<boolean>(false)
+  const [lightboxSceneIndex, setLightboxSceneIndex] = useState<number | null>(null)
+  const [ctaTextInput, setCtaTextInput] = useState<string>(() => getCtaText(props.contentLanguage))
+
+  // State cho Studio tạo 1 ảnh độc lập (Clone modal HF)
+  const [singleGenModalOpen, setSingleGenModalOpen] = useState(false)
+  const [singlePrompt, setSinglePrompt] = useState<string>(DEFAULT_BETTER_MIND_PROMPT)
+  const [singleAspect, setSingleAspect] = useState<SingleImageAspectRatio>('9:16')
+  const [singlePreset, setSinglePreset] = useState<'BETTER_MIND' | 'FLUX_CINEMATIC' | 'CUSTOM'>('BETTER_MIND')
+  const [singleLoading, setSingleLoading] = useState(false)
+  const [singleResult, setSingleResult] = useState<GenerateSingleImageResult | null>(null)
+  const [singleError, setSingleError] = useState<string | null>(null)
+  const [singleSaveSuccess, setSingleSaveSuccess] = useState<string | null>(null)
+  const [singleSaving, setSingleSaving] = useState(false)
+
+  useEffect(() => {
+    setCtaTextInput(getCtaText(props.contentLanguage))
+  }, [props.contentLanguage])
+
+  const handleCopyText = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      setTimeout(() => {
+        setCopiedKey(current => (current === key ? null : current))
+      }, 2000)
+    } catch {
+      // fallback
+    }
+  }
+
+  const handleCopyAllSegmentsText = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const segments = props.media?.audioSegments ?? []
+    if (!segments.length) return
+    const allText = segments
+      .map(seg => `[${seg.kind === 'CTA' ? 'CTA' : `Phân đoạn ${seg.index}`} · ${formatDuration(seg.duration)}]\n${seg.text}`)
+      .join('\n\n')
+    void handleCopyText(allText, 'all')
+  }
+
+  const toggleExpandSegment = (key: string) => {
+    setExpandedSegments(prev => ({ ...prev, [key]: !prev[key] }))
+  }
 
   const EMOTION_LABELS: Record<string, string> = {
     worried: '😰 Khủng hoảng / Lo âu (Crisis - Chuẩn ảnh mẫu)',
@@ -278,11 +339,208 @@ export function StoryMediaFlow(props: Props) {
     }
   }
 
+  async function handleStartFluxClick() {
+    setActiveStylePreset('FLUX_CINEMATIC')
+    try {
+      const token = typeof window.contentFactory?.settings?.getHuggingFaceToken === 'function'
+        ? await window.contentFactory.settings.getHuggingFaceToken()
+        : ''
+      if (!token) {
+        setHfTokenInput('')
+        setHfModalOpen(true)
+        return
+      }
+      props.onStartFluxSceneAutomation?.(token)
+    } catch {
+      setHfModalOpen(true)
+    }
+  }
+
+  function handleStartBetterMindClick() {
+    setActiveStylePreset('BETTER_MIND')
+    setHfModalOpen(true)
+  }
+
+  async function handleOpenHfModal() {
+    try {
+      const token = typeof window.contentFactory?.settings?.getHuggingFaceToken === 'function'
+        ? await window.contentFactory.settings.getHuggingFaceToken()
+        : ''
+      setHfTokenInput(token || '')
+      setHfModalOpen(true)
+    } catch {
+      setHfModalOpen(true)
+    }
+  }
+
+  async function handleSaveHfTokenAndRun() {
+    const trimmed = hfTokenInput.trim()
+    if (!trimmed) {
+      alert('Vui lòng nhập Hugging Face Token (bắt đầu bằng hf_...)')
+      return
+    }
+    try {
+      if (typeof window.contentFactory?.settings?.saveHuggingFaceToken === 'function') {
+        await window.contentFactory.settings.saveHuggingFaceToken(trimmed)
+      }
+    } catch (err) {
+      console.error(err)
+    }
+    setHfModalOpen(false)
+    if (activeStylePreset === 'BETTER_MIND') {
+      props.onStartBetterMindAutomation?.(trimmed, betterMindPromptInput, cleanPreviousScenes)
+    } else {
+      props.onStartFluxSceneAutomation?.(trimmed)
+    }
+  }
+
+  function handleRunWithoutToken() {
+    setHfModalOpen(false)
+    if (activeStylePreset === 'BETTER_MIND') {
+      props.onStartBetterMindAutomation?.('', betterMindPromptInput, cleanPreviousScenes)
+    } else {
+      props.onStartFluxSceneAutomation?.('')
+    }
+  }
+
+  async function handleOpenSingleStudio(preset: 'BETTER_MIND' | 'FLUX_CINEMATIC' | 'CUSTOM' = 'BETTER_MIND') {
+    setSinglePreset(preset)
+    if (preset === 'BETTER_MIND') {
+      setSinglePrompt(DEFAULT_BETTER_MIND_PROMPT)
+    } else if (preset === 'FLUX_CINEMATIC') {
+      setSinglePrompt(DEFAULT_FLUX_PROMPT)
+    } else {
+      setSinglePrompt('')
+    }
+    setSingleError(null)
+    setSingleSaveSuccess(null)
+    try {
+      const token = typeof window.contentFactory?.settings?.getHuggingFaceToken === 'function'
+        ? await window.contentFactory.settings.getHuggingFaceToken()
+        : ''
+      setHfTokenInput(token || '')
+    } catch {}
+    setSingleGenModalOpen(true)
+  }
+
+  function handleSelectSinglePreset(preset: 'BETTER_MIND' | 'FLUX_CINEMATIC' | 'CUSTOM') {
+    setSinglePreset(preset)
+    if (preset === 'BETTER_MIND') {
+      setSinglePrompt(DEFAULT_BETTER_MIND_PROMPT)
+    } else if (preset === 'FLUX_CINEMATIC') {
+      setSinglePrompt(DEFAULT_FLUX_PROMPT)
+    }
+  }
+
+  async function handleGenerateSingleImage(forceFree: boolean = false) {
+    if (!singlePrompt.trim()) {
+      alert('Vui lòng nhập prompt để tạo ảnh.')
+      return
+    }
+    setSingleLoading(true)
+    setSingleError(null)
+    setSingleSaveSuccess(null)
+    try {
+      const tokenToUse = forceFree ? '' : hfTokenInput.trim()
+      if (tokenToUse && typeof window.contentFactory?.settings?.saveHuggingFaceToken === 'function') {
+        await window.contentFactory.settings.saveHuggingFaceToken(tokenToUse).catch(() => undefined)
+      }
+
+      const res = await window.contentFactory.storyMedia.generateSingleImage({
+        prompt: singlePrompt.trim(),
+        aspectRatio: singleAspect,
+        stylePreset: singlePreset,
+        hfToken: tokenToUse,
+        projectId: props.projectId
+      })
+      setSingleResult(res)
+    } catch (err) {
+      setSingleError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSingleLoading(false)
+    }
+  }
+
+  function handleDownloadSingleImage() {
+    if (!singleResult?.dataUrl) return
+    const a = document.createElement('a')
+    a.href = singleResult.dataUrl
+    a.download = `ai_image_${singlePreset.toLowerCase()}_${Date.now()}.jpg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  async function handleSaveSingleToProject() {
+    if (!singleResult?.dataUrl || !props.projectId) return
+    setSingleSaving(true)
+    setSingleSaveSuccess(null)
+    try {
+      if (typeof window.contentFactory?.storyMedia?.saveImageToProjectScene === 'function') {
+        const targetFolder = singlePreset === 'BETTER_MIND' ? 'better-mind-scenes' : 'flux-scenes'
+        const res = await window.contentFactory.storyMedia.saveImageToProjectScene({
+          projectId: props.projectId,
+          dataUrl: singleResult.dataUrl,
+          targetFolder
+        })
+        setSingleSaveSuccess(`✓ Đã lưu ảnh vào dự án: ${res.fileName}`)
+        props.onRefreshMedia?.()
+      }
+    } catch (err) {
+      setSingleError(`Lưu vào dự án thất bại: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSingleSaving(false)
+    }
+  }
+
   const audioDone = Boolean(props.media?.audioPath)
   const audioSegmentSupport = props.media?.audioSegmentSupport === true
   const audioSegments = props.media?.audioSegments ?? []
   const projectFlowCapture = props.googleFlowCapture?.projectId === props.projectId ? props.googleFlowCapture : null
   const flowCaptureActive = Boolean(projectFlowCapture && ['CONNECTING', 'WAITING_LOGIN', 'GENERATING', 'CAPTURING', 'BUILDING'].includes(projectFlowCapture.stage))
+
+  const availableFlowScenes = useMemo(() => {
+    const map = new Map<number, FlowSceneImageDTO>()
+    if (props.media?.flowSceneImages) {
+      for (const scene of props.media.flowSceneImages) {
+        map.set(scene.index, scene)
+      }
+    }
+    if (projectFlowCapture?.recentImages) {
+      for (const scene of projectFlowCapture.recentImages) {
+        map.set(scene.index, scene)
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.index - b.index)
+  }, [props.media?.flowSceneImages, projectFlowCapture?.recentImages])
+
+  useEffect(() => {
+    if (lightboxSceneIndex === null) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setLightboxSceneIndex(null)
+      } else if (e.key === 'ArrowLeft') {
+        const currentIdx = availableFlowScenes.findIndex(s => s.index === lightboxSceneIndex)
+        if (currentIdx > 0) {
+          setLightboxSceneIndex(availableFlowScenes[currentIdx - 1].index)
+        }
+      } else if (e.key === 'ArrowRight') {
+        const currentIdx = availableFlowScenes.findIndex(s => s.index === lightboxSceneIndex)
+        if (currentIdx >= 0 && currentIdx < availableFlowScenes.length - 1) {
+          setLightboxSceneIndex(availableFlowScenes[currentIdx + 1].index)
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [lightboxSceneIndex, availableFlowScenes])
+
+  const activeLightboxScene = lightboxSceneIndex !== null
+    ? availableFlowScenes.find(s => s.index === lightboxSceneIndex) || null
+    : null
+  const activeLightboxIdx = activeLightboxScene
+    ? availableFlowScenes.findIndex(s => s.index === activeLightboxScene.index)
+    : -1
   const backgroundDone = Boolean(props.media?.backgroundPath)
   const storyVideoParts = props.media?.storyVideoParts?.length
     ? props.media.storyVideoParts
@@ -340,36 +598,177 @@ export function StoryMediaFlow(props: Props) {
 
     <div className="media-step">
       <div><b>1</b><div><strong>Story MP3 + phân đoạn</strong><span>{audioHint}</span></div></div>
-      <button className="secondary" onClick={props.onGenerateAudio} disabled={props.busy || !canGenerateAudio}>
+      <button className="secondary" onClick={() => props.onGenerateAudio(ctaTextInput)} disabled={props.busy || !canGenerateAudio}>
         {audioDone ? 'Regenerate MP3 + phân đoạn' : 'Generate MP3 + phân đoạn'}
       </button>
     </div>
+    <div style={{ margin: '6px 0 12px', padding: '10px 14px', background: 'rgba(15, 23, 42, 0.7)', border: '1px solid #334155', borderRadius: '7px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+        <label style={{ fontSize: '12px', fontWeight: 600, color: '#c7d2fe', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span>📢</span> Câu CTA kết thúc video ({props.contentLanguage?.startsWith('en') ? 'Tiếng Anh' : props.contentLanguage?.startsWith('vi') ? 'Tiếng Việt' : props.contentLanguage || 'Mặc định'}):
+        </label>
+        <button
+          type="button"
+          style={{ background: 'none', border: 'none', color: '#818cf8', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
+          onClick={() => setCtaTextInput(getCtaText(props.contentLanguage))}
+          title="Đặt lại câu CTA mặc định theo ngôn ngữ dự án"
+        >
+          ↺ Đặt lại mặc định
+        </button>
+      </div>
+      <input
+        type="text"
+        value={ctaTextInput}
+        onChange={e => setCtaTextInput(e.target.value)}
+        style={{ width: '100%', padding: '7px 11px', borderRadius: '5px', background: '#090d16', border: '1px solid #475569', color: '#f1f5f9', fontSize: '12px', boxSizing: 'border-box' }}
+        placeholder="Nhập câu kêu gọi like & đăng ký kênh ghép vào cuối video..."
+      />
+    </div>
     {props.media?.audioUrl && <div className="media-preview compact"><audio className="voice-player" src={props.media.audioUrl} controls /><span>Duration: {formatDuration(props.media.audioDuration)}</span></div>}
     {!!audioSegments.length && (
-      <details className="audio-segments">
-        <summary>Audio phân đoạn ({audioSegments.length} file)</summary>
+      <details className="audio-segments" open>
+        <summary className="audio-segments-summary">
+          <div className="audio-segments-summary-left">
+            <span>Audio phân đoạn ({audioSegments.length} file)</span>
+          </div>
+          <div className="audio-segments-summary-actions" onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              className={`secondary small copy-all-btn ${copiedKey === 'all' ? 'copied' : ''}`}
+              title="Sao chép toàn bộ text của tất cả phân đoạn"
+              onClick={handleCopyAllSegmentsText}>
+              {copiedKey === 'all' ? '✓ Đã copy toàn bộ text' : '📋 Copy toàn bộ text'}
+            </button>
+            <button
+              type="button"
+              className="secondary small"
+              title="Mở thư mục chứa các file audio và text phân đoạn"
+              onClick={() => void window.contentFactory.app.revealFile(audioSegments[0].path)}>
+              📂 Mở thư mục
+            </button>
+          </div>
+        </summary>
         <div className="audio-segment-list">
-          {audioSegments.map(segment => (
-            <article className="audio-segment" key={`${segment.index}-${segment.path}`}>
-              <div className="audio-segment-head">
-                <div>
-                  <strong>{segment.kind === 'CTA' ? 'CTA' : `Phân đoạn ${segment.index}`}</strong>
-                  <span>{formatDuration(segment.duration)}</span>
+          {audioSegments.map(segment => {
+            const segKey = `${segment.index}-${segment.path}`
+            const isCopied = copiedKey === segKey
+            const isExpanded = !!expandedSegments[segKey]
+            const isLong = segment.text.length > 140
+            return (
+              <article className="audio-segment" key={segKey}>
+                <div className="audio-segment-head">
+                  <div>
+                    <strong>{segment.kind === 'CTA' ? 'CTA' : `Phân đoạn ${segment.index}`}</strong>
+                    <span>{formatDuration(segment.duration)}</span>
+                  </div>
+                  <div className="audio-segment-actions">
+                    <button
+                      type="button"
+                      className={`secondary small copy-segment-btn ${isCopied ? 'copied' : ''}`}
+                      title="Sao chép text của phân đoạn này"
+                      onClick={() => void handleCopyText(segment.text, segKey)}>
+                      {isCopied ? '✓ Đã copy' : '📋 Copy text'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary small"
+                      title="Mở file MP3 trong thư mục"
+                      onClick={() => void window.contentFactory.app.revealFile(segment.path)}>
+                      MP3
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary small"
+                      title="Mở file Text (.txt) của phân đoạn này"
+                      onClick={() => void window.contentFactory.app.revealFile(segment.textPath || segment.path)}>
+                      TXT
+                    </button>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  title="Mở thư mục chứa file audio"
-                  onClick={() => void window.contentFactory.app.revealFile(segment.path)}>
-                  Mở file
-                </button>
-              </div>
-              <audio className="voice-player" src={segment.url} controls preload="none" />
-              <p>{segment.text}</p>
-            </article>
-          ))}
+                <audio className="voice-player" src={segment.url} controls preload="none" />
+                <div className="audio-segment-text-wrapper">
+                  <p className={`audio-segment-text ${isExpanded ? 'expanded' : ''}`}>{segment.text}</p>
+                  {isLong && (
+                    <button
+                      type="button"
+                      className="text-expand-btn"
+                      onClick={() => toggleExpandSegment(segKey)}>
+                      {isExpanded ? 'Thu gọn ▲' : 'Xem đầy đủ ▼'}
+                    </button>
+                  )}
+                </div>
+              </article>
+            )
+          })}
         </div>
       </details>
+    )}
+
+    {!audioSegments.length && (
+      <section className="flow-scenes-import" style={{ borderStyle: 'dashed', opacity: 0.9 }}>
+        <div className="flow-scenes-heading">
+          <div>
+            <strong>Bước 2: Ảnh kịch bản theo phân đoạn</strong>
+            <span>Chưa có audio phân đoạn</span>
+          </div>
+          <div className="flow-connect-actions">
+            <button
+              type="button"
+              className="primary flux-auto-btn"
+              title="Cần có audio phân đoạn trước khi tạo ảnh"
+              onClick={() => void handleStartFluxClick()}
+              disabled={props.busy}>
+              ⚡ Tạo ảnh chi tiết (FLUX HF)
+            </button>
+            <button
+              type="button"
+              className="primary better-mind-auto-btn"
+              style={{
+                background: 'linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #3730a3 100%)',
+                borderColor: '#6366f1',
+                color: '#e0e7ff',
+                boxShadow: '0 0 10px rgba(99, 102, 241, 0.4)',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+              title="Tự động tạo hoạt cảnh phong cách A Better Mind (Dark Minimalist, Sơ đồ tư duy, Não bộ, Silhouette)"
+              onClick={() => void handleStartBetterMindClick()}
+              disabled={props.busy}>
+              <span>🧠</span> Tạo ảnh A Better Mind
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              style={{
+                background: 'linear-gradient(135deg, rgba(234, 88, 12, 0.2) 0%, rgba(249, 115, 22, 0.15) 100%)',
+                borderColor: '#f97316',
+                color: '#fdba74',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+              title="Mở Studio thử nghiệm tạo 1 ảnh độc lập với Prompt tùy biến và xem kết quả ngay"
+              onClick={() => void handleOpenSingleStudio('BETTER_MIND')}
+              disabled={props.busy || singleLoading}>
+              <span>🎨</span> Thử tạo 1 ảnh
+            </button>
+            <button
+              type="button"
+              className="secondary small"
+              title="Cài đặt hoặc cập nhật Hugging Face Access Token"
+              onClick={() => void handleOpenHfModal()}
+              disabled={props.busy}>
+              🔑 Token
+            </button>
+          </div>
+        </div>
+        <div style={{ padding: '12px 14px', background: 'rgba(30, 41, 59, 0.5)', borderRadius: '8px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6, marginTop: '8px' }}>
+          💡 Hãy bấm nút <strong>"Generate Story MP3"</strong> ở Bước 1 ở trên trước. Hệ thống sẽ tự động phân tách kịch bản thành các đoạn audio nhỏ và khớp ảnh chi tiết tương ứng với từng phân đoạn. Bạn cũng có thể bấm <strong>"🔑 Token"</strong> để cài đặt sẵn Hugging Face Token ngay bây giờ!
+        </div>
+      </section>
     )}
 
     {!!audioSegments.length && props.onImportFlowSceneImages && (
@@ -377,17 +776,68 @@ export function StoryMediaFlow(props: Props) {
         <div className="flow-scenes-heading">
           <div>
             <strong>Ảnh Google Flow theo phân đoạn</strong>
-            <span>{flowCaptureActive ? `${projectFlowCapture?.captured ?? 0}/${audioSegments.length} ảnh đang nhận` : `${props.media?.flowSceneImages?.length ?? 0}/${audioSegments.length} ảnh đã ghép`}</span>
+            <span>{flowCaptureActive ? `${projectFlowCapture?.captured ?? availableFlowScenes.length}/${audioSegments.length} ảnh đang tạo` : `${availableFlowScenes.length}/${audioSegments.length} ảnh đã sẵn sàng`}</span>
           </div>
           <div className="flow-connect-actions">
             {flowCaptureActive ? (
               <button type="button" className="secondary" onClick={props.onCancelGoogleFlowCapture} disabled={props.googleFlowCapture?.stage === 'BUILDING'}>
-                {projectFlowCapture?.stage === 'BUILDING' ? 'Đang ghép video...' : 'Dừng nhận ảnh'}
+                {projectFlowCapture?.stage === 'BUILDING' ? 'Đang ghép video...' : 'Dừng tạo ảnh'}
               </button>
             ) : (
               <>
-                <button type="button" className="primary" onClick={props.onStartGoogleFlowAutomation} disabled={props.busy}>
-                  Tự động tạo bằng Flow
+                <button
+                  type="button"
+                  className="primary flux-auto-btn"
+                  title="Tự động tạo ảnh chi tiết tả thực với FLUX qua Hugging Face Inference API (Miễn phí 100%)"
+                  onClick={() => void handleStartFluxClick()}
+                  disabled={props.busy}>
+                  ⚡ Tạo ảnh chi tiết (FLUX HF)
+                </button>
+                <button
+                  type="button"
+                  className="primary better-mind-auto-btn"
+                  style={{
+                    background: 'linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #3730a3 100%)',
+                    borderColor: '#6366f1',
+                    color: '#e0e7ff',
+                    boxShadow: '0 0 10px rgba(99, 102, 241, 0.4)',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                  title="Tự động tạo hoạt cảnh phong cách A Better Mind (Dark Minimalist, Sơ đồ tư duy, Não bộ, Silhouette) cho từng phân đoạn"
+                  onClick={() => void handleStartBetterMindClick()}
+                  disabled={props.busy}>
+                  <span>🧠</span> Tạo ảnh A Better Mind
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(234, 88, 12, 0.2) 0%, rgba(249, 115, 22, 0.15) 100%)',
+                    borderColor: '#f97316',
+                    color: '#fdba74',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                  title="Mở Studio thử nghiệm tạo 1 ảnh độc lập với Prompt tùy biến và xem kết quả ngay"
+                  onClick={() => void handleOpenSingleStudio('BETTER_MIND')}
+                  disabled={props.busy || singleLoading}>
+                  <span>🎨</span> Thử tạo 1 ảnh
+                </button>
+                <button
+                  type="button"
+                  className="secondary small"
+                  title="Cài đặt hoặc cập nhật Hugging Face Access Token"
+                  onClick={() => void handleOpenHfModal()}
+                  disabled={props.busy}>
+                  🔑 Token
+                </button>
+                <button type="button" className="secondary" onClick={props.onStartGoogleFlowAutomation} disabled={props.busy}>
+                  Tự động bằng Flow
                 </button>
                 <button type="button" className="secondary" onClick={props.onStartGoogleFlowCapture} disabled={props.busy}>
                   Nhận ảnh tải từ Flow
@@ -406,19 +856,36 @@ export function StoryMediaFlow(props: Props) {
           </div>
         )}
         <div className="flow-url-list">
-          {audioSegments.map((segment, index) => (
-            <label className="flow-url-row" key={segment.path}>
-              <span>{segment.kind === 'CTA' ? 'CTA' : `Đoạn ${segment.index}`} · {formatDuration(segment.duration)}</span>
-              <input
-                type="url"
-                value={flowImageUrls[index] ?? ''}
-                placeholder="https://...googleusercontent.com/..."
-                disabled={props.busy}
-                onChange={event => setFlowImageUrls(current => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))}
-              />
-              <small>{segment.text}</small>
-            </label>
-          ))}
+          {audioSegments.map((segment, index) => {
+            const flowCopyKey = `flow-${segment.index}`
+            const isFlowCopied = copiedKey === flowCopyKey
+            return (
+              <label className="flow-url-row" key={segment.path}>
+                <div className="flow-url-row-head">
+                  <span>{segment.kind === 'CTA' ? 'CTA' : `Đoạn ${segment.index}`} · {formatDuration(segment.duration)}</span>
+                  <button
+                    type="button"
+                    className={`flow-copy-btn ${isFlowCopied ? 'copied' : ''}`}
+                    title="Sao chép text phân đoạn này để dán vào prompt Google Flow"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void handleCopyText(segment.text, flowCopyKey)
+                    }}>
+                    {isFlowCopied ? '✓ Đã copy' : '📋 Copy text'}
+                  </button>
+                </div>
+                <input
+                  type="url"
+                  value={flowImageUrls[index] ?? ''}
+                  placeholder="https://...googleusercontent.com/..."
+                  disabled={props.busy}
+                  onChange={event => setFlowImageUrls(current => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))}
+                />
+                <small title={segment.text}>{segment.text}</small>
+              </label>
+            )
+          })}
         </div>
         <div className="flow-scenes-actions">
           {flowInputError && <span role="alert">{flowInputError}</span>}
@@ -429,18 +896,42 @@ export function StoryMediaFlow(props: Props) {
       </section>
     )}
 
-    {!!props.media?.flowSceneImages?.length && (
+    {!!availableFlowScenes.length && (
       <div className={`scene-images-gallery flow-scenes-gallery format-${props.videoFormat.toLowerCase()}`}>
-        <h4>Ảnh Google Flow đã đồng bộ ({props.media.flowSceneImages.length} đoạn)</h4>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+          <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span>🖼️ Xem trước ảnh phân đoạn ({availableFlowScenes.length}/{audioSegments.length || availableFlowScenes.length} đoạn)</span>
+            {flowCaptureActive && (
+              <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '12px', background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', border: '1px solid #0284c7', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#38bdf8', display: 'inline-block', boxShadow: '0 0 8px #38bdf8' }} />
+                Đang tạo trực tiếp...
+              </span>
+            )}
+          </h4>
+          <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+            💡 Nhấp vào bất kỳ ảnh nào để xem trước cỡ lớn (Lightbox Zoom)
+          </span>
+        </div>
         <div className="scene-images-grid">
-          {props.media.flowSceneImages.map(scene => (
-            <div key={scene.index} className="scene-image-card">
+          {availableFlowScenes.map(scene => (
+            <div
+              key={scene.index}
+              className="scene-image-card"
+              style={{ cursor: 'pointer', transition: 'transform 0.15s ease, border-color 0.15s ease' }}
+              onClick={() => setLightboxSceneIndex(scene.index)}
+              title={`Nhấp để mở xem chi tiết phân đoạn ${scene.index}`}
+            >
               <div className="scene-image-header">
                 <span className="scene-number">{scene.kind === 'CTA' ? 'CTA' : `Đoạn ${scene.index}`}</span>
-                <span className="scene-setting-tag">{formatDuration(scene.duration)} · {scene.source}</span>
+                <span className="scene-setting-tag">{formatDuration(scene.duration)}</span>
               </div>
-              <img src={stickSceneImageUrl(scene)} alt={`Google Flow ${scene.index}`} />
-              <p className="scene-text">{scene.sectionText}</p>
+              <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '6px' }}>
+                <img src={stickSceneImageUrl(scene)} alt={`Phân đoạn ${scene.index}`} />
+                <div className="card-hover-preview">
+                  🔍 Xem lớn
+                </div>
+              </div>
+              <p className="scene-text" title={scene.sectionText}>{scene.sectionText}</p>
             </div>
           ))}
         </div>
@@ -927,6 +1418,564 @@ export function StoryMediaFlow(props: Props) {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {hfModalOpen && (
+      <div className="modal-backdrop" onClick={() => setHfModalOpen(false)}>
+        <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: '580px', width: '92%' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>{activeStylePreset === 'BETTER_MIND' ? '🧠' : '⚡'}</span>
+            {activeStylePreset === 'BETTER_MIND'
+              ? 'Tạo hoạt cảnh Sticky Man 2D (@abettermind Style)'
+              : 'Tạo ảnh chi tiết tả thực (FLUX Engine)'}
+          </h3>
+          <div style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: '1.6', marginBottom: '14px' }}>
+            {activeStylePreset === 'BETTER_MIND' ? (
+              <>
+                <p style={{ margin: '0 0 10px', color: '#e2e8f0' }}>
+                  Phong cách chuẩn <strong>Sticky Man (@abettermind)</strong>: Nhân vật <strong>Người que mặt tròn trắng viền đen</strong>, đầy đủ lông mày, mắt và khuôn miệng biểu cảm theo ngữ cảnh, mặc áo vest đen và cà vạt đỏ. Mỗi phân đoạn kịch bản sẽ được vẽ chi tiết hành động, biểu cảm và bối cảnh tương ứng. <em>Tuyệt đối 2D vector comic, không render 3D hay người thật.</em>
+                </p>
+                <div style={{ marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontWeight: 600, color: '#c7d2fe', fontSize: '12px' }}>
+                      ✏️ Prompt Sticky Man 2D (Bạn có thể tùy chỉnh hoặc thêm chi tiết):
+                    </label>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: '#818cf8', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
+                      onClick={() => setBetterMindPromptInput(DEFAULT_BETTER_MIND_PROMPT)}
+                    >
+                      ↺ Đặt lại prompt mặc định
+                    </button>
+                  </div>
+                  <textarea
+                    value={betterMindPromptInput}
+                    onChange={e => setBetterMindPromptInput(e.target.value)}
+                    rows={3}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', background: '#0f172a', border: '1px solid #334155', color: '#f1f5f9', fontSize: '12px', boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.4 }}
+                  />
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', marginBottom: '12px', fontSize: '12px', color: '#fca5a5', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={cleanPreviousScenes}
+                    onChange={e => setCleanPreviousScenes(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <span><strong>Xóa ảnh cũ & tạo lại toàn bộ từ đầu</strong> (Khuyên chọn để loại bỏ các ảnh 3D cũ và thay bằng Người que 2D)</span>
+                </label>
+              </>
+            ) : (
+              <p style={{ margin: '0 0 8px' }}>
+                Hệ thống sẽ tạo ảnh phân đoạn chi tiết, tả thực, chuẩn điện ảnh khớp 100% với từng câu thoại kịch bản.
+              </p>
+            )}
+            <div style={{ padding: '10px 12px', background: 'rgba(15, 23, 42, 0.6)', borderRadius: '6px', marginBottom: '12px', border: '1px solid #334155' }}>
+              💡 <strong>Hoàn toàn Miễn phí:</strong> Bạn có thể bấm nút màu xanh lá <strong>"⚡ Tạo ngay (Free - Không cần token)"</strong> ở dưới để chạy ngay lập tức, hoặc dán Hugging Face Token nếu muốn ưu tiên gọi model qua tài khoản HF của bạn.
+            </div>
+            <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#e2e8f0' }}>
+              Hugging Face Access Token (Tùy chọn, chuỗi hf_...):
+            </label>
+            <input
+              type="password"
+              value={hfTokenInput}
+              onChange={e => setHfTokenInput(e.target.value)}
+              placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (hoặc để trống)"
+              style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', background: '#0f172a', border: '1px solid #334155', color: '#fff', fontSize: '13px', boxSizing: 'border-box' }}
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="secondary"
+              style={{ color: '#34d399', borderColor: '#059669', background: 'rgba(5, 150, 105, 0.15)' }}
+              onClick={handleRunWithoutToken}>
+              ⚡ Tạo ngay (Free - Không cần token)
+            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button type="button" className="secondary" onClick={() => setHfModalOpen(false)}>
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="primary flux-auto-btn"
+                onClick={() => void handleSaveHfTokenAndRun()}>
+                {hfTokenInput.trim() ? '✓ Lưu HF & Bắt đầu' : 'Bắt đầu tạo'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {singleGenModalOpen && (
+      <div className="modal-backdrop" onClick={() => !singleLoading && setSingleGenModalOpen(false)}>
+        <div
+          className="modal-card"
+          onClick={e => e.stopPropagation()}
+          style={{
+            maxWidth: '740px',
+            width: '94%',
+            maxHeight: '92vh',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '20px 24px',
+            background: 'linear-gradient(145deg, #0b1120 0%, #0f172a 100%)',
+            border: '1px solid #334155',
+            borderRadius: '12px',
+            boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6), 0 0 25px rgba(99, 102, 241, 0.2)'
+          }}
+        >
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid #1e293b', paddingBottom: '10px' }}>
+            <h3 style={{ margin: 0, fontSize: '17px', display: 'flex', alignItems: 'center', gap: '8px', color: '#f8fafc' }}>
+              <span style={{ fontSize: '20px' }}>🎨</span>
+              <span>Studio Tạo Ảnh AI (Thử Prompt & Token)</span>
+            </h3>
+            <button
+              type="button"
+              disabled={singleLoading}
+              onClick={() => setSingleGenModalOpen(false)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#94a3b8',
+                fontSize: '18px',
+                cursor: singleLoading ? 'not-allowed' : 'pointer',
+                padding: '4px 8px',
+                borderRadius: '4px'
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ overflowY: 'auto', flex: 1, paddingRight: '4px' }}>
+            {/* 1. Chọn Preset Phong cách */}
+            <div style={{ marginBottom: '14px' }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: '12px', color: '#cbd5e1', marginBottom: '6px' }}>
+                Chọn phong cách mẫu:
+              </label>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => handleSelectSinglePreset('BETTER_MIND')}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: singlePreset === 'BETTER_MIND' ? '1px solid #6366f1' : '1px solid #334155',
+                    background: singlePreset === 'BETTER_MIND' ? 'rgba(99, 102, 241, 0.25)' : '#0f172a',
+                    color: singlePreset === 'BETTER_MIND' ? '#c7d2fe' : '#94a3b8'
+                  }}
+                >
+                  <span>🧠</span> Sticky Man 2D (@abettermind)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectSinglePreset('FLUX_CINEMATIC')}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: singlePreset === 'FLUX_CINEMATIC' ? '1px solid #0284c7' : '1px solid #334155',
+                    background: singlePreset === 'FLUX_CINEMATIC' ? 'rgba(2, 132, 199, 0.25)' : '#0f172a',
+                    color: singlePreset === 'FLUX_CINEMATIC' ? '#bae6fd' : '#94a3b8'
+                  }}
+                >
+                  <span>⚡</span> FLUX Cinematic tả thực
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectSinglePreset('CUSTOM')}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: singlePreset === 'CUSTOM' ? '1px solid #10b981' : '1px solid #334155',
+                    background: singlePreset === 'CUSTOM' ? 'rgba(16, 185, 129, 0.25)' : '#0f172a',
+                    color: singlePreset === 'CUSTOM' ? '#a7f3d0' : '#94a3b8'
+                  }}
+                >
+                  <span>✍️</span> Tùy chỉnh tự do
+                </button>
+              </div>
+            </div>
+
+            {/* 2. Chọn Tỉ lệ khung hình (Aspect Ratio) */}
+            <div style={{ marginBottom: '14px' }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: '12px', color: '#cbd5e1', marginBottom: '6px' }}>
+                Tỉ lệ ảnh (Aspect Ratio):
+              </label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {(['9:16', '16:9', '1:1'] as const).map(ar => (
+                  <button
+                    key={ar}
+                    type="button"
+                    onClick={() => setSingleAspect(ar)}
+                    style={{
+                      flex: 1,
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      border: singleAspect === ar ? '1px solid #f97316' : '1px solid #334155',
+                      background: singleAspect === ar ? 'rgba(249, 115, 22, 0.2)' : '#0f172a',
+                      color: singleAspect === ar ? '#fdba74' : '#94a3b8',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <span>{ar === '9:16' ? '📱 9:16 (Shorts)' : ar === '16:9' ? '🖥️ 16:9 (Ngang)' : '🔲 1:1 (Vuông)'}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 3. Prompt Input */}
+            <div style={{ marginBottom: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontWeight: 600, color: '#e2e8f0', fontSize: '12px' }}>
+                  ✏️ Prompt tạo ảnh:
+                </label>
+                <button
+                  type="button"
+                  style={{ background: 'none', border: 'none', color: '#818cf8', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
+                  onClick={() => {
+                    if (singlePreset === 'BETTER_MIND') setSinglePrompt(DEFAULT_BETTER_MIND_PROMPT)
+                    else if (singlePreset === 'FLUX_CINEMATIC') setSinglePrompt(DEFAULT_FLUX_PROMPT)
+                    else setSinglePrompt('')
+                  }}
+                >
+                  ↺ Khôi phục Prompt mẫu
+                </button>
+              </div>
+              <textarea
+                value={singlePrompt}
+                onChange={e => setSinglePrompt(e.target.value)}
+                rows={3}
+                placeholder="Nhập mô tả hình ảnh, hành động, biểu cảm nhân vật, bối cảnh..."
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '6px',
+                  background: '#090d16',
+                  border: '1px solid #334155',
+                  color: '#f8fafc',
+                  fontSize: '12px',
+                  boxSizing: 'border-box',
+                  resize: 'vertical',
+                  lineHeight: 1.45
+                }}
+              />
+            </div>
+
+            {/* 4. Hugging Face Access Token */}
+            <div style={{ marginBottom: '14px', background: 'rgba(15, 23, 42, 0.7)', padding: '10px 12px', borderRadius: '8px', border: '1px solid #334155' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label style={{ fontWeight: 600, fontSize: '12px', color: '#cbd5e1' }}>
+                  🔑 Hugging Face Token (hf_...):
+                </label>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  Để trống để dùng Free Sana Engine
+                </span>
+              </div>
+              <input
+                type="password"
+                value={hfTokenInput}
+                onChange={e => setHfTokenInput(e.target.value)}
+                placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (tùy chọn)"
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: '6px',
+                  background: '#090d16',
+                  border: '1px solid #475569',
+                  color: '#fff',
+                  fontSize: '12px',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+
+            {/* Error & Success Messages */}
+            {singleError && (
+              <div style={{ padding: '10px 12px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', borderRadius: '6px', color: '#fca5a5', fontSize: '12px', marginBottom: '14px', lineHeight: 1.4 }}>
+                ⚠️ <strong>Lỗi tạo ảnh:</strong> {singleError}
+              </div>
+            )}
+            {singleSaveSuccess && (
+              <div style={{ padding: '10px 12px', background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.4)', borderRadius: '6px', color: '#6ee7b7', fontSize: '12px', marginBottom: '14px' }}>
+                {singleSaveSuccess}
+              </div>
+            )}
+
+            {/* Loading Indicator */}
+            {singleLoading && (
+              <div style={{ textAlign: 'center', padding: '24px 16px', background: 'rgba(15, 23, 42, 0.6)', borderRadius: '8px', border: '1px dashed #6366f1', marginBottom: '14px' }}>
+                <div style={{ fontSize: '24px', marginBottom: '8px' }}>🎨 ⏳</div>
+                <div style={{ color: '#c7d2fe', fontWeight: 600, fontSize: '14px', marginBottom: '4px' }}>
+                  Đang khởi tạo và vẽ hình ảnh...
+                </div>
+                <div style={{ color: '#94a3b8', fontSize: '12px' }}>
+                  {hfTokenInput.trim() ? 'Đang gọi Hugging Face Inference API (FLUX/Turbo)...' : 'Đang gọi Free Sana Engine chất lượng cao...'}
+                </div>
+              </div>
+            )}
+
+            {/* Result Preview Box */}
+            {singleResult && !singleLoading && (
+              <div style={{ background: '#090d16', border: '1px solid #334155', borderRadius: '10px', padding: '14px', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span style={{ fontSize: '11px', background: singleResult.engineUsed === 'HUGGING_FACE' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(16, 185, 129, 0.2)', color: singleResult.engineUsed === 'HUGGING_FACE' ? '#a5b4fc' : '#6ee7b7', border: `1px solid ${singleResult.engineUsed === 'HUGGING_FACE' ? '#6366f1' : '#10b981'}`, padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                      {singleResult.engineUsed === 'HUGGING_FACE' ? `HF: ${singleResult.modelUsed}` : `Free: ${singleResult.modelUsed}`}
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      {singleResult.width} × {singleResult.height}px
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="secondary small"
+                      onClick={handleDownloadSingleImage}
+                      style={{ color: '#38bdf8', borderColor: '#0284c7', background: 'rgba(2, 132, 199, 0.15)', fontSize: '11px', padding: '4px 10px' }}
+                    >
+                      📥 Tải ảnh về
+                    </button>
+                    {props.projectId && (
+                      <button
+                        type="button"
+                        className="secondary small"
+                        onClick={() => void handleSaveSingleToProject()}
+                        disabled={singleSaving}
+                        style={{ color: '#34d399', borderColor: '#059669', background: 'rgba(5, 150, 105, 0.15)', fontSize: '11px', padding: '4px 10px' }}
+                      >
+                        {singleSaving ? 'Đang lưu...' : '💾 Lưu vào dự án'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Image Display */}
+                <div style={{ display: 'flex', justifyContent: 'center', background: '#000', borderRadius: '8px', overflow: 'hidden', maxHeight: '420px', border: '1px solid #1e293b' }}>
+                  <img
+                    src={singleResult.dataUrl}
+                    alt="AI Generated"
+                    style={{
+                      maxHeight: '420px',
+                      maxWidth: '100%',
+                      objectFit: 'contain',
+                      borderRadius: '6px'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer Actions */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', borderTop: '1px solid #1e293b', paddingTop: '12px', flexWrap: 'wrap', gap: '8px' }}>
+            <button
+              type="button"
+              className="secondary"
+              style={{ color: '#34d399', borderColor: '#059669', background: 'rgba(5, 150, 105, 0.15)', fontSize: '12px' }}
+              onClick={() => void handleGenerateSingleImage(true)}
+              disabled={singleLoading}
+            >
+              ⚡ Tạo Free (Không cần token)
+            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setSingleGenModalOpen(false)}
+                disabled={singleLoading}
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                className="primary"
+                style={{
+                  background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                  borderColor: '#6366f1',
+                  color: '#fff',
+                  fontWeight: 600,
+                  fontSize: '12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+                onClick={() => void handleGenerateSingleImage(false)}
+                disabled={singleLoading}
+              >
+                <span>⚡</span>
+                {singleLoading ? 'Đang tạo ảnh...' : (hfTokenInput.trim() ? 'Tạo ảnh (Dùng HF Token)' : 'Tạo ảnh ngay')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {activeLightboxScene && (
+      <div
+        className="modal-overlay"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 10000,
+          background: 'rgba(2, 6, 23, 0.88)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '20px'
+        }}
+        onClick={() => setLightboxSceneIndex(null)}
+      >
+        <div
+          className="better-mind-lightbox"
+          style={{
+            maxWidth: '960px',
+            width: '100%',
+            maxHeight: '92vh',
+            background: '#0d111c',
+            border: '1px solid #334155',
+            borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 30px rgba(99, 102, 241, 0.2)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            position: 'relative'
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#0a0d18' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, fontSize: '15px', color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>🔍</span> Phân đoạn {activeLightboxScene.index} / {audioSegments.length || availableFlowScenes.length}
+              </span>
+              <span style={{ fontSize: '11px', padding: '3px 9px', borderRadius: '4px', background: activeLightboxScene.kind === 'CTA' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(99, 102, 241, 0.2)', color: activeLightboxScene.kind === 'CTA' ? '#fca5a5' : '#a5b4fc', border: '1px solid currentColor', fontWeight: 600 }}>
+                {activeLightboxScene.kind === 'CTA' ? 'Kêu gọi CTA' : 'Cốt truyện'} · {formatDuration(activeLightboxScene.duration)}
+              </span>
+            </div>
+            <button
+              type="button"
+              style={{ background: 'rgba(255,255,255,0.06)', border: 'none', color: '#94a3b8', fontSize: '18px', cursor: 'pointer', padding: '6px 12px', borderRadius: '8px', lineHeight: 1 }}
+              onClick={() => setLightboxSceneIndex(null)}
+              title="Đóng (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Body: Image with Left / Right Navigation */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#05070e', flex: 1, minHeight: '360px', maxHeight: '60vh', overflow: 'hidden', padding: '14px' }}>
+            <img
+              src={stickSceneImageUrl(activeLightboxScene)}
+              alt={`Phân đoạn ${activeLightboxScene.index}`}
+              style={{ maxWidth: '100%', maxHeight: '56vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 8px 30px rgba(0,0,0,0.6)' }}
+            />
+
+            {/* Prev button */}
+            <button
+              type="button"
+              disabled={activeLightboxIdx <= 0}
+              onClick={() => activeLightboxIdx > 0 && setLightboxSceneIndex(availableFlowScenes[activeLightboxIdx - 1].index)}
+              style={{
+                position: 'absolute',
+                left: '16px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'rgba(15, 23, 42, 0.85)',
+                color: activeLightboxIdx > 0 ? '#fff' : '#475569',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: '50%',
+                width: '44px',
+                height: '44px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: activeLightboxIdx > 0 ? 'pointer' : 'not-allowed',
+                fontSize: '22px',
+                backdropFilter: 'blur(6px)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                opacity: activeLightboxIdx > 0 ? 1 : 0.4
+              }}
+              title="Phân đoạn trước (Phím ◀)"
+            >
+              ‹
+            </button>
+
+            {/* Next button */}
+            <button
+              type="button"
+              disabled={activeLightboxIdx >= availableFlowScenes.length - 1}
+              onClick={() => activeLightboxIdx < availableFlowScenes.length - 1 && setLightboxSceneIndex(availableFlowScenes[activeLightboxIdx + 1].index)}
+              style={{
+                position: 'absolute',
+                right: '16px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'rgba(15, 23, 42, 0.85)',
+                color: activeLightboxIdx < availableFlowScenes.length - 1 ? '#fff' : '#475569',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: '50%',
+                width: '44px',
+                height: '44px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: activeLightboxIdx < availableFlowScenes.length - 1 ? 'pointer' : 'not-allowed',
+                fontSize: '22px',
+                backdropFilter: 'blur(6px)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                opacity: activeLightboxIdx < availableFlowScenes.length - 1 ? 1 : 0.4
+              }}
+              title="Phân đoạn tiếp theo (Phím ▶)"
+            >
+              ›
+            </button>
+          </div>
+
+          {/* Footer subtitle */}
+          <div style={{ padding: '14px 20px', background: '#0a0d18', borderTop: '1px solid #1e293b', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#94a3b8' }}>
+                Lời thoại câu này ({formatDuration(activeLightboxScene.duration)}):
+              </span>
+              <span style={{ fontSize: '11px', color: '#64748b' }}>
+                Dùng phím mũi tên ◀ ▶ để chuyển phân đoạn · Phím Esc để đóng
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.5, color: '#f1f5f9', background: 'rgba(30, 41, 59, 0.4)', padding: '10px 14px', borderRadius: '8px', borderLeft: '3px solid #6366f1' }}>
+              {activeLightboxScene.sectionText}
+            </p>
           </div>
         </div>
       </div>
