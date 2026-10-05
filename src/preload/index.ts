@@ -182,6 +182,11 @@ const api: ContentFactoryAPI = {
     generateScenes: input => ipcRenderer.invoke('stickman:scenes:generate', input),
     generatePackage: input => ipcRenderer.invoke('stickman:package:generate', input),
     expandShortToLong: input => ipcRenderer.invoke('stickman:short-to-long:expand', input),
+    generateStudioSceneImages: input => ipcRenderer.invoke('stickman:studio-scene-images', input),
+    generateStudioSceneVideos: input => ipcRenderer.invoke('stickman:studio-scene-videos', input),
+    generateEpisodeImages: input => ipcRenderer.invoke('stickman:episode-images', input),
+    generateStudioThumbnail: input => ipcRenderer.invoke('stickman:studio-thumbnail', input),
+    parseScriptToBeats: input => ipcRenderer.invoke('stickman:script:parse-to-beats', input),
   },
 };
 

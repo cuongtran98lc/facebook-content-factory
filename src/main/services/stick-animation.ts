@@ -32,8 +32,14 @@ export interface StickScene {
   actors: ({ name: string; action: typeof ACTIONS[number] } & CharacterDetails)[]
 }
 
+import { isScreenplayScript, screenplayToSections, extractVisualCues } from '../../shared/screenplay-parser'
+
 // Keep source text in order; AI describes these fixed sections, never rewrites narration.
 export function storySections(text: string, isShort = false): string[] {
+  if (!text || !text.trim()) throw new Error('Truyện đang trống.')
+  if (isScreenplayScript(text)) {
+    return screenplayToSections(text)
+  }
   const sentences = text.trim().split(/(?<=[.!?…])\s+|\n+/u).filter(Boolean)
   if (!sentences.length) throw new Error('Truyện đang trống.')
   const target = isShort
@@ -52,66 +58,98 @@ export function storySections(text: string, isShort = false): string[] {
 export function fallbackStickScenes(sections: string[]): StickScene[] {
   return sections.map((section, index) => {
     const text = section.toLowerCase()
-    const setting: StickScene['setting'] = /office|văn phòng|công ty|công sở|sếp|đồng nghiệp|deadline|máy tính/.test(text) ? 'office'
+    const { cues, overlayText } = extractVisualCues(section)
+    const isFridge = /tủ lạnh|refrigerator|ngăn đá|chai tương ớt|hộp cơm|bánh flan/.test(text)
+    const setting: StickScene['setting'] = /office|văn phòng|công ty|công sở|sếp|đồng nghiệp|deadline|máy tính|báo cáo/.test(text) ? 'office'
       : /school|trường|lớp|giáo viên|học sinh/.test(text) ? 'school'
       : /hospital|bệnh viện|bác sĩ|y tá/.test(text) ? 'hospital'
       : /restaurant|nhà hàng|bữa tối/.test(text) ? 'restaurant'
       : /cafe|coffee|cà phê/.test(text) ? 'cafe'
       : /street|đường phố|vỉa hè|chạy xe/.test(text) ? 'street'
-      : /park|công viên/.test(text) ? 'park'
+      : /park|công viên|đà lạt/.test(text) ? 'park'
       : /bedroom|phòng ngủ|giường/.test(text) ? 'bedroom'
       : /car|ô tô|xe hơi/.test(text) ? 'car'
       : /court|tòa án|thẩm phán/.test(text) ? 'courtroom'
       : 'home'
     const action: StickScene['actors'][number]['action'] = /run|chạy|đuổi/.test(text) ? 'run'
-      : /walk|đi bộ|bước vào|rời đi/.test(text) ? 'walk'
-      : /cry|khóc|nước mắt/.test(text) ? 'cry'
-      : /phone|điện thoại|gọi|nhắn tin/.test(text) ? 'phone'
+      : /walk|đi bộ|bước vào|rời đi|chân tự đi/.test(text) ? 'walk'
+      : /cry|khóc|nước mắt|rưng rưng/.test(text) ? 'cry'
+      : /phone|điện thoại|gọi|nhắn tin|lướt điện thoại/.test(text) ? 'phone'
       : /read|đọc|lá thư|hợp đồng/.test(text) ? 'read'
-      : /type|gõ|laptop|máy tính/.test(text) ? 'type'
-      : /point|chỉ vào/.test(text) ? 'point'
+      : /type|gõ|laptop|máy tính|làm nốt báo cáo|viết tiếp báo cáo/.test(text) ? 'type'
+      : /point|chỉ vào|chỉ vào đầu/.test(text) ? 'point'
+      : /drink|uống|rót cốc nước|cốc nước/.test(text) ? 'drink'
+      : /cheer|vỗ tay|ăn mừng|giỏi/.test(text) ? 'cheer'
       : /think|suy nghĩ|nhận ra/.test(text) ? 'think'
-      : /shock|sốc|kinh ngạc|không tin/.test(text) ? 'shock'
+      : /shock|sốc|kinh ngạc|không tin|ting/.test(text) ? 'shock'
       : /angry|tức giận|nổi giận/.test(text) ? 'angry'
-      : /happy|vui mừng|ăn mừng/.test(text) ? 'cheer'
+      : /happy|vui mừng/.test(text) ? 'happy'
       : /sit|ngồi/.test(text) ? 'sit'
       : index === 0 ? 'stand' : 'talk'
-    const emotion: NonNullable<CharacterDetails['emotion']> = /cry|khóc|đau buồn|tuyệt vọng/.test(text) ? 'crying'
-      : /shock|sốc|kinh ngạc|bất ngờ/.test(text) ? 'shocked'
+    const emotion: NonNullable<CharacterDetails['emotion']> = /cry|khóc|đau buồn|tuyệt vọng|rưng rưng/.test(text) ? 'crying'
+      : /shock|sốc|kinh ngạc|bất ngờ|ting/.test(text) ? 'shocked'
       : /angry|tức giận|phẫn nộ/.test(text) ? 'angry'
-      : /happy|vui|hạnh phúc|ăn mừng/.test(text) ? 'happy'
-      : /worry|lo lắng|sợ hãi|căng thẳng/.test(text) ? 'worried'
+      : /happy|vui|hạnh phúc|ăn mừng|tự hào|giỏi|ngày đẹp nhất/.test(text) ? 'happy'
+      : /worry|lo lắng|sợ hãi|căng thẳng|hồi hộp|trinh thám|khó chịu|tủi/.test(text) ? 'worried'
       : 'neutral'
-    const prop: NonNullable<CharacterDetails['prop']> = /phone|điện thoại|nhắn tin/.test(text) ? 'phone'
+    const prop: NonNullable<CharacterDetails['prop']> = /phone|điện thoại|nhắn tin|lướt điện thoại/.test(text) ? 'phone'
+      : /laptop|máy tính|gõ|báo cáo/.test(text) ? 'laptop'
+      : /coffee|cà phê|cốc nước|rót cốc nước|nước/.test(text) ? 'coffee'
       : /book|sách|đọc/.test(text) ? 'book'
       : /letter|lá thư/.test(text) ? 'letter'
       : /contract|hợp đồng/.test(text) ? 'contract'
       : /money|tiền|lương/.test(text) ? 'money'
-      : /laptop|máy tính/.test(text) ? 'laptop'
-      : /coffee|cà phê/.test(text) ? 'coffee'
       : 'none'
-    const objects: NonNullable<StickScene['objects']> = setting === 'office'
-      ? ['computer_desk', 'clock']
-      : setting === 'bedroom' || setting === 'hospital' ? ['bed', 'lamp']
-      : setting === 'home' ? ['table', 'sofa']
-      : setting === 'park' ? ['bench', 'plant']
-      : []
-    return {
-      setting,
-      objects,
-      actors: [{
-        name: 'Alex',
+    const objects: NonNullable<StickScene['objects']> = isFridge
+      ? ['table', 'clock']
+      : setting === 'office'
+        ? ['computer_desk', 'clock']
+        : setting === 'bedroom' || setting === 'hospital' ? ['bed', 'lamp']
+        : setting === 'home' ? ['table', 'sofa']
+        : setting === 'park' ? ['bench', 'plant']
+        : []
+
+    const hasBrain = /não\s*:|nhân vật não|khoanh tay|đeo kính/.test(text)
+    const actors: StickScene['actors'] = [
+      {
+        name: /tôi\s*:|mình/.test(text) ? 'Tôi' : 'Alex',
         role: 'MAIN',
-        action,
+        action: hasBrain && /não\s*:/.test(text) ? 'talk' : action,
         emotion,
         prop,
         outfit: 'suit',
         hair: 'none',
         age: 'adult',
-        glasses: true,
-        position: 'center',
+        glasses: false,
+        position: hasBrain ? 'left' : 'center',
         facing: 'right'
-      }]
+      }
+    ]
+
+    if (hasBrain) {
+      actors.push({
+        name: 'Não',
+        role: 'SUPPORTING',
+        action: /vỗ tay/.test(text) ? 'cheer' : 'stand',
+        emotion: 'happy',
+        outfit: 'uniform',
+        hair: 'none',
+        age: 'adult',
+        glasses: true,
+        position: 'right',
+        facing: 'left'
+      })
+    }
+
+    const overlay = overlayText
+      ? { kind: 'rule' as const, label: overlayText.slice(0, 48) }
+      : undefined
+
+    return {
+      setting,
+      objects,
+      overlay,
+      actors
     }
   })
 }
@@ -737,11 +775,14 @@ export function renderSingleActor(
       <circle cx="24" cy="${head - 2}" r="3" fill="#38bdf8" stroke="none"/>
       <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
     `
-  } else if (actor.action === 'talk') {
+  } else if (actor.action === 'talk' || actor.action === 'phone') {
+    // Natural speech cadence lip-sync (~4.2 syllables per second)
+    const speechCycle = !still ? Math.abs(Math.sin(phase * 8)) : 0.5;
+    const mouthH = Math.max(1.8, speechCycle * 6.5);
     faceSvg = `
       <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-      <ellipse cx="-8" cy="${head + 26}" rx="5" ry="${3 + Math.abs(step) * 4}" fill="${ink}"/>
-    `
+      <ellipse cx="-8" cy="${head + 26}" rx="5.5" ry="${mouthH}" fill="${ink}"/>
+    `;
   } else {
     faceSvg = `
       <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
@@ -874,8 +915,8 @@ function renderEngineer3DActor(
       ? `<ellipse cx="-2" cy="${headY + 30}" rx="8" ry="11" fill="#111827"/>`
       : emotion === 'sad' || emotion === 'crying' || emotion === 'worried'
         ? `<path d="M-17 ${headY + 34}q15 -12 30 0" fill="none"/>`
-        : actor.action === 'talk'
-          ? `<ellipse cx="-2" cy="${headY + 29}" rx="8" ry="${5 + Math.abs(step) * 5}" fill="#111827"/>`
+        : actor.action === 'talk' || actor.action === 'phone'
+          ? `<ellipse cx="-2" cy="${headY + 29}" rx="8" ry="${!still ? Math.max(2, Math.abs(Math.sin(phase * 8)) * 7) : 5}" fill="#111827"/>`
           : `<path d="M-18 ${headY + 30}q16 5 32 0" fill="none"/>`
   const legSvg = crouched
     ? `<path d="M-15 ${hipY}L-42 -24L-62 -4M15 ${hipY}L42 -24L62 -4"/>`
@@ -1846,8 +1887,8 @@ export async function renderStickAnimation(scenes: StickScene[], sections: strin
   const targetH = format === 'LANDSCAPE' ? 1080 : format === 'REEL' ? 1920 : 1920
   try {
     const clips: string[] = []
-    const motionFramesDir = visualStyle === 'ENGINEER_3D' ? join(root, 'motion-frames') : null
-    if (motionFramesDir) await mkdir(motionFramesDir)
+    const motionFramesDir = join(root, 'motion-frames')
+    await mkdir(motionFramesDir, { recursive: true })
     for (const [index, scene] of scenes.entries()) {
       usedWeight += weights[index]
       const endFrame = Math.min(totalFrames - (scenes.length - index - 1), Math.max(usedFrames + 1, Math.round(usedWeight / total * totalFrames)))
@@ -1855,20 +1896,14 @@ export async function renderStickAnimation(scenes: StickScene[], sections: strin
       usedFrames = endFrame
 
       const clip = join(root, `${index}.mp4`)
-      if (visualStyle === 'ENGINEER_3D' && motionFramesDir) {
-        const cycleFrames = 24
-        for (let cycleFrame = 0; cycleFrame < cycleFrames; cycleFrame++) {
-          const svg = stickFrame(scene, cycleFrame * 5, format, colors, false, visualStyle)
-          await sharp(Buffer.from(svg)).resize(targetW, targetH).png().toFile(join(motionFramesDir, `${String(cycleFrame).padStart(3, '0')}.png`))
-        }
-        await renderAnimationCycle(join(motionFramesDir, '%03d.png'), clip, sceneDuration, 12, 60)
-      } else {
-        const sceneImg = join(root, `scene_${index}.png`)
-        const svg = stickFrame(scene, 0, format, colors, true, visualStyle)
-        await sharp(Buffer.from(svg)).resize(targetW, targetH).png().toFile(sceneImg)
-        const zoomDirection = index % 2 === 0 ? 'in' : 'out'
-        await renderStillSceneClip(sceneImg, clip, sceneDuration, format, zoomDirection, 60)
+      const cycleFrames = 24
+      const sceneDir = join(motionFramesDir, `scene-${index}`)
+      await mkdir(sceneDir, { recursive: true })
+      for (let cycleFrame = 0; cycleFrame < cycleFrames; cycleFrame++) {
+        const svg = stickFrame(scene, cycleFrame * 5, format, colors, false, visualStyle)
+        await sharp(Buffer.from(svg)).resize(targetW, targetH).png().toFile(join(sceneDir, `${String(cycleFrame).padStart(3, '0')}.png`))
       }
+      await renderAnimationCycle(join(sceneDir, '%03d.png'), clip, sceneDuration, 12, 60)
       clips.push(clip)
       progress(Math.round((index + 1) / scenes.length * 95))
     }

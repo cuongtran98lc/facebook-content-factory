@@ -343,4 +343,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('stickman:scenes:generate', (_event, input: any) => stickmanEngine.generateScenes(input));
   ipcMain.handle('stickman:package:generate', (_event, input: any) => stickmanEngine.generatePackage(input));
   ipcMain.handle('stickman:short-to-long:expand', (_event, input: any) => stickmanEngine.expandShortToLong(input));
+  ipcMain.handle('stickman:studio-scene-images', (_event, input: any) => stickmanEngine.generateStudioSceneImages(input));
+  ipcMain.handle('stickman:studio-scene-videos', (_event, input: any) => stickmanEngine.generateStudioSceneVideos(input));
+  ipcMain.handle('stickman:episode-images', (_event, input: any) => stickmanEngine.generateEpisodeImages(input));
+  ipcMain.handle('stickman:studio-thumbnail', (_event, input: any) => stickmanEngine.generateStudioThumbnail(input));
+  ipcMain.handle('stickman:script:parse-to-beats', (_event, input: any) => stickmanEngine.parseScriptToBeats(input));
 }

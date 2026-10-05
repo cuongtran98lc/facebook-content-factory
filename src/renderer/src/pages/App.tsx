@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { LANGUAGES, MARKETS } from '../../../shared/audience';
+import { isScreenplayScript } from '../../../shared/screenplay-parser';
 import type { ThumbnailConcept } from '../../../shared/thumbnail-concepts';
 import { COMPILED_TOPICS, CompiledTopic } from '../../../shared/topics';
 import type {
@@ -1022,15 +1023,18 @@ export default function App() {
   const isBetterMind = stylePreset === 'BETTER_MIND';
   const styleLabel = isBetterMind ? 'Người que 2D (A Better Mind)' : 'FLUX';
 
-  if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') {
-   alert(`Hãy chọn Story script (loại LONG_STORY) trước khi tự động tạo ảnh ${styleLabel}.`);
-   return setMessage(`Hãy chọn Story script trước khi tự động tạo ảnh ${styleLabel}.`);
+  if (!selected || !activeScript) {
+   alert(`Hãy chọn kịch bản trước khi tự động tạo ảnh ${styleLabel}.`);
+   return setMessage(`Hãy chọn kịch bản trước khi tự động tạo ảnh ${styleLabel}.`);
   }
+  const isReel = activeScript.type === 'REEL';
+  const targetFormat: VideoFormat = isReel ? 'REEL' : videoFormat;
+
   if (!health?.ffmpeg) {
    alert('Cần FFmpeg để ghép ảnh thành video. Hãy kiểm tra cài đặt FFmpeg.');
    return setMessage('Cần FFmpeg để ghép ảnh thành video.');
   }
-  if (!storyMedia?.audioSegments?.length) {
+  if (!isReel && !storyMedia?.audioSegments?.length) {
    alert('Hãy bấm "Generate Story MP3" ở Bước 1 để tạo audio phân đoạn trước khi tạo ảnh.');
    return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi tạo ảnh.');
   }
@@ -1049,7 +1053,7 @@ export default function App() {
    const status = await window.contentFactory.storyMedia.startFluxSceneAutomation({
     projectId: selected.id,
     scriptId: activeScript.id,
-    format: videoFormat,
+    format: targetFormat,
     hfToken,
     stylePreset,
     customPrompt,
@@ -2006,6 +2010,32 @@ export default function App() {
             placeholder="Dán toàn bộ truyện vào đây hoặc chọn file .txt phía trên..."
            />
           </label>
+          {isScreenplayScript(importContent) && (
+           <div className="screenplay-detector-badge">
+            <div>
+             <span className="badge-tag">🎬 KỊCH BẢN PHÂN CẢNH</span>
+             <strong>Phát hiện kịch bản có mốc thời gian / lời thoại / chỉ đạo cảnh trong ngoặc</strong>
+             <p>• Khi phân cảnh Stickman/FLUX/BetterMind, các gợi ý cảnh và nhân vật sẽ tự động làm prompt hình ảnh.</p>
+             <p>• Giọng đọc Audio/TTS sẽ tự động lọc bỏ các ghi chú đạo diễn trong ngoặc <i>(Cảnh tối...)</i>.</p>
+            </div>
+            <button
+             type="button"
+             className="screenplay-jump-btn"
+             onClick={() => {
+              sessionStorage.setItem(
+               'pending_stickman_screenplay',
+               JSON.stringify({
+                title: importTitle.trim() || undefined,
+                content: importContent,
+               }),
+              );
+              setView('stickman-engine');
+              window.dispatchEvent(new CustomEvent('open-stickman-screenplay-import'));
+             }}>
+             ⚡ Phân cảnh ngay trong Stickman Studio
+            </button>
+           </div>
+          )}
           <div className="story-import-footer">
            <span>{importContent.length.toLocaleString('vi-VN')} ký tự · không dùng AI</span>
            <button
@@ -2121,8 +2151,26 @@ export default function App() {
             <button
              className="secondary"
              onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
-             disabled={busy}>
-             {stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D phân đoạn' : 'Bộ ảnh 2D phân đoạn'}
+             disabled={busy}
+             title="Vẽ bộ ảnh hoạt hình người que 2D/3D tỷ lệ 9:16 theo phân đoạn">
+             {stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D (9:16)' : 'Bộ ảnh 2D (9:16)'}
+            </button>
+            <button
+             type="button"
+             className="secondary"
+             style={{ background: 'linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #3730a3 100%)', borderColor: '#6366f1', color: '#e0e7ff' }}
+             onClick={() => void startFluxSceneAutomation('BETTER_MIND', undefined, undefined, true)}
+             disabled={busy}
+             title="Tự động tạo bộ ảnh phân đoạn 9:16 phong cách Sticky Man 2D (@abettermind)">
+             🧠 Ảnh 9:16 (A Better Mind)
+            </button>
+            <button
+             type="button"
+             className="secondary"
+             onClick={() => void startFluxSceneAutomation('FLUX_CINEMATIC', undefined, undefined, true)}
+             disabled={busy}
+             title="Tự động tạo bộ ảnh phân đoạn 9:16 phong cách FLUX chi tiết">
+             ⚡ Ảnh 9:16 (FLUX)
             </button>
            </div>
           )}
@@ -2131,6 +2179,32 @@ export default function App() {
           <div className="review-box">
            <strong>AI Score: {activeScript.score.toFixed(1)}/10</strong>
            <p>{reviewSummary(activeScript)}</p>
+          </div>
+         )}
+         {isScreenplayScript(editorContent) && (
+          <div className="screenplay-detector-badge">
+           <div>
+            <span className="badge-tag">🎬 KỊCH BẢN PHÂN CẢNH</span>
+            <strong>Kịch bản có mốc thời gian & chỉ đạo cảnh trong ngoặc</strong>
+            <p>• TTS voiceover sẽ tự động bỏ qua ghi chú trong ngoặc như <i>(Cảnh tối...)</i>.</p>
+            <p>• Phân đoạn hình ảnh (Stickman / BetterMind / FLUX) sẽ tự động lấy các chỉ đạo cảnh làm prompt.</p>
+           </div>
+           <button
+            type="button"
+            className="screenplay-jump-btn"
+            onClick={() => {
+             sessionStorage.setItem(
+              'pending_stickman_screenplay',
+              JSON.stringify({
+               title: activeScript.title || undefined,
+               content: editorContent,
+              }),
+             );
+             setView('stickman-engine');
+             window.dispatchEvent(new CustomEvent('open-stickman-screenplay-import'));
+            }}>
+            ⚡ Phân cảnh trong Stickman Studio
+           </button>
           </div>
          )}
          <textarea className="script-editor" value={editorContent} onChange={e => setEditorContent(e.target.value)} />
@@ -2171,6 +2245,22 @@ export default function App() {
                <span className="scene-setting-tag">{scene.setting}</span>
               </div>
               <img src={stickSceneImageUrl(scene)} alt={`Scene ${scene.index}`} />
+              <p className="scene-text">{scene.sectionText}</p>
+             </div>
+            ))}
+           </div>
+          </div>
+         )}
+         {activeScript.type === 'REEL' && storyMedia?.flowSceneImages && storyMedia.flowSceneImages.length > 0 && (
+          <div className="scene-images-gallery">
+           <h4>🖼️ Bộ ảnh phân đoạn AI 9:16 ({storyMedia.flowSceneImages.length} ảnh)</h4>
+           <div className="scene-images-grid">
+            {storyMedia.flowSceneImages.map((scene, idx) => (
+             <div key={scene.index || idx} className="scene-image-card">
+              <div className="scene-image-header">
+               <span className="scene-number">Ảnh {scene.index || idx + 1}</span>
+              </div>
+              <img src={scene.fileUrl || `local-media://file/${encodeURIComponent(scene.filePath)}`} alt={`Scene ${scene.index || idx + 1}`} />
               <p className="scene-text">{scene.sectionText}</p>
              </div>
             ))}

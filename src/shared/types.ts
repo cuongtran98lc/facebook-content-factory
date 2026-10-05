@@ -701,6 +701,15 @@ export interface ContentFactoryAPI {
     generateScenes(input: import('./stickman-engine').GenerateScenesInput): Promise<import('./stickman-engine').EngineScene[]>;
     generatePackage(input: import('./stickman-engine').GeneratePackageInput): Promise<import('./stickman-engine').StickmanContentPackage>;
     expandShortToLong(input: import('./stickman-engine').ExpandShortToLongInput): Promise<import('./stickman-engine').StickmanIdea>;
+    generateStudioSceneImages(input: import('./stickman-engine').GenerateStudioSceneImagesInput): Promise<{ sceneImages: import('./stickman-engine').StudioSceneImageItem[]; outputDir: string }>;
+    generateStudioSceneVideos(input: import('./stickman-engine').GenerateStudioSceneVideosInput): Promise<{ sceneVideos: import('./stickman-engine').StudioSceneVideoItem[]; outputDir: string }>;
+    generateEpisodeImages(input: import('./stickman-engine').GenerateEpisodeImagesInput): Promise<{ sceneImages: import('./stickman-engine').StudioSceneImageItem[]; outputDir: string; thumbnail?: { filePath: string; fileUrl: string } }>;
+    generateStudioThumbnail(input: import('./stickman-engine').GenerateStudioThumbnailInput): Promise<{ filePath: string; fileUrl: string }>;
+    parseScriptToBeats(input: { content: string; title?: string; format?: 'SHORT' | 'LONG' }): Promise<{
+      idea: import('./stickman-engine').StickmanIdea;
+      beats: import('./stickman-engine').ScriptBeat[];
+      scenes: import('./stickman-engine').EngineScene[];
+    }>;
   };
 }
 

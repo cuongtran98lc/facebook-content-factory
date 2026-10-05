@@ -6,12 +6,15 @@ import type {
   StickmanContentPackage,
   StickmanContentPillar,
   StickmanIdea,
+  StudioImageStyle,
   StudioReelEpisode,
+  StudioSceneVideoItem,
 } from '../../../shared/stickman-engine';
 import { INITIAL_CONTENT_PILLARS, STORY_DIMENSIONS } from '../../../shared/stickman-engine';
 import type { ProjectDTO, ScriptDTO, VideoFormat, VoiceDTO } from '../../../shared/types';
 import castPreview from '../assets/stickman-cast-preview.webp';
 import { readStudioDraft, studioDraftKey, writeStudioDraft } from '../lib/studio-draft';
+import { SAMPLE_REFRIGERATOR_SCRIPT } from '../../../shared/screenplay-parser';
 
 interface StickmanEngineViewProps {
   projects: ProjectDTO[];
@@ -177,6 +180,21 @@ function StickmanProjectSession({
   const [scenes, setScenes] = draftField<EngineScene[]>('scenes', []);
   const [pkg, setPkg] = draftField<StickmanContentPackage | null>('pkg', null);
 
+  // Scene Images & Thumbnail state
+  const [sceneImagesMap, setSceneImagesMap] = draftField<Record<number, string>>('sceneImagesMap', {});
+  const [sceneImagesOutputDir, setSceneImagesOutputDir] = draftField<string | null>('sceneImagesOutputDir', null);
+  const [sceneImageStyle, setSceneImageStyle] = draftField<StudioImageStyle>('sceneImageStyle', 'STICKMAN_2D');
+  const [studioThumbnailUrl, setStudioThumbnailUrl] = draftField<string | null>('studioThumbnailUrl', null);
+  const [episodeImagesMap, setEpisodeImagesMap] = draftField<
+    Record<string, { sceneCount: number; outputDir: string; thumbnail?: string }>
+  >('episodeImagesMap', {});
+  const [generatingImages, setGeneratingImages] = useState(false);
+
+  // Scene Videos (Mấp máy môi / Lip-sync trực tiếp trong app)
+  const [sceneVideosMap, setSceneVideosMap] = draftField<Record<number, StudioSceneVideoItem>>('sceneVideosMap', {});
+  const [sceneVideosOutputDir, setSceneVideosOutputDir] = draftField<string | null>('sceneVideosOutputDir', null);
+  const [generatingVideos, setGeneratingVideos] = useState(false);
+
   // Section regen modal
   const [regenBeatId, setRegenBeatId] = draftField<string | null>('regenBeatId', null);
   const [regenInstruction, setRegenInstruction] = draftField<string>('regenInstruction', '');
@@ -240,6 +258,84 @@ function StickmanProjectSession({
     content: string;
     scriptId: string;
   } | null>('importedScript', null);
+
+  // Screenplay / Script Import State
+  const [importScriptOpen, setImportScriptOpen] = useState(false);
+  const [importScriptText, setImportScriptText] = useState('');
+  const [importScriptTitle, setImportScriptTitle] = useState('');
+  const [importScriptLoading, setImportScriptLoading] = useState(false);
+  const [scriptSuccessMessage, setScriptSuccessMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const checkPendingScreenplay = () => {
+      try {
+        const raw = sessionStorage.getItem('pending_stickman_screenplay');
+        if (raw) {
+          sessionStorage.removeItem('pending_stickman_screenplay');
+          const data = JSON.parse(raw);
+          if (data && typeof data.content === 'string') {
+            setImportScriptTitle(data.title || '');
+            setImportScriptText(data.content);
+            setImportScriptOpen(true);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('open-stickman-screenplay-import', checkPendingScreenplay);
+    checkPendingScreenplay();
+    return () => window.removeEventListener('open-stickman-screenplay-import', checkPendingScreenplay);
+  }, []);
+
+  async function handleImportScreenplay() {
+    const content = importScriptText.trim();
+    if (content.length < 20) {
+      setError('Kịch bản quá ngắn; cần ít nhất 20 ký tự.');
+      return;
+    }
+    setImportScriptLoading(true);
+    setLoading(true);
+    setLoadingMessage('Đang phân tích kịch bản, trích xuất nhân vật, phân cảnh và cues hình ảnh...');
+    setError(null);
+    try {
+      const result = await window.contentFactory.stickmanEngine.parseScriptToBeats({
+        content,
+        title: importScriptTitle.trim() || undefined,
+        format,
+      });
+
+      setSelectedIdea(result.idea);
+      setIdeas(prev => [result.idea, ...prev.filter(i => i.id !== result.idea.id)]);
+      setSelectedHook(result.idea.hook);
+      setBeats(result.beats);
+      setScenes(result.scenes);
+      setSceneImagesMap({});
+      setSceneImagesOutputDir(null);
+      setSceneVideosMap({});
+      setSceneVideosOutputDir(null);
+
+      try {
+        const generatedPackage = await window.contentFactory.stickmanEngine.generatePackage({
+          idea: result.idea,
+          selectedHook: result.idea.hook,
+          beats: result.beats,
+          scenes: result.scenes,
+        });
+        setPkg(generatedPackage);
+      } catch {}
+
+      setImportScriptOpen(false);
+      setStep('script');
+      setScriptSuccessMessage(`✓ Đã tự động phân tách ${result.beats.length} phân cảnh dựa trên gợi ý bối cảnh & cues kịch bản!`);
+      setTimeout(() => setScriptSuccessMessage(null), 7000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImportScriptLoading(false);
+      setLoading(false);
+    }
+  }
 
   const activePillar = pillars.find(p => p.id === selectedPillarId) ?? pillars[0];
 
@@ -378,6 +474,10 @@ function StickmanProjectSession({
         beats,
       });
       setScenes(generatedScenes);
+      setSceneImagesMap({});
+      setSceneImagesOutputDir(null);
+      setSceneVideosMap({});
+      setSceneVideosOutputDir(null);
       setStep('scenes');
       finishWork('scenes');
     } catch (err) {
@@ -404,6 +504,7 @@ function StickmanProjectSession({
         scenes,
       });
       setPkg(generatedPackage);
+      setStudioThumbnailUrl(null);
       setStep('package');
       finishWork('package');
     } catch (err) {
@@ -573,6 +674,171 @@ function StickmanProjectSession({
       failWork();
       setError(error instanceof Error ? error.message : String(error));
     } finally {
+      setLoading(false);
+      setRenderProgress(null);
+    }
+  }
+
+  async function handleGenerateStudioSceneImages(overrideStyle?: StudioImageStyle) {
+    if (!selectedProjectId || scenes.length === 0 || loading || generatingImages) return;
+    const styleToUse = overrideStyle ?? sceneImageStyle;
+    setGeneratingImages(true);
+    setLoading(true);
+    setLoadingMessage(`Đang tạo bộ ảnh phân cảnh ${format === 'SHORT' ? '9:16' : '16:9'} phong cách ${styleToUse}…`);
+    setError(null);
+    try {
+      const hfToken = (await window.contentFactory.settings.getHuggingFaceToken()) || undefined;
+      const res = await window.contentFactory.stickmanEngine.generateStudioSceneImages({
+        projectId: selectedProjectId,
+        scriptId: importedScript?.scriptId,
+        scenes,
+        format,
+        style: styleToUse,
+        hfToken,
+      });
+      const newMap: Record<number, string> = {};
+      for (const item of res.sceneImages) {
+        newMap[item.sceneNumber] = item.fileUrl;
+      }
+      setSceneImagesMap(newMap);
+      setSceneImagesOutputDir(res.outputDir);
+      alert(
+        `🎉 Đã tạo thành công ${res.sceneImages.length} ảnh phân cảnh ${format === 'SHORT' ? '9:16' : '16:9'}! Thư mục: ${res.outputDir}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingImages(false);
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateStudioThumbnail(overrideStyle?: StudioImageStyle) {
+    if (!selectedProjectId || !pkg || loading || generatingImages) return;
+    const styleToUse = overrideStyle ?? sceneImageStyle;
+    setGeneratingImages(true);
+    setLoading(true);
+    setLoadingMessage(`Đang tạo Thumbnail ${format === 'SHORT' ? '9:16' : '16:9'} phong cách ${styleToUse}…`);
+    setError(null);
+    try {
+      const hfToken = (await window.contentFactory.settings.getHuggingFaceToken()) || undefined;
+      const res = await window.contentFactory.stickmanEngine.generateStudioThumbnail({
+        projectId: selectedProjectId,
+        scriptId: importedScript?.scriptId,
+        prompt: pkg.thumbnailPrompt,
+        textOverlay: pkg.thumbnailText,
+        format,
+        style: styleToUse,
+        hfToken,
+      });
+      setStudioThumbnailUrl(res.fileUrl);
+      alert(`🎉 Đã tạo thành công Thumbnail ${format === 'SHORT' ? '9:16' : '16:9'}!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingImages(false);
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateStudioSceneVideos(singleSceneNumber?: number) {
+    if (!selectedProjectId || scenes.length === 0 || loading || generatingVideos) return;
+    setGeneratingVideos(true);
+    setLoading(true);
+    setLoadingMessage(
+      singleSceneNumber
+        ? `Đang dựng video cảnh ${singleSceneNumber} (người que mấp máy môi 60fps)…`
+        : `Đang dựng video mấp máy môi 60fps trực tiếp cho tất cả ${scenes.length} cảnh…`,
+    );
+    setError(null);
+    try {
+      const res = await window.contentFactory.stickmanEngine.generateStudioSceneVideos({
+        projectId: selectedProjectId,
+        scriptId: importedScript?.scriptId,
+        scenes,
+        format,
+        style: sceneImageStyle,
+        singleSceneNumber,
+      });
+      const newMap = { ...sceneVideosMap };
+      for (const item of res.sceneVideos) {
+        newMap[item.sceneNumber] = item;
+      }
+      setSceneVideosMap(newMap);
+      setSceneVideosOutputDir(res.outputDir);
+      alert(
+        singleSceneNumber
+          ? `🎉 Đã dựng xong video cảnh ${singleSceneNumber} (người que mấp máy môi 60fps) trực tiếp trong app!\nThư mục: ${res.outputDir}`
+          : `🎉 Đã dựng xong toàn bộ ${res.sceneVideos.length} video cảnh (mấp máy môi 60fps) trực tiếp trong app!\nThư mục: ${res.outputDir}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingVideos(false);
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateEpisodeImages(episode: StudioReelEpisode) {
+    if (!selectedProjectId || loading || generatingImages) return;
+    setGeneratingImages(true);
+    setLoading(true);
+    setLoadingMessage(`Đang tạo bộ ảnh 9:16 cho tập: ${episode.title}…`);
+    setError(null);
+    try {
+      const hfToken = (await window.contentFactory.settings.getHuggingFaceToken()) || undefined;
+      const res = await window.contentFactory.stickmanEngine.generateEpisodeImages({
+        projectId: selectedProjectId,
+        scriptId: episode.scriptId,
+        style: sceneImageStyle,
+        hfToken,
+      });
+      setEpisodeImagesMap(prev => ({
+        ...prev,
+        [episode.scriptId]: {
+          sceneCount: res.sceneImages.length,
+          outputDir: res.outputDir,
+          thumbnail: res.thumbnail?.fileUrl,
+        },
+      }));
+      alert(`🎉 Đã tạo thành công ${res.sceneImages.length} ảnh 9:16 + Thumbnail cho tập "${episode.title}"!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingImages(false);
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateAllReelImages() {
+    if (!selectedProjectId || studioReels.length === 0 || loading || generatingImages) return;
+    setGeneratingImages(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const hfToken = (await window.contentFactory.settings.getHuggingFaceToken()) || undefined;
+      for (const [index, ep] of studioReels.entries()) {
+        setRenderProgress(`Đang tạo ảnh 9:16 tập ${index + 1}/${studioReels.length}: ${ep.title}…`);
+        const res = await window.contentFactory.stickmanEngine.generateEpisodeImages({
+          projectId: selectedProjectId,
+          scriptId: ep.scriptId,
+          style: sceneImageStyle,
+          hfToken,
+        });
+        setEpisodeImagesMap(prev => ({
+          ...prev,
+          [ep.scriptId]: {
+            sceneCount: res.sceneImages.length,
+            outputDir: res.outputDir,
+            thumbnail: res.thumbnail?.fileUrl,
+          },
+        }));
+      }
+      alert(`🎉 Đã tạo thành công bộ ảnh 9:16 cho tất cả ${studioReels.length} tập Reel!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingImages(false);
       setLoading(false);
       setRenderProgress(null);
     }
@@ -912,6 +1178,22 @@ function StickmanProjectSession({
           </span>
         </label>
       )}
+      {/* Script Import Quick Action Banner */}
+      <div className="engine-script-import-banner">
+        <div>
+          <strong>📋 Dán kịch bản hoặc Import file TXT (Tự động nhận diện cues &amp; bối cảnh)</strong>
+          <span>
+            Hỗ trợ kịch bản có đánh dấu phân cảnh <code>[0:00 – Hook]</code>, gợi ý bối cảnh <code>(Cảnh tối, chỉ có ánh đèn tủ lạnh...)</code>, và thoại nhân vật <code>Tôi: / Não:</code>. Hệ thống sẽ tự động bóc tách thành các Beats và prompts vẽ ảnh chuẩn xác!
+          </span>
+        </div>
+        <button
+          type="button"
+          className="engine-import-btn-pill"
+          onClick={() => setImportScriptOpen(true)}>
+          ⚡ Dán &amp; Tự Động Phân Cảnh
+        </button>
+      </div>
+
       {/* Stepper Navigation */}
       <div className="engine-stepper">
         <button
@@ -958,6 +1240,12 @@ function StickmanProjectSession({
           <span className="step-label">📦 Đóng Gói &amp; Xuất Video</span>
         </button>
       </div>
+
+      {scriptSuccessMessage && (
+        <div className="banner" style={{ background: '#064e3b', color: '#6ee7b7', border: '1px solid #059669', marginBottom: 12 }}>
+          {scriptSuccessMessage}
+        </div>
+      )}
 
       <section className="engine-work-progress" aria-label="Tiến độ từng bước">
         {WORK_STEPS.filter(([key]) => !['rewrite', 'expand'].includes(key) || workProgress[key]).map(([key, label]) => {
@@ -1332,6 +1620,13 @@ function StickmanProjectSession({
               </p>
             </div>
             <div className="script-header-actions">
+              <button
+                type="button"
+                className="engine-secondary-btn"
+                style={{ borderColor: '#6366f1', color: '#c7d2fe' }}
+                onClick={() => setImportScriptOpen(true)}>
+                📥 Dán / Import Kịch Bản
+              </button>
               <button type="button" className="engine-secondary-btn" onClick={handleGenerateScript} disabled={loading}>
                 🔄 Viết lại toàn bộ
               </button>
@@ -1437,9 +1732,74 @@ function StickmanProjectSession({
                 ảnh và video 60fps.
               </p>
             </div>
-            <button type="button" className="engine-primary-btn" onClick={handleGeneratePackage} disabled={loading}>
-              {format === 'SHORT' ? '👉 Đóng gói để Generate Reel (Bước 6)' : '👉 Đóng gói & Xuất bản (Bước 6)'}
-            </button>
+            <div className="button-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '13px',
+                  color: '#94a3b8',
+                }}>
+                <span>Kiểu ảnh:</span>
+                <select
+                  value={sceneImageStyle}
+                  disabled={loading || generatingImages}
+                  onChange={e => setSceneImageStyle(e.target.value as StudioImageStyle)}
+                  style={{
+                    background: '#1e293b',
+                    color: '#f8fafc',
+                    border: '1px solid #475569',
+                    borderRadius: '6px',
+                    padding: '5px 8px',
+                    fontSize: '13px',
+                  }}>
+                  <option value="STICKMAN_2D">👤 Stickman 2D Doodle</option>
+                  <option value="STICKMAN_3D">📐 3D Engineer</option>
+                  <option value="AI_BETTER_MIND">🧠 AI A Better Mind (@abettermind)</option>
+                  <option value="AI_FLUX">⚡ AI FLUX Cinematic</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="engine-primary-btn"
+                onClick={() => void handleGenerateStudioSceneImages()}
+                disabled={loading || generatingImages || !selectedProjectId}
+                style={{ background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)' }}>
+                {generatingImages ? 'Đang tạo ảnh…' : `🖼️ Tạo bộ ảnh ${format === 'SHORT' ? '9:16' : '16:9'}`}
+              </button>
+              <button
+                type="button"
+                className="engine-primary-btn"
+                onClick={() => void handleGenerateStudioSceneVideos()}
+                disabled={loading || generatingVideos || !selectedProjectId}
+                style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)' }}>
+                {generatingVideos ? 'Đang dựng video…' : `🎬 Dựng Video toàn bộ cảnh (Mấp máy môi)`}
+              </button>
+              {sceneImagesOutputDir && (
+                <button
+                  type="button"
+                  className="engine-secondary-btn"
+                  onClick={() =>
+                    void window.contentFactory.app.revealFile(sceneImagesOutputDir).catch(e => setError(String(e)))
+                  }>
+                  📂 Mở thư mục ảnh
+                </button>
+              )}
+              {sceneVideosOutputDir && (
+                <button
+                  type="button"
+                  className="engine-secondary-btn"
+                  onClick={() =>
+                    void window.contentFactory.app.revealFile(sceneVideosOutputDir).catch(e => setError(String(e)))
+                  }>
+                  📂 Mở thư mục video
+                </button>
+              )}
+              <button type="button" className="engine-primary-btn" onClick={handleGeneratePackage} disabled={loading}>
+                {format === 'SHORT' ? '👉 Đóng gói để Generate Reel (Bước 6)' : '👉 Đóng gói & Xuất bản (Bước 6)'}
+              </button>
+            </div>
           </div>
 
           <div className="scenes-grid">
@@ -1464,15 +1824,133 @@ function StickmanProjectSession({
                   ))}
                 </div>
 
+                {/* Direct Video Lip-sync Preview if rendered */}
+                {sceneVideosMap[s.sceneNumber] && (
+                  <div className="scene-rendered-preview-box" style={{ margin: '12px 0', textAlign: 'center' }}>
+                    <div style={{ fontSize: '12px', color: '#a7f3d0', marginBottom: '6px', fontWeight: 600 }}>
+                      🎬 Video Stickman mấp máy môi ({format === 'SHORT' ? '9:16' : '16:9'} • 60fps):
+                    </div>
+                    <video
+                      src={sceneVideosMap[s.sceneNumber].fileUrl}
+                      controls
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      style={{
+                        maxWidth: '100%',
+                        maxHeight: format === 'SHORT' ? '320px' : '200px',
+                        borderRadius: '8px',
+                        border: '2px solid #8b5cf6',
+                        boxShadow: '0 4px 16px rgba(139, 92, 246, 0.4)',
+                        objectFit: 'contain',
+                        aspectRatio: format === 'SHORT' ? '9/16' : '16/9',
+                        background: '#090d16',
+                      }}
+                    />
+                  </div>
+                )}
+
+                {/* Static Image Preview if rendered */}
+                {sceneImagesMap[s.sceneNumber] && (
+                  <div className="scene-rendered-preview-box" style={{ margin: '12px 0', textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>
+                      ✓ Ảnh {format === 'SHORT' ? '9:16' : '16:9'} tĩnh:
+                    </div>
+                    <img
+                      src={sceneImagesMap[s.sceneNumber]}
+                      alt={`Ảnh cảnh ${s.sceneNumber}`}
+                      style={{
+                        maxWidth: '100%',
+                        maxHeight: format === 'SHORT' ? '280px' : '180px',
+                        borderRadius: '8px',
+                        border: '2px solid #3b82f6',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                        objectFit: 'contain',
+                        aspectRatio: format === 'SHORT' ? '9/16' : '16/9',
+                        background: '#090d16',
+                      }}
+                    />
+                  </div>
+                )}
+
                 <div className="scene-prompts-box">
                   <div className="prompt-item">
-                    <span className="prompt-label">🖼️ Prompt Ảnh (Vector 2D):</span>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '4px',
+                      }}>
+                      <span className="prompt-label">🖼️ Prompt Ảnh (Vector 2D / 9:16):</span>
+                      {s.imagePrompt && (
+                        <button
+                          type="button"
+                          className="engine-secondary-btn-sm"
+                          style={{ padding: '2px 8px', fontSize: '11px' }}
+                          onClick={() => void window.contentFactory.app.copyText(s.imagePrompt)}>
+                          📋 Copy Prompt
+                        </button>
+                      )}
+                    </div>
                     <code>{s.imagePrompt}</code>
                   </div>
                   <div className="prompt-item">
-                    <span className="prompt-label">🎬 Prompt Chuyển Động:</span>
-                    <code>{s.animationPrompt}</code>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '4px',
+                      }}>
+                      <span className="prompt-label">🎬 Kịch bản Chuyển động &amp; Mấp máy môi:</span>
+                      {s.animationPrompt && (
+                        <button
+                          type="button"
+                          className="engine-secondary-btn-sm"
+                          style={{
+                            padding: '2px 8px',
+                            fontSize: '11px',
+                            background: '#312e81',
+                            color: '#c7d2fe',
+                            borderColor: '#6366f1',
+                          }}
+                          onClick={() => void window.contentFactory.app.copyText(s.animationPrompt)}>
+                          📋 Copy (nếu cần gửi AI ngoài)
+                        </button>
+                      )}
+                    </div>
+                    <code style={{ color: '#c7d2fe' }}>{s.animationPrompt}</code>
                   </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="engine-primary-btn"
+                    style={{
+                      background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)',
+                      fontSize: '12px',
+                      padding: '6px 12px',
+                    }}
+                    disabled={loading || generatingVideos}
+                    onClick={() => void handleGenerateStudioSceneVideos(s.sceneNumber)}>
+                    {generatingVideos ? '⏳ Đang dựng...' : '🎬 Dựng Video cảnh này (Mấp máy môi)'}
+                  </button>
+                  {sceneVideosMap[s.sceneNumber] && (
+                    <button
+                      type="button"
+                      className="engine-secondary-btn"
+                      style={{ fontSize: '12px', padding: '6px 10px' }}
+                      onClick={() =>
+                        void window.contentFactory.app
+                          .revealFile(sceneVideosMap[s.sceneNumber].filePath)
+                          .catch(e => setError(String(e)))
+                      }>
+                      📂 Xem file MP4
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -1629,9 +2107,69 @@ function StickmanProjectSession({
                     ? '🎬 Generate Reel · 9:16'
                     : '🎬 Generate Video dài · 16:9'}
               </button>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+                Kiểu ảnh:
+                <select
+                  value={sceneImageStyle}
+                  disabled={loading || generatingImages}
+                  onChange={e => setSceneImageStyle(e.target.value as StudioImageStyle)}>
+                  <option value="STICKMAN_2D">🎨 Stickman 2D</option>
+                  <option value="STICKMAN_3D">🗿 Stickman 3D Clay</option>
+                  <option value="AI_BETTER_MIND">🧠 AI Chi tiết (A Better Mind)</option>
+                  <option value="AI_FLUX">⚡ AI FLUX</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="engine-render-btn"
+                style={{ background: 'linear-gradient(135deg, #0284c7, #0369a1)', color: '#fff' }}
+                disabled={loading || generatingImages}
+                onClick={() => void handleGenerateStudioSceneImages()}>
+                {generatingImages
+                  ? '⏳ Đang tạo…'
+                  : format === 'SHORT'
+                    ? '🖼️ Tạo bộ ảnh · 9:16'
+                    : '🖼️ Tạo bộ ảnh · 16:9'}
+              </button>
+              <button
+                type="button"
+                className="engine-render-btn"
+                style={{ background: 'linear-gradient(135deg, #d97706, #b45309)', color: '#fff' }}
+                disabled={loading || generatingImages}
+                onClick={() => void handleGenerateStudioThumbnail()}>
+                {generatingImages
+                  ? '⏳ Đang tạo…'
+                  : format === 'SHORT'
+                    ? '🎨 Tạo Thumbnail · 9:16'
+                    : '🎨 Tạo Thumbnail · 16:9'}
+              </button>
+              <button
+                type="button"
+                className="engine-render-btn"
+                style={{ background: 'linear-gradient(135deg, #7c3aed, #ec4899)', color: '#fff' }}
+                disabled={loading || generatingVideos}
+                onClick={() => void handleGenerateStudioSceneVideos()}>
+                {generatingVideos ? '⏳ Đang dựng…' : '🎬 Dựng Video toàn cảnh (Mấp máy môi)'}
+              </button>
               <button type="button" className="engine-secondary-btn" onClick={handleCopyPackage}>
                 📋 Sao chép Gói Nội Dung
               </button>
+              {sceneVideosOutputDir && (
+                <button
+                  type="button"
+                  className="engine-secondary-btn"
+                  onClick={() => void window.contentFactory.app.revealFile(sceneVideosOutputDir)}>
+                  📂 Mở thư mục video {format === 'SHORT' ? '9:16' : '16:9'}
+                </button>
+              )}
+              {sceneImagesOutputDir && (
+                <button
+                  type="button"
+                  className="engine-secondary-btn"
+                  onClick={() => void window.contentFactory.app.revealFile(sceneImagesOutputDir)}>
+                  📂 Mở thư mục ảnh {format === 'SHORT' ? '9:16' : '16:9'}
+                </button>
+              )}
               {format === 'SHORT' && (
                 <button type="button" className="engine-expand-btn" onClick={handleExpandToLong}>
                   🎬 Mở rộng Short → Long-Form (10m)
@@ -1674,6 +2212,14 @@ function StickmanProjectSession({
                 onClick={() => void renderStudioReels(studioReels)}>
                 2. Dựng tất cả Reel · 9:16
               </button>
+              <button
+                type="button"
+                className="engine-render-btn"
+                style={{ background: 'linear-gradient(135deg, #0284c7, #0369a1)', color: '#fff' }}
+                disabled={loading || generatingImages || !studioReels.length}
+                onClick={() => void handleGenerateAllReelImages()}>
+                {generatingImages ? '⏳ Đang tạo ảnh…' : '3. Tạo ảnh tất cả Reel · 9:16'}
+              </button>
             </div>
             {studioReels.map((episode, index) => (
               <article key={episode.scriptId} className="package-card">
@@ -1681,6 +2227,52 @@ function StickmanProjectSession({
                   Tập {index + 1}: {episode.title} {completedReels.includes(episode.scriptId) ? '✓ Đã dựng' : ''}
                 </h4>
                 <p>{episode.content}</p>
+
+                {episodeImagesMap[episode.scriptId] && (
+                  <div
+                    style={{
+                      marginTop: '0.5rem',
+                      marginBottom: '0.5rem',
+                      padding: '0.6rem 0.8rem',
+                      background: 'rgba(34, 197, 94, 0.1)',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(34, 197, 94, 0.3)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '1rem',
+                    }}>
+                    {episodeImagesMap[episode.scriptId].thumbnail && (
+                      <img
+                        src={episodeImagesMap[episode.scriptId].thumbnail}
+                        alt="Thumbnail"
+                        style={{
+                          width: '48px',
+                          height: '85px',
+                          objectFit: 'cover',
+                          borderRadius: '4px',
+                          border: '1px solid #4ade80',
+                        }}
+                      />
+                    )}
+                    <div>
+                      <span style={{ color: '#4ade80', fontWeight: 'bold' }}>✓ Đã tạo bộ ảnh 9:16</span> (
+                      {episodeImagesMap[episode.scriptId].sceneCount} ảnh cảnh)
+                      {episodeImagesMap[episode.scriptId].outputDir && (
+                        <div style={{ marginTop: '0.35rem' }}>
+                          <button
+                            type="button"
+                            className="engine-secondary-btn-sm"
+                            onClick={() =>
+                              void window.contentFactory.app.revealFile(episodeImagesMap[episode.scriptId].outputDir)
+                            }>
+                            📂 Mở thư mục ảnh tập {index + 1}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="caption-box-wrapper">
                   <div className="caption-box-header">
                     <strong>💬 Caption Đăng Video (Reels / TikTok / FB)</strong>
@@ -1703,6 +2295,13 @@ function StickmanProjectSession({
                     disabled={loading || voiceBusy}
                     onClick={() => void renderStudioReels([episode])}>
                     Dựng / thử lại tập này
+                  </button>
+                  <button
+                    type="button"
+                    style={{ background: '#0284c7', color: '#fff' }}
+                    disabled={loading || generatingImages}
+                    onClick={() => void handleGenerateEpisodeImages(episode)}>
+                    {generatingImages ? '⏳ Đang tạo…' : '🖼️ Tạo ảnh 9:16 tập này'}
                   </button>
                   <button
                     type="button"
@@ -1741,10 +2340,28 @@ function StickmanProjectSession({
             <div className="package-card">
               <h4>🖼️ Concept Thumbnail YouTube Thu Hút</h4>
               <div className="thumbnail-preview-box">
-                <div className="thumb-mockup">
-                  <div className="thumb-text-overlay">{pkg.thumbnailText}</div>
-                  <div className="thumb-character-demo">🎭 Stickman Drama</div>
-                </div>
+                {studioThumbnailUrl ? (
+                  <div
+                    style={{
+                      width: format === 'SHORT' ? '120px' : '180px',
+                      height: format === 'SHORT' ? '213px' : '101px',
+                      borderRadius: '6px',
+                      overflow: 'hidden',
+                      border: '2px solid #38bdf8',
+                      flexShrink: 0,
+                    }}>
+                    <img
+                      src={studioThumbnailUrl}
+                      alt="Thumbnail Studio"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  </div>
+                ) : (
+                  <div className="thumb-mockup">
+                    <div className="thumb-text-overlay">{pkg.thumbnailText}</div>
+                    <div className="thumb-character-demo">🎭 Stickman Drama</div>
+                  </div>
+                )}
                 <div className="thumb-info">
                   <p>
                     <strong>Chữ nổi trên thumbnail (2–4 từ):</strong>{' '}
@@ -1756,6 +2373,16 @@ function StickmanProjectSession({
                   <p>
                     <strong>Prompt sinh Thumbnail:</strong> <code>{pkg.thumbnailPrompt}</code>
                   </p>
+                  <button
+                    type="button"
+                    className="engine-secondary-btn-sm"
+                    style={{ marginTop: '0.5rem', background: '#d97706', color: '#fff' }}
+                    disabled={loading || generatingImages}
+                    onClick={() => void handleGenerateStudioThumbnail()}>
+                    {generatingImages
+                      ? '⏳ Đang tạo…'
+                      : `🎨 Sinh Thumbnail ${format === 'SHORT' ? '9:16' : '16:9'} ngay`}
+                  </button>
                 </div>
               </div>
 
@@ -1831,6 +2458,98 @@ function StickmanProjectSession({
                   ? '🚀 GENERATE REEL · 9:16'
                   : '🚀 GENERATE VIDEO DÀI · 16:9'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Import / Paste Screenplay Modal */}
+      {importScriptOpen && (
+        <div className="modal-backdrop" onClick={() => setImportScriptOpen(false)}>
+          <div className="modal-box large-modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h4 style={{ margin: 0, fontSize: 16, color: '#f8fafc' }}>
+                📥 Dán Kịch Bản Hoặc Import File TXT (Tự Động Phân Cảnh &amp; Bối Cảnh)
+              </h4>
+              <button
+                type="button"
+                className="engine-secondary-btn-sm"
+                style={{ padding: '2px 8px', fontSize: 14, cursor: 'pointer' }}
+                onClick={() => setImportScriptOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: '#94a3b8', lineHeight: 1.5 }}>
+              💡 Hệ thống sẽ tự động bóc tách từng phân cảnh theo dấu <strong>[0:00 – Hook]</strong>, trích xuất nhân vật (ví dụ: <code>Tôi</code>, <code>Não</code>), gợi ý bối cảnh <strong>(Cảnh tối, chỉ có ánh đèn tủ lạnh...)</strong>, hiệu ứng âm thanh <code>(Nhạc..., Ting)</code>, và lời thoại nhân vật để tạo Beats &amp; Prompts vẽ ảnh khớp 100%!
+            </p>
+
+            <div style={{ display: 'flex', gap: 10, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label style={{ cursor: 'pointer', padding: '6px 12px', background: '#1e293b', border: '1px solid #334155', borderRadius: 6, fontSize: 12, color: '#f3f4f6', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                📁 Chọn file .txt
+                <input
+                  type="file"
+                  accept=".txt,text/plain"
+                  style={{ display: 'none' }}
+                  onChange={e => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    void file.text().then(text => {
+                      setImportScriptText(text);
+                      if (!importScriptTitle) setImportScriptTitle(file.name.replace(/\.txt$/i, ''));
+                    });
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="engine-secondary-btn"
+                style={{ fontSize: 12, padding: '6px 12px' }}
+                onClick={() => {
+                  setImportScriptTitle('Tối thứ Sáu và cái tủ lạnh');
+                  setImportScriptText(SAMPLE_REFRIGERATOR_SCRIPT);
+                }}>
+                📝 Dán kịch bản mẫu (Tủ Lạnh &amp; Não)
+              </button>
+              <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 'auto' }}>
+                {importScriptText.length.toLocaleString('vi-VN')} ký tự
+              </span>
+            </div>
+
+            <label style={{ display: 'block', marginBottom: 10 }}>
+              <span style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12, color: '#cbd5e1' }}>
+                Tiêu đề kịch bản (tùy chọn):
+              </span>
+              <input
+                style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #2d384e', background: '#0b0e14', color: '#fff', fontSize: 13 }}
+                value={importScriptTitle}
+                onChange={e => setImportScriptTitle(e.target.value)}
+                placeholder="Ví dụ: Tối thứ Sáu và cái tủ lạnh (để trống sẽ tự lấy từ Phần 1)"
+              />
+            </label>
+
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12, color: '#cbd5e1' }}>
+                Nội dung kịch bản / Screenplay:
+              </span>
+              <textarea
+                style={{ width: '100%', height: 260, padding: '10px 12px', borderRadius: 6, border: '1px solid #2d384e', background: '#0b0e14', color: '#fff', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5 }}
+                value={importScriptText}
+                onChange={e => setImportScriptText(e.target.value)}
+                placeholder={'Dán kịch bản vào đây... Ví dụ:\nPhần 1: Tối thứ Sáu và cái tủ lạnh (0:00–2:30)\n[0:00 – Hook]\n(Cảnh tối, chỉ có ánh đèn tủ lạnh chiếu lên mặt. Nhạc hồi hộp kiểu phim trinh thám.)\nTôi: 10 giờ tối. Lần thứ năm trong một tiếng, mình mở cánh cửa này...\n(Đóng tủ. Ba giây sau, mở lại.)\nTôi: …Lỡ đâu.'}
+              />
+            </label>
+
+            <div className="modal-actions">
+              <button type="button" className="engine-secondary-btn" onClick={() => setImportScriptOpen(false)}>
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="engine-primary-btn"
+                disabled={importScriptLoading || importScriptText.trim().length < 20}
+                onClick={() => void handleImportScreenplay()}>
+                {importScriptLoading ? '⏳ Đang phân cảnh…' : '🚀 Tự Động Phân Cảnh & Dựng Kịch Bản'}
+              </button>
+            </div>
           </div>
         </div>
       )}

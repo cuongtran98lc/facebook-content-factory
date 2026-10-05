@@ -1,5 +1,7 @@
-import { writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import sharp from 'sharp';
 import { ProjectStorageService } from './storage';
 import { getPrisma } from './database';
 import { CAST_GUIDE } from './stickman-knowledge';
@@ -8,19 +10,31 @@ import {
   INITIAL_CONTENT_PILLARS,
   type EngineScene,
   type ExpandShortToLongInput,
+  type GenerateEpisodeImagesInput,
   type GenerateHooksInput,
   type GeneratePackageInput,
   type GenerateScenesInput,
   type GenerateScriptInput,
   type GenerateStickmanIdeasInput,
+  type GenerateStudioSceneImagesInput,
+  type GenerateStudioSceneVideosInput,
+  type GenerateStudioThumbnailInput,
   type HookVariation,
   type RegenerateBeatInput,
   type ScriptBeat,
   type StickmanContentPackage,
   type StickmanContentPillar,
   type StickmanIdea,
+  type StudioImageStyle,
+  type StudioSceneImageItem,
+  type StudioSceneVideoItem,
 } from '../../shared/stickman-engine';
 import { AIService } from './ai';
+import { ACTIONS, SETTINGS, fallbackStickScenes, stickFrame, storySections, type StickScene } from './stick-animation';
+import { renderAnimationCycle } from './ffmpeg';
+import { SettingsService } from './settings';
+import type { StickVisualStyle, VideoFormat } from '../../shared/types';
+import { parseScreenplay, screenplayToEngineScenes, screenplayToScriptBeats, screenplayToStickmanIdea } from '../../shared/screenplay-parser';
 
 function extractJson<T>(text: string): T {
   const cleaned = text
@@ -459,7 +473,7 @@ ALLOWED STICKMAN SPECS:
 
 For EACH beat, produce a comprehensive scene with:
 - visualDescription and imagePrompt: one static illustration with a large, consistent stickman, white round head, bold black limbs and crisp outlines. Match expression, outfit and resting pose to the narration. Describe a detailed story-specific environment: location layout, foreground/midground/background, architecture, furniture, 3-5 relevant objects, materials, time of day, lighting and shadows. Maintain location continuity; avoid a blank white backdrop, clutter or invented plot facts.
-- animationPrompt: empty string. These are still images; no body or camera animation.
+- animationPrompt: High-precision Video AI motion prompt (for Kling AI, Luma Dream Machine, Runway Gen-3, Pika). MUST describe specific character motion: character speaking actively with dynamic talking mouth movement and lip-sync (opening and closing mouth in sync with talking pace), expressive eyebrow and head motion, natural blinking, gesturing with hands, smooth fluid 2D cel-shaded animation, locked static camera, no distortion, no morphing.
 
 Return ONLY a JSON array of scenes:
 [
@@ -477,15 +491,45 @@ Return ONLY a JSON array of scenes:
     "camera": "close-up",
     "visualDescription": "Leo looking at his phone in shock as the screen glows in a dark office room",
     "imagePrompt": "Static 2D stickman illustration, white round head, black stick body, black suit with red tie, shocked expression with wide eyes and sweat drop, standing still beside a desk in a modern office with whiteboard and clock, bold clean doodle lines, layered office background, oak desk with a resting phone in the foreground, filing cabinets and a clock in the midground, tall windows overlooking evening buildings in the background, warm desk lamp and soft shadows, character occupying 70% of frame height",
-    "animationPrompt": "",
+    "animationPrompt": "2D cel-shaded vector animation of character Sticky Man actively speaking with dynamic talking mouth movement and lip sync opening and closing naturally in sync with narration, expressive eyebrows, subtle head nods, natural blinking eyes, gesturing with hands in an office. Smooth fluid 60fps motion, static camera wide shot, clean black outlines, no morphing.",
     "soundEffect": "gasp_whoosh"
   },
   ...
 ]`;
 
-    const provider = this.ai.provider();
-    const raw = await provider.generateText({ prompt, json: true, system: 'Write ALL audience-facing content in natural conversational English: narration, dialogue, hooks, titles, descriptions, on-screen text, CTA and thumbnail text. Translate meaning from Vietnamese inputs without changing plot facts, numbers or proper names. Keep JSON keys and enum values unchanged. Never mix Vietnamese into English output.' });
-    const parsed = extractJson<any[]>(raw);
+    let parsed: any[] = [];
+    try {
+      const provider = this.ai.provider();
+      const raw = await provider.generateText({ prompt, json: true, system: 'Write ALL audience-facing content in natural conversational English: narration, dialogue, hooks, titles, descriptions, on-screen text, CTA and thumbnail text. Translate meaning from Vietnamese inputs without changing plot facts, numbers or proper names. Keep JSON keys and enum values unchanged. Never mix Vietnamese into English output.' });
+      parsed = extractJson<any[]>(raw);
+    } catch (err) {
+      console.warn('AI scene generation failed, falling back to structured beat storyboard:', err);
+    }
+
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return beats.map((b, i) => {
+        const charName = idea.mainCharacter || 'Alex';
+        return {
+          sceneNumber: i + 1,
+          duration: 5,
+          location: idea.setting || 'home',
+          characters: [{
+            name: charName,
+            action: b.action === 'sit' ? 'sit' : 'stand',
+            emotion: b.emotion || 'neutral'
+          }],
+          narration: b.narration,
+          dialogue: b.dialogue,
+          action: b.action === 'sit' ? 'sit' : 'stand',
+          emotion: b.emotion || 'neutral',
+          camera: b.camera || 'medium',
+          visualDescription: `Sticky Man ${b.action} in ${idea.setting || 'home'} with ${b.emotion} expression.`,
+          imagePrompt: `Sticky Man 2D vector comic illustration. In this specific scene: ${b.action} in ${idea.setting || 'home'}. Character expression: ${b.emotion}. Iconic character Sticky Man with round white head, crisp black outlines, sharp black suit with red tie. High contrast, clean vector art.`,
+          animationPrompt: `2D cel-shaded vector animation of character Sticky Man actively speaking with dynamic talking mouth movement and lip sync in sync with narration, natural blinking eyes, subtle head nodding, expressive hand gestures in ${idea.setting || 'room'}. Smooth 60fps fluid motion, static camera shot, clean outlines, no morphing, no distortion.`,
+          soundEffect: b.soundEffect
+        };
+      });
+    }
 
     return parsed.map((s, i) => ({
       sceneNumber: i + 1,
@@ -507,8 +551,10 @@ Return ONLY a JSON array of scenes:
       camera: String(s.camera || 'medium'),
       visualDescription: String(s.visualDescription || ''),
       imagePrompt: String(s.imagePrompt || ''),
-      animationPrompt: '',
-      soundEffect: s.soundEffect ? String(s.soundEffect) : undefined
+      animationPrompt: s.animationPrompt && String(s.animationPrompt).trim()
+        ? String(s.animationPrompt).trim()
+        : `2D cel-shaded vector animation of character Sticky Man actively speaking with expressive talking mouth opening and closing in sync with narration, natural blinking eyes, subtle head nodding, expressive hand gestures in ${s.location || 'room'}. Smooth 60fps fluid motion, static camera shot, clean outlines, no morphing, no distortion.`,
+      soundEffect: s.soundEffect ? String(s.soundEffect) : beats[i]?.soundEffect
     }));
   }
 
@@ -654,5 +700,400 @@ Generate an expanded Long-Form Story Concept in JSON:
         seriesPotential: Number(parsed.score?.seriesPotential ?? 90),
       }
     };
+  }
+
+  async generateStudioSceneImages(input: GenerateStudioSceneImagesInput): Promise<{ sceneImages: StudioSceneImageItem[]; outputDir: string }> {
+    if (!input.scenes?.length) throw new Error('Không có danh sách cảnh để tạo ảnh.');
+    const effectiveFormat: VideoFormat = input.format === 'SHORT' ? 'REEL' : 'LANDSCAPE';
+    const width = effectiveFormat === 'REEL' ? 720 : 1280;
+    const height = effectiveFormat === 'REEL' ? 1280 : 720;
+    const storage = new ProjectStorageService();
+    let outputDir: string;
+    if (input.scriptId) {
+      const sample = await storage.getStudioOutputPath(input.projectId, input.scriptId, 'images', 'scenes', 'sample.txt');
+      outputDir = dirname(sample);
+    } else {
+      outputDir = storage.getProjectPath(input.projectId, 'images', 'studio-scenes', String(Date.now()));
+      await mkdir(outputDir, { recursive: true }).catch(() => undefined);
+    }
+    await mkdir(outputDir, { recursive: true }).catch(() => undefined);
+
+    const isAi = input.style === 'AI_BETTER_MIND' || input.style === 'AI_FLUX';
+    const visualStyle: StickVisualStyle = input.style === 'STICKMAN_3D' ? 'ENGINEER_3D' : 'DOODLE_2D';
+
+    const colors = new Map<string, string>();
+    const palette = ['#334155', '#c45b50', '#397b86', '#8961a5', '#a27025', '#487c46'];
+    for (const s of input.scenes) {
+      for (const c of s.characters || []) {
+        if (!colors.has(c.name)) colors.set(c.name, palette[colors.size % palette.length]);
+      }
+    }
+
+    const settingsService = new SettingsService();
+    const token = input.hfToken?.trim() || settingsService.getHuggingFaceToken();
+
+    const sceneImages: StudioSceneImageItem[] = [];
+
+    for (let i = 0; i < input.scenes.length; i++) {
+      const s = input.scenes[i];
+      const sceneNum = s.sceneNumber || i + 1;
+      const fileName = `scene_${String(sceneNum).padStart(2, '0')}.${isAi ? 'jpg' : 'png'}`;
+      const filePath = join(outputDir, fileName);
+
+      if (isAi) {
+        const basePrompt = (s.imagePrompt || s.visualDescription || s.narration || '').trim();
+        let promptToUse = basePrompt;
+        if (input.style === 'AI_BETTER_MIND') {
+          promptToUse = `Sticky Man 2D vector comic illustration. In this specific scene: ${basePrompt}. Iconic minimalist character Sticky Man with round white head, bold black outlines, sharp black tailored suit, vibrant red necktie. Centered framed composition, cel-shaded graphic novel art, full character visible inside borders with generous margins, clean background, no realistic human, no 3D CGI.`;
+        } else if (input.style === 'AI_FLUX') {
+          promptToUse = `Cinematic film still, Scene ${sceneNum}: ${basePrompt}. Masterpiece, dramatic atmospheric lighting, photorealistic 8k, professional cinematography, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cropped head, no cut off edges, no text, no watermark.`;
+        }
+
+        let imgBuffer: Buffer | null = null;
+        if (token) {
+          try {
+            const { InferenceClient } = await import('@huggingface/inference');
+            const hfClient = new InferenceClient(token);
+            const candidateModels = ['black-forest-labs/FLUX.1-schnell', 'Tongyi-MAI/Z-Image-Turbo'];
+            for (const model of candidateModels) {
+              if (imgBuffer) break;
+              try {
+                const randomSeed = Math.floor(Math.random() * 100_000_000) + 1;
+                const blob = await (hfClient as any).textToImage(
+                  { model, inputs: promptToUse, parameters: { seed: randomSeed } },
+                  { signal: AbortSignal.timeout(60_000), headers: { 'x-use-cache': 'false' } },
+                );
+                const rawBuf = Buffer.from(await blob.arrayBuffer());
+                imgBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 95 }).toBuffer();
+              } catch {}
+            }
+          } catch {}
+        }
+
+        if (!imgBuffer) {
+          for (let attempt = 1; attempt <= 4; attempt++) {
+            try {
+              const seed = Math.floor(Math.random() * 100_000_000) + 1;
+              const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptToUse)}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=sana`;
+              const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+              if (res.ok) {
+                const rawBuf = Buffer.from(await res.arrayBuffer());
+                imgBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 95 }).toBuffer();
+                break;
+              }
+            } catch {}
+            await new Promise(r => setTimeout(r, 1500));
+          }
+        }
+
+        if (!imgBuffer) {
+          let setting = (SETTINGS.includes(s.location as any) ? s.location : undefined);
+          let action = (ACTIONS.includes(s.action as any) ? s.action : undefined);
+          let emotion = s.emotion || 'neutral';
+          if (!setting || !action) {
+            const detected = fallbackStickScenes([s.narration || s.visualDescription || ''])[0];
+            if (!setting) setting = detected?.setting || 'home';
+            if (!action) action = detected?.actors[0]?.action || 'talk';
+            if (emotion === 'neutral' && detected?.actors[0]?.emotion) emotion = detected.actors[0].emotion;
+          }
+          const stickScene: StickScene = {
+            setting: (setting || 'home') as any,
+            actors: (s.characters && s.characters.length > 0)
+              ? s.characters.map((c, idx) => ({
+                  name: c.name || (idx === 0 ? 'Alex' : 'Actor'),
+                  action: (ACTIONS.includes(c.action as any) ? c.action : (idx === 0 ? action : 'stand')) as any,
+                  emotion: (c.emotion || emotion) as any,
+                  outfit: (c.outfit || 'suit') as any,
+                  prop: c.prop as any
+                }))
+              : [{ name: 'Alex', action: action as any, emotion: emotion as any, outfit: 'suit' }]
+          };
+          const time = (i * 0.45) % 2;
+          const svgText = stickFrame(stickScene, time, effectiveFormat, colors, true, visualStyle);
+          imgBuffer = await sharp(Buffer.from(svgText)).resize(width, height, { fit: 'cover' }).jpeg({ quality: 95 }).toBuffer();
+        }
+
+        await writeFile(filePath, imgBuffer);
+        await new Promise(r => setTimeout(r, 600));
+      } else {
+        let setting = (SETTINGS.includes(s.location as any) ? s.location : undefined);
+        let action = (ACTIONS.includes(s.action as any) ? s.action : undefined);
+        let emotion = s.emotion || 'neutral';
+        if (!setting || !action) {
+          const detected = fallbackStickScenes([s.narration || s.visualDescription || ''])[0];
+          if (!setting) setting = detected?.setting || 'home';
+          if (!action) action = detected?.actors[0]?.action || 'talk';
+          if (emotion === 'neutral' && detected?.actors[0]?.emotion) emotion = detected.actors[0].emotion;
+        }
+        const stickScene: StickScene = {
+          setting: (setting || 'home') as any,
+          actors: (s.characters && s.characters.length > 0)
+            ? s.characters.map((c, idx) => ({
+                name: c.name || (idx === 0 ? 'Alex' : 'Actor'),
+                action: (ACTIONS.includes(c.action as any) ? c.action : (idx === 0 ? action : 'stand')) as any,
+                emotion: (c.emotion || emotion) as any,
+                outfit: (c.outfit || 'suit') as any,
+                prop: c.prop as any
+              }))
+            : [{ name: 'Alex', action: action as any, emotion: emotion as any, outfit: 'suit' }]
+        };
+        const time = (i * 0.45) % 2;
+        const svgText = stickFrame(stickScene, time, effectiveFormat, colors, true, visualStyle);
+        const pngBuf = await sharp(Buffer.from(svgText)).resize(width, height, { fit: 'cover' }).png().toBuffer();
+        await writeFile(filePath, pngBuf);
+      }
+
+      sceneImages.push({
+        sceneNumber: sceneNum,
+        filePath,
+        fileUrl: `local-media://file/${encodeURIComponent(filePath)}?v=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        fileName
+      });
+    }
+
+    return { sceneImages, outputDir };
+  }
+
+  async generateStudioSceneVideos(input: GenerateStudioSceneVideosInput): Promise<{ sceneVideos: StudioSceneVideoItem[]; outputDir: string }> {
+    if (!input.scenes?.length) throw new Error('Không có danh sách cảnh để tạo video.');
+    const effectiveFormat: VideoFormat = input.format === 'SHORT' ? 'REEL' : 'LANDSCAPE';
+    const width = effectiveFormat === 'REEL' ? 720 : 1280;
+    const height = effectiveFormat === 'REEL' ? 1280 : 720;
+    const storage = new ProjectStorageService();
+    let outputDir: string;
+    if (input.scriptId) {
+      const sample = await storage.getStudioOutputPath(input.projectId, input.scriptId, 'videos', 'scenes', 'sample.txt');
+      outputDir = dirname(sample);
+    } else {
+      outputDir = storage.getProjectPath(input.projectId, 'videos', 'studio-scenes');
+    }
+    await mkdir(outputDir, { recursive: true }).catch(() => undefined);
+
+    const visualStyle: StickVisualStyle = input.style === 'STICKMAN_3D' ? 'ENGINEER_3D' : 'DOODLE_2D';
+    const colors = new Map<string, string>();
+    const palette = ['#dc2626', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4'];
+    for (const s of input.scenes) {
+      for (const c of s.characters || []) {
+        if (!colors.has(c.name)) colors.set(c.name, palette[colors.size % palette.length]);
+      }
+    }
+
+    const sceneVideos: StudioSceneVideoItem[] = [];
+    const scenesToProcess = input.singleSceneNumber
+      ? input.scenes.filter(s => (s.sceneNumber || 1) === input.singleSceneNumber)
+      : input.scenes;
+
+    for (let i = 0; i < scenesToProcess.length; i++) {
+      const s = scenesToProcess[i];
+      const sceneNum = s.sceneNumber || i + 1;
+      const fileName = `scene_${String(sceneNum).padStart(2, '0')}_talk.mp4`;
+      const videoPath = join(outputDir, fileName);
+
+      let setting = (SETTINGS.includes(s.location as any) ? s.location : undefined);
+      let action = (ACTIONS.includes(s.action as any) ? s.action : undefined);
+      let emotion = s.emotion || 'neutral';
+      if (!setting || !action) {
+        const detected = fallbackStickScenes([s.narration || s.visualDescription || ''])[0];
+        if (!setting) setting = detected?.setting || 'home';
+        if (!action) action = detected?.actors[0]?.action || 'talk';
+        if (emotion === 'neutral' && detected?.actors[0]?.emotion) emotion = detected.actors[0].emotion;
+      }
+      // Talking mouth lip-sync
+      const effectiveAction = (action === 'stand' || action === 'point' || !action) ? 'talk' : action;
+
+      const stickScene: StickScene = {
+        setting: (setting || 'home') as any,
+        actors: (s.characters && s.characters.length > 0)
+          ? s.characters.map((c, idx) => ({
+              name: c.name || (idx === 0 ? 'Alex' : 'Actor'),
+              action: (idx === 0 ? effectiveAction : (ACTIONS.includes(c.action as any) ? c.action : 'stand')) as any,
+              emotion: (c.emotion || emotion) as any,
+              outfit: (c.outfit || 'suit') as any,
+              prop: c.prop as any
+            }))
+          : [{ name: 'Alex', action: effectiveAction as any, emotion: emotion as any, outfit: 'suit' }]
+      };
+
+      const tempFramesDir = await mkdtemp(join(tmpdir(), `stick-scene-frames-${sceneNum}-`));
+      try {
+        const cycleFrames = 24; // 24 frames at 12fps -> looped to duration
+        for (let frameIdx = 0; frameIdx < cycleFrames; frameIdx++) {
+          const svg = stickFrame(stickScene, frameIdx * 5, effectiveFormat, colors, false, visualStyle);
+          const framePath = join(tempFramesDir, `${String(frameIdx).padStart(3, '0')}.png`);
+          await sharp(Buffer.from(svg)).resize(width, height).png().toFile(framePath);
+        }
+        const sceneDuration = Math.max(3, Math.min(10, s.duration || 5));
+        await renderAnimationCycle(join(tempFramesDir, '%03d.png'), videoPath, sceneDuration, 12, 60);
+
+        sceneVideos.push({
+          sceneNumber: sceneNum,
+          filePath: videoPath,
+          fileUrl: `local-media://file/${encodeURIComponent(videoPath)}?v=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          fileName,
+          duration: sceneDuration
+        });
+      } finally {
+        await rm(tempFramesDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
+    return { sceneVideos, outputDir };
+  }
+
+  async generateStudioThumbnail(input: GenerateStudioThumbnailInput): Promise<{ filePath: string; fileUrl: string }> {
+    const effectiveFormat: VideoFormat = input.format === 'SHORT' ? 'REEL' : 'LANDSCAPE';
+    const width = effectiveFormat === 'REEL' ? 720 : 1280;
+    const height = effectiveFormat === 'REEL' ? 1280 : 720;
+    const storage = new ProjectStorageService();
+    let thumbPath: string;
+    if (input.scriptId) {
+      thumbPath = await storage.getStudioOutputPath(input.projectId, input.scriptId, 'images', 'thumbnail.png');
+    } else {
+      thumbPath = storage.getProjectPath(input.projectId, 'images', 'thumbnail.png');
+      await mkdir(dirname(thumbPath), { recursive: true }).catch(() => undefined);
+    }
+
+    const isAi = input.style === 'AI_BETTER_MIND' || input.style === 'AI_FLUX';
+    const visualStyle: StickVisualStyle = input.style === 'STICKMAN_3D' ? 'ENGINEER_3D' : 'DOODLE_2D';
+    let baseImgBuffer: Buffer | null = null;
+
+    if (isAi) {
+      const promptToUse = (input.prompt || '').trim() || 'Stickman dramatic story cover';
+      const settingsService = new SettingsService();
+      const token = input.hfToken?.trim() || settingsService.getHuggingFaceToken();
+
+      if (token) {
+        try {
+          const { InferenceClient } = await import('@huggingface/inference');
+          const hfClient = new InferenceClient(token);
+          const randomSeed = Math.floor(Math.random() * 100_000_000) + 1;
+          const blob = await (hfClient as any).textToImage(
+            { model: 'black-forest-labs/FLUX.1-schnell', inputs: promptToUse, parameters: { seed: randomSeed } },
+            { signal: AbortSignal.timeout(60_000), headers: { 'x-use-cache': 'false' } },
+          );
+          const rawBuf = Buffer.from(await blob.arrayBuffer());
+          baseImgBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).png().toBuffer();
+        } catch {}
+      }
+
+      if (!baseImgBuffer) {
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          try {
+            const seed = Math.floor(Math.random() * 100_000_000) + 1;
+            const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptToUse)}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=sana`;
+            const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+            if (res.ok) {
+              const rawBuf = Buffer.from(await res.arrayBuffer());
+              baseImgBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).png().toBuffer();
+              break;
+            }
+          } catch {}
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+    }
+
+    if (!baseImgBuffer) {
+      const detected = fallbackStickScenes([input.textOverlay || input.prompt || ''])[0];
+      const coverScene: StickScene = detected || {
+        setting: 'office',
+        actors: [{ name: 'Alex', action: 'shock' }]
+      };
+      const svgText = stickFrame(coverScene, 0.2, effectiveFormat, new Map(), true, visualStyle);
+      baseImgBuffer = await sharp(Buffer.from(svgText)).resize(width, height, { fit: 'cover' }).png().toBuffer();
+    }
+
+    if (input.textOverlay && input.textOverlay.trim()) {
+      const escapedText = input.textOverlay.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const overlaySvg = `
+        <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .banner { fill: rgba(0, 0, 0, 0.65); }
+            .txt { fill: #facc15; font-size: ${effectiveFormat === 'REEL' ? 52 : 64}px; font-weight: 900; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; }
+          </style>
+          <rect x="0" y="${effectiveFormat === 'REEL' ? 120 : 60}" width="${width}" height="${effectiveFormat === 'REEL' ? 160 : 130}" class="banner" />
+          <text x="${width / 2}" y="${effectiveFormat === 'REEL' ? 220 : 145}" class="txt">${escapedText}</text>
+        </svg>
+      `;
+      baseImgBuffer = await sharp(baseImgBuffer)
+        .composite([{ input: Buffer.from(overlaySvg), top: 0, left: 0 }])
+        .png()
+        .toBuffer();
+    }
+
+    await writeFile(thumbPath, baseImgBuffer);
+    return {
+      filePath: thumbPath,
+      fileUrl: `local-media://file/${encodeURIComponent(thumbPath)}?v=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    };
+  }
+
+  async generateEpisodeImages(input: GenerateEpisodeImagesInput): Promise<{ sceneImages: StudioSceneImageItem[]; outputDir: string; thumbnail?: { filePath: string; fileUrl: string } }> {
+    const prisma = getPrisma();
+    const script = await prisma.script.findFirst({ where: { id: input.scriptId, projectId: input.projectId } });
+    if (!script) throw new Error('Không tìm thấy kịch bản tập Reel.');
+
+    const sections = storySections(script.content, true);
+    const analyzed = fallbackStickScenes(sections);
+    const scenes: EngineScene[] = sections.map((sec, i) => {
+      const fb = analyzed[i] || analyzed[0];
+      const actor = fb.actors[0] || { name: 'Alex', action: 'talk', emotion: 'neutral', prop: 'none' };
+      const actionDesc = `${actor.action} with ${actor.emotion} expression`;
+      const settingDesc = `in ${fb.setting}${actor.prop && actor.prop !== 'none' ? ` holding ${actor.prop}` : ''}`;
+      return {
+        sceneNumber: i + 1,
+        duration: 5,
+        location: fb.setting,
+        characters: [{
+          name: actor.name,
+          action: actor.action,
+          emotion: actor.emotion || 'neutral',
+          prop: actor.prop !== 'none' ? actor.prop : undefined
+        }],
+        narration: sec,
+        action: actor.action,
+        emotion: actor.emotion || 'neutral',
+        camera: 'medium',
+        visualDescription: `Sticky Man ${actionDesc} ${settingDesc}`,
+        imagePrompt: `Sticky Man ${actionDesc} ${settingDesc}`,
+        animationPrompt: `2D cel-shaded vector animation of character Sticky Man actively speaking with dynamic talking mouth movement and lip sync in sync with narration, natural blinking eyes, subtle head nodding, expressive hand gestures in ${fb.setting}. Smooth 60fps fluid motion, static camera shot, clean outlines, no morphing, no distortion.`
+      };
+    });
+
+    const result = await this.generateStudioSceneImages({
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      scenes,
+      format: 'SHORT',
+      style: input.style,
+      hfToken: input.hfToken
+    });
+
+    let thumbnail: { filePath: string; fileUrl: string } | undefined;
+    try {
+      thumbnail = await this.generateStudioThumbnail({
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        prompt: `YouTube Shorts dramatic cover for: ${script.title || 'Short Reel'}`,
+        textOverlay: (script.title || 'Short Reel').slice(0, 30),
+        format: 'SHORT',
+        style: input.style,
+        hfToken: input.hfToken
+      });
+    } catch {}
+
+    return { ...result, thumbnail };
+  }
+
+  async parseScriptToBeats(input: { content: string; title?: string; format?: 'SHORT' | 'LONG' }): Promise<{
+    idea: StickmanIdea;
+    beats: ScriptBeat[];
+    scenes: EngineScene[];
+  }> {
+    const screenplay = parseScreenplay(input.content, input.title);
+    const idea = screenplayToStickmanIdea(screenplay, input.format || 'SHORT');
+    const beats = screenplayToScriptBeats(screenplay);
+    const scenes = screenplayToEngineScenes(screenplay);
+    return { idea, beats, scenes };
   }
 }

@@ -26,6 +26,7 @@ import { ClaudeCliService } from './ai/claude-cli'
 import { AntigravityCliService } from './ai/antigravity-cli'
 import { fallbackStickScenes, parseStickScenes, renderEmotionDemoVideo, renderStickAnimation, stickFrame, stickPrompt, storySections, type StickScene } from './stick-animation'
 import { buildGoogleFlowThumbnailPrompt } from './stickman-knowledge'
+import { isScreenplayScript, cleanNarrationForTTS, extractVisualCues } from '../../shared/screenplay-parser'
 
 const scriptHash = (text: string) => createHash('sha256').update(text).digest('hex')
 const TTS_CHUNK_ATTEMPTS = 4
@@ -1148,6 +1149,8 @@ export class StoryMediaService {
 
     const prompt = `You are a visual director creating storyboard scenes for "Sticky Man" animated stories (iconic 2D character with a smooth round white circle head, expressive cartoon eyebrows, eyes, and mouth, wearing a black business suit and red necktie).
 
+IMPORTANT: If any scene text contains explicit parenthetical visual directions or camera cues (e.g., "(Cảnh tối, chỉ có ánh đèn tủ lạnh chiếu lên mặt...)", "(Bật đèn, nhìn thẳng camera)", "(Cắt sang nhân vật Não, đeo kính, khoanh tay)", "(rót cốc nước)", "(vỗ tay)"), you MUST DIRECTLY BASE your action, expression, and setting on these exact director notes!
+
 For each narration scene below (which may be in Vietnamese or English), output a JSON array describing the character's facial expression, specific action, and setting/environment in concise, vivid English.
 
 Story segments:
@@ -1196,15 +1199,40 @@ Respond ONLY with valid JSON array:
         })
       } else {
         const text = seg.text.toLowerCase()
+        const { cues } = extractVisualCues(seg.text)
+        const cueCombined = cues.join(' ').toLowerCase()
         let expression = 'determined focused cartoon eyes, thick black eyebrows, and serious mouth line'
         let action = 'Sticky Man standing attentively, gesturing with hand to explain the situation'
         let setting = 'modern city room with dramatic red and black lighting'
 
-        if (/buồn|khóc|thất bại|tuyệt vọng|bế tắc|sad|cry|fail|hopeless/i.test(text)) {
+        if (/tủ lạnh|refrigerator|ngăn đá|chai tương ớt|hộp cơm|bánh flan/.test(cueCombined + ' ' + text)) {
+          expression = 'intense curious cartoon eyes, illuminated by cold light, mouth slightly open in anticipation'
+          action = 'Sticky Man standing in front of an open glowing refrigerator at night examining the interior shelves'
+          setting = 'dark kitchen at night with dramatic cold blue-white light glowing from inside open refrigerator'
+        } else if (/não|đeo kính|khoanh tay/.test(cueCombined + ' ' + text)) {
+          expression = 'smug intelligent smirk, raised eyebrow behind round glasses'
+          action = 'Sticky Man standing alongside character Brain who wears round eyeglasses and folds arms smugly'
+          setting = 'indoor room with dramatic lighting, with character Brain'
+        } else if (/nhìn thẳng camera|bật đèn|chỉ vào đầu/.test(cueCombined + ' ' + text)) {
+          expression = 'bright confident smile, sharp cartoon eyes breaking fourth wall'
+          action = 'Sticky Man pointing finger to forehead, looking directly forward into camera'
+          setting = 'brightly lit room with warm indoor lights'
+        } else if (/tín hiệu|phần thưởng|vòng lặp/.test(cueCombined + ' ' + text)) {
+          expression = 'serious analytical expression, explaining chart'
+          action = 'Sticky Man presenting a flowchart diagram of habit loop: SIGNAL -> ACTION -> REWARD'
+          setting = 'presentation graphic background with neon diagram lines'
+        } else if (/rót cốc nước|uống|cốc nước/.test(cueCombined + ' ' + text)) {
+          expression = 'proud satisfied smile, calm relieved cartoon eyebrows'
+          action = 'Sticky Man turning away from refrigerator and pouring a clean glass of water'
+          setting = 'cozy kitchen counter with soft lighting'
+        } else if (cues.length > 0) {
+          action = `Sticky Man ${cues[0].slice(0, 90)}`
+          setting = 'atmospheric comic scene background'
+        } else if (/buồn|khóc|thất bại|tuyệt vọng|bế tắc|sad|cry|fail|hopeless|rưng rưng/i.test(text)) {
           expression = 'sad downturned mouth, droopy curved eyebrows, teary cartoon eyes'
           action = 'Sticky Man sitting slouched with head bowed in deep contemplation'
           setting = 'dimly lit room with heavy shadows and rain outside the window'
-        } else if (/mệt|áp lực|stress|thức đêm|khó khăn|tired|exhausted|pressure|night/i.test(text)) {
+        } else if (/mệt|áp lực|stress|thức đêm|khó khăn|báo cáo|tired|exhausted|pressure|night/i.test(text)) {
           expression = 'tired droopy cartoon eyes with dark eye bags, exhausted flat mouth line, furrowed eyebrows'
           action = 'Sticky Man sitting at a messy wooden desk working late on a glowing laptop, surrounded by coffee mugs'
           setting = 'dark office late at night with red neon skyline outside the window'
@@ -1251,15 +1279,38 @@ Respond ONLY with valid JSON array:
     const prisma = getPrisma()
     const [project, script, audio] = await Promise.all([
       prisma.project.findUnique({ where: { id: projectId } }),
-      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.script.findFirst({ where: { id: scriptId, projectId } }),
       prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
     ])
-    if (!script) throw new Error('Hãy chọn Story script trước khi tạo ảnh chi tiết.')
-    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi tạo ảnh chi tiết.')
-    const audioMeta = parseMeta(audio.metadata)
-    const segments = parseAudioSegments(audioMeta.segments)
-    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content) || !segments.length) {
-      throw new Error('Story MP3 không khớp kịch bản hoặc chưa có audio phân đoạn. Hãy Generate lại trước.')
+    if (!script) throw new Error('Hãy chọn kịch bản trước khi tạo ảnh chi tiết.')
+
+    const isReel = script.type === 'REEL' || format === 'REEL'
+    const effectiveFormat: VideoFormat = isReel ? 'REEL' : format
+
+    let audioAsset = audio
+    if (script.type === 'REEL') {
+      const reelAudios = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'desc' } })
+      const matchingReelAudio = reelAudios.find(row => {
+        const meta = parseMeta(row.metadata)
+        return meta.reelId === script.id
+      })
+      if (matchingReelAudio) audioAsset = matchingReelAudio
+    }
+
+    const audioMeta = parseMeta(audioAsset?.metadata)
+    let segments = parseAudioSegments(audioMeta.segments)
+    if (!segments.length) {
+      const sections = storySections(script.content, isReel)
+      const totalDur = (typeof audioMeta.duration === 'number' && audioMeta.duration > 0) ? audioMeta.duration : (sections.length * 6)
+      const perSecDur = totalDur / Math.max(1, sections.length)
+      segments = sections.map((text, idx) => ({
+        index: idx + 1,
+        total: sections.length,
+        kind: 'STORY' as const,
+        text,
+        path: audioAsset?.path || '',
+        duration: perSecDur
+      }))
     }
 
     const total = segments.length
@@ -1267,12 +1318,12 @@ Respond ONLY with valid JSON array:
     const abortController = new AbortController()
     this.fluxAutomationAbort = abortController
 
-    const width = format === 'REEL' ? 768 : format === 'LANDSCAPE' ? 1344 : 1024
-    const height = format === 'REEL' ? 1344 : format === 'LANDSCAPE' ? 768 : 1024
+    const width = effectiveFormat === 'REEL' ? 720 : effectiveFormat === 'LANDSCAPE' ? 1280 : 1024
+    const height = effectiveFormat === 'REEL' ? 1280 : effectiveFormat === 'LANDSCAPE' ? 720 : 1024
 
     const isBetterMind = stylePreset === 'BETTER_MIND'
     const styleLabel = isBetterMind ? 'Sticky Man 2D (@abettermind)' : 'FLUX'
-    const folderName = isBetterMind ? 'better-mind-scenes' : 'flux-scenes'
+    const folderName = `${isBetterMind ? 'better-mind' : 'flux'}-${scriptId}`
 
     const targetDir = this.storage.getProjectPath(projectId, 'images', folderName)
     await mkdir(targetDir, { recursive: true }).catch(() => undefined)
@@ -1344,26 +1395,26 @@ Respond ONLY with valid JSON array:
             continue
           }
 
-          const defaultStickmanPrompt =
-            '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
-
           const sceneDetail = stickyManDetailsMap.get(sceneNum)
+          const { cues } = extractVisualCues(segment.text)
+          const explicitCueNote = cues.length > 0 ? `Visual cues: ${cues.join('. ')}.` : ''
           const prompt = isBetterMind
             ? sceneDetail
               ? [
-                  customPrompt?.trim() || defaultStickmanPrompt,
-                  `In this specific scene: Character facial expression has ${sceneDetail.expression}.`,
-                  `Action: ${sceneDetail.action}.`,
-                  `Environment and props: ${sceneDetail.setting}.`,
-                  'Maintain 2D vector comic illustration, cell-shaded, high contrast, clean bold ink outlines, no 3D, no CGI.'
-                ].join(' ')
+                  `Sticky Man 2D vector comic illustration. In this specific scene: ${explicitCueNote ? `${explicitCueNote} ` : ''}${sceneDetail.action}. Character expression: ${sceneDetail.expression}. Setting and environment: ${sceneDetail.setting}.`,
+                  'Iconic minimalist character Sticky Man, perfectly round smooth white head, bold clean black outlines, sharp black tailored suit with vibrant red necktie.',
+                  'Cinematic framing, cel-shaded graphic novel art, full character visible inside borders with generous margins, centered composition, high contrast, clean background, no realistic human, no 3D CGI.',
+                  customPrompt?.trim() || ''
+                ].filter(Boolean).join(' ')
               : [
-                  customPrompt?.trim() || defaultStickmanPrompt,
-                  `Action in this scene: ${segment.text}`
-                ].join(' ')
+                  `Sticky Man 2D vector comic illustration. In this specific scene: ${explicitCueNote ? `${explicitCueNote} ` : ''}${segment.text}.`,
+                  'Iconic character Sticky Man, perfectly round white head, bold clean black outlines, sharp black suit with vibrant red necktie.',
+                  'Framed composition, full character visible inside borders with margins, cel-shaded 2D vector art.',
+                  customPrompt?.trim() || ''
+                ].filter(Boolean).join(' ')
             : [
-                'Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens.',
-                `Scene ${index + 1} of ${total}: ${segment.text}`
+                `Cinematic film still, Scene ${sceneNum} of ${total}: ${explicitCueNote ? `${explicitCueNote} ` : ''}${cleanNarrationForTTS(segment.text)}.`,
+                'Masterpiece, dramatic atmospheric lighting, photorealistic 8k, professional cinematography, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cropped head, no cut off edges, no text, no watermark.'
               ].join(' ')
 
           const actionSnippet = sceneDetail ? ` (${sceneDetail.action.slice(0, 32)}...)` : ''
@@ -1396,15 +1447,20 @@ Respond ONLY with valid JSON array:
                     ? AbortSignal.any([abortController.signal, timeoutSignal])
                     : abortController.signal
 
-                  const blob = await hfClient.textToImage({
+                  const randomSeed = Math.floor(Math.random() * 100_000_000) + 1
+                  const blob = await (hfClient as any).textToImage({
                     model,
-                    inputs: prompt
-                  }, { signal: fetchSignal })
+                    inputs: prompt,
+                    parameters: { seed: randomSeed }
+                  }, {
+                    signal: fetchSignal,
+                    headers: { 'x-use-cache': 'false' }
+                  })
 
                   const rawBuf = Buffer.from(await blob.arrayBuffer())
                   const meta = await sharp(rawBuf).metadata()
                   if (meta.width && meta.height) {
-                    imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer()
+                    imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover', position: 'center', kernel: sharp.kernel.lanczos3 }).jpeg({ quality: 96 }).toBuffer()
                     break
                   }
                 } catch (hfErr) {
@@ -1464,7 +1520,7 @@ Respond ONLY with valid JSON array:
                 const rawBuf = Buffer.from(await res.arrayBuffer())
                 const meta = await sharp(rawBuf).metadata()
                 if (!meta.width || !meta.height) throw new Error('Dữ liệu ảnh trả về không hợp lệ.')
-                imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover' }).jpeg({ quality: 92 }).toBuffer()
+                imageBuffer = await sharp(rawBuf).resize(width, height, { fit: 'cover', position: 'center', kernel: sharp.kernel.lanczos3 }).jpeg({ quality: 96 }).toBuffer()
                 break
               } catch (pollErr) {
                 lastErr = pollErr
@@ -1556,16 +1612,16 @@ Respond ONLY with valid JSON array:
     }
 
     const aspect = input.aspectRatio || '9:16'
-    const width = aspect === '9:16' ? 768 : aspect === '16:9' ? 1344 : 1024
-    const height = aspect === '9:16' ? 1344 : aspect === '16:9' ? 768 : 1024
+    const width = aspect === '9:16' ? 720 : aspect === '16:9' ? 1280 : 1024
+    const height = aspect === '9:16' ? 1280 : aspect === '16:9' ? 720 : 1024
 
     let cleanPrompt = promptText
     if (input.stylePreset === 'BETTER_MIND' && !cleanPrompt.toLowerCase().includes('sticky man')) {
       const defaultStickman =
-        '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
-      cleanPrompt = `${defaultStickman} Specific scene action and details: ${cleanPrompt}`
+        '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, wide angle framed shot, medium shot, entire character positioned fully inside the camera view with plenty of headroom and margins on all sides, centered composition, entire figure fully visible, no 3D, no CGI, no realistic human skin, no close-up, no cropped head, no clipped body, no cropped edges.'
+      cleanPrompt = `${defaultStickman} Specific scene action and details: ${cleanPrompt} Keep whole character fully inside frame borders.`
     } else if (input.stylePreset === 'FLUX_CINEMATIC' && !cleanPrompt.toLowerCase().includes('cinematic')) {
-      cleanPrompt = `Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens. Scene: ${cleanPrompt}`
+      cleanPrompt = `Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cropped head, no cut off edges, no text, no watermark, no split screens. Scene: ${cleanPrompt}`
     }
 
     let imageBuffer: Buffer | null = null
@@ -2564,7 +2620,8 @@ Respond ONLY with valid JSON array:
     if (!project.voiceId) throw new Error('Hãy chọn voice trước khi Generate Story MP3.')
     const ctaText = getCtaText(project.contentLanguage, customCta)
     const chunkSize = this.voices.getMaxTextLength()
-    const pieces = chunks(script.content, chunkSize)
+    const narrationText = isScreenplayScript(script.content) ? cleanNarrationForTTS(script.content) : script.content
+    const pieces = chunks(narrationText, chunkSize)
     if (!pieces.length) throw new Error('Story đang trống, không thể generate voice.')
     const currentScriptHash = scriptHash(script.content)
     const existingAudio = await prisma.asset.findFirst({
@@ -2788,16 +2845,33 @@ Respond ONLY with valid JSON array:
       const existingThumbnail = await prisma.asset.findFirst({ where: { projectId, type: 'THUMBNAIL' } })
       if (!existingThumbnail) {
         const coverScene = { ...scenes[0], overlay: undefined }
-        const cover = await sharp(Buffer.from(stickFrame(coverScene, 0, 'LANDSCAPE', new Map(), true, visualStyle)))
-          .resize(1280, 720).png().toBuffer()
+        const coverW = effectiveFormat === 'REEL' ? 720 : 1280
+        const coverH = effectiveFormat === 'REEL' ? 1280 : 720
+        const cover = await sharp(Buffer.from(stickFrame(coverScene, 0, effectiveFormat, new Map(), true, visualStyle)))
+          .resize(coverW, coverH).png().toBuffer()
         const coverPath = studioOutput
           ? await this.storage.getStudioOutputPath(projectId, scriptId, 'images', 'thumbnail.png')
           : await this.storage.getOutputPath(projectId, 'images', 'thumbnail.png')
         await writeFile(coverPath, cover)
         await prisma.asset.create({ data: {
           projectId, type: 'THUMBNAIL', path: coverPath,
-          metadata: JSON.stringify({ provider: 'storyboard', model: 'stick-still', title: script.title, scriptId, width: 1280, height: 720, mimeType: 'image/png' })
+          metadata: JSON.stringify({ provider: 'storyboard', model: 'stick-still', title: script.title, scriptId, width: coverW, height: coverH, mimeType: 'image/png' })
         } })
+      }
+      if (studioOutput) {
+        try {
+          const scW = effectiveFormat === 'REEL' ? 720 : 1280
+          const scH = effectiveFormat === 'REEL' ? 1280 : 720
+          for (let i = 0; i < scenes.length; i++) {
+            const sc = scenes[i]
+            const scImgPath = await this.storage.getStudioOutputPath(projectId, scriptId, 'images', 'scenes', `scene_${String(i + 1).padStart(2, '0')}.png`)
+            const scSvg = stickFrame(sc, 0, effectiveFormat, new Map(), true, visualStyle)
+            const scPng = await sharp(Buffer.from(scSvg)).resize(scW, scH, { fit: 'cover' }).png().toBuffer()
+            await writeFile(scImgPath, scPng)
+          }
+        } catch (e) {
+          console.warn('[story-media] Không thể lưu scene images studio:', e)
+        }
       }
       const media = await this.get(projectId)
       report(100, `Hoạt hình ${effectiveFormat === 'REEL' ? 'Short 9:16' : ''} có lời đọc, caption và thumbnail đã sẵn sàng.`)
@@ -2871,17 +2945,38 @@ Respond ONLY with valid JSON array:
     if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video Google Flow không hợp lệ.')
     const prisma = getPrisma()
     const [script, audio] = await Promise.all([
-      prisma.script.findFirst({ where: { id: scriptId, projectId, type: 'LONG_STORY' } }),
+      prisma.script.findFirst({ where: { id: scriptId, projectId } }),
       prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
     ])
-    if (!script) throw new Error('Hãy chọn Story script trước khi nhập ảnh Google Flow.')
-    if (!audio) throw new Error('Hãy Generate Story MP3 + phân đoạn trước khi nhập ảnh Google Flow.')
-    const audioMeta = parseMeta(audio.metadata)
-    if (audioMeta.scriptId !== scriptId || audioMeta.scriptHash !== scriptHash(script.content)) {
-      throw new Error('Story hoặc audio đã thay đổi. Hãy Generate Story MP3 + phân đoạn lại trước.')
+    if (!script) throw new Error('Hãy chọn kịch bản trước khi nhập ảnh Google Flow.')
+    const isReel = script.type === 'REEL' || format === 'REEL'
+    const effectiveFormat: VideoFormat = isReel ? 'REEL' : format
+
+    let audioAsset = audio
+    if (script.type === 'REEL') {
+      const reelAudios = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'desc' } })
+      const matchingReelAudio = reelAudios.find(row => {
+        const meta = parseMeta(row.metadata)
+        return meta.reelId === script.id
+      })
+      if (matchingReelAudio) audioAsset = matchingReelAudio
     }
-    const audioSegments = parseAudioSegments(audioMeta.segments)
-    if (!audioSegments.length) throw new Error('Story MP3 hiện tại chưa có audio phân đoạn.')
+
+    const audioMeta = parseMeta(audioAsset?.metadata)
+    let audioSegments = parseAudioSegments(audioMeta.segments)
+    if (!audioSegments.length) {
+      const sections = storySections(script.content, isReel)
+      const totalDur = (typeof audioMeta.duration === 'number' && audioMeta.duration > 0) ? audioMeta.duration : (sections.length * 6)
+      const perSecDur = totalDur / Math.max(1, sections.length)
+      audioSegments = sections.map((text, idx) => ({
+        index: idx + 1,
+        total: sections.length,
+        kind: 'STORY' as const,
+        text,
+        path: audioAsset?.path || '',
+        duration: perSecDur
+      }))
+    }
     if (sources.length !== audioSegments.length) {
       throw new Error(`Cần đúng ${audioSegments.length} ảnh Google Flow, tương ứng ${audioSegments.length} audio phân đoạn.`)
     }
@@ -2892,8 +2987,8 @@ Respond ONLY with valid JSON array:
     const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`
     const imageRelativeDir = `images/flow-scenes/${runId}`
     const tempDir = this.storage.getProjectPath(projectId, 'background', '.flow-scenes', runId)
-    const finalVideo = await this.storage.getOutputPath(projectId, 'background', `google-flow-${format.toLowerCase()}.mp4`)
-    const dims = format === 'REEL' ? [1080, 1920] : format === 'SQUARE' ? [1080, 1080] : [1920, 1080]
+    const finalVideo = await this.storage.getOutputPath(projectId, 'background', `google-flow-${effectiveFormat.toLowerCase()}.mp4`)
+    const dims = effectiveFormat === 'REEL' ? [1080, 1920] : effectiveFormat === 'SQUARE' ? [1080, 1080] : [1920, 1080]
     const storedScenes: StoredFlowScene[] = []
     await mkdir(tempDir, { recursive: true })
 
@@ -2902,11 +2997,54 @@ Respond ONLY with valid JSON array:
         let png: Buffer
         try {
           const sourceBytes = await this.readFlowImageSource(sources[index])
-          png = await sharp(sourceBytes)
-            .rotate()
-            .resize(dims[0], dims[1], { fit: 'cover', position: 'attention' })
-            .png({ compressionLevel: 8 })
-            .toBuffer()
+          const image = sharp(sourceBytes).rotate()
+          const meta = await image.metadata()
+          const srcW = meta.width || dims[0]
+          const srcH = meta.height || dims[1]
+          const srcAspect = srcW / srcH
+          const targetAspect = dims[0] / dims[1]
+          const aspectDiff = Math.abs(srcAspect - targetAspect) / targetAspect
+
+          if (aspectDiff < 0.06) {
+            // Tỉ lệ tương đồng: Canh giữa, bảo toàn đầy đủ khung cảnh, nội suy Lanczos3 sắc nét
+            png = await sharp(sourceBytes)
+              .rotate()
+              .resize(dims[0], dims[1], {
+                fit: 'cover',
+                position: 'center',
+                kernel: sharp.kernel.lanczos3
+              })
+              .png({ quality: 100 })
+              .toBuffer()
+          } else {
+            // Tỉ lệ khác nhau (ảnh ngang đưa vào video dọc 9:16 hoặc ảnh vuông):
+            // Giữ TRỌN VẸN 100% ẢNH VỪA KHÍT MÀN HÌNH trên nền mờ nghệ thuật cùng tông màu (không zoom to, không vỡ hạt)
+            const bgBuffer = await sharp(sourceBytes)
+              .rotate()
+              .resize(dims[0], dims[1], {
+                fit: 'cover',
+                position: 'center'
+              })
+              .blur(30)
+              .modulate({ brightness: 0.55 })
+              .png()
+              .toBuffer()
+
+            const fgBuffer = await sharp(sourceBytes)
+              .rotate()
+              .resize(dims[0], dims[1], {
+                fit: 'contain',
+                background: { r: 0, g: 0, b: 0, alpha: 0 },
+                kernel: sharp.kernel.lanczos3
+              })
+              .png()
+              .toBuffer()
+
+            png = await sharp(bgBuffer)
+              .composite([{ input: fgBuffer, gravity: 'center' }])
+              .png({ quality: 100 })
+              .toBuffer()
+          }
         } catch (error) {
           throw new Error(`Ảnh cho phân đoạn ${index + 1} không hợp lệ: ${error instanceof Error ? error.message : String(error)} Nếu link Flow cần đăng nhập, hãy tải ảnh về máy rồi dùng "Chọn ảnh đã tải".`)
         }
@@ -2950,7 +3088,7 @@ Respond ONLY with valid JSON array:
             kind: 'VIDEO',
             format,
             scriptId,
-            audioAssetId: audio.id,
+            audioAssetId: audioAsset?.id || audio?.id || null,
             scenes: storedScenes
           })
         } })
@@ -2959,7 +3097,7 @@ Respond ONLY with valid JSON array:
         source: 'GOOGLE_FLOW_SCENES',
         format,
         scriptId,
-        audioAssetId: audio.id,
+        audioAssetId: audioAsset?.id || audio?.id || null,
         scenes: storedScenes
       }, null, 2))
       return this.get(projectId)

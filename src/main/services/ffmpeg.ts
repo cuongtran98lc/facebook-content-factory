@@ -224,8 +224,8 @@ export async function renderLoopedVideo(input: {
   const audioDuration = Math.min(Math.max(0.001, input.audioDurationSeconds ?? availableDuration), availableDuration)
 
   const filter = input.fitMode === 'FIT'
-    ? `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=${input.frameRate === 60 ? 60 : 30}`
-    : `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=${input.frameRate === 60 ? 60 : 30}`
+    ? `scale=${w}:${h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black,fps=${input.frameRate === 60 ? 60 : 30}`
+    : `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},fps=${input.frameRate === 60 ? 60 : 30}`
 
   const seed = Math.abs(Math.trunc(input.soundEffectSeed ?? 0))
   const soundEffect = normalizeSoundEffectOptions(input.soundEffect)
@@ -275,7 +275,10 @@ export async function renderLoopedVideo(input: {
     '-t', audioDuration.toFixed(3),
     '-c:v', 'libx264',
     '-preset', 'medium',
-    '-crf', '20',
+    '-crf', '17',
+    '-b:v', '8000k',
+    '-maxrate', '12000k',
+    '-bufsize', '16000k',
     '-pix_fmt', 'yuv420p',
     '-c:a', 'aac',
     '-b:a', '192k',
@@ -301,8 +304,8 @@ export async function extractVideoFrame(videoPath: string, outputPath: string, t
 export async function renderAnimationCycle(pattern: string, output: string, duration: number, inputFps = 60, outputFps = inputFps): Promise<void> {
   const frameCount = Math.max(1, Math.round(duration * outputFps))
   await run('ffmpeg', ['-y', '-loop', '1', '-framerate', String(inputFps), '-i', pattern,
-    '-vf', `fps=${outputFps}`, '-frames:v', String(frameCount), '-an', '-c:v', 'libx264', '-preset', 'veryfast',
-    '-crf', '20', '-pix_fmt', 'yuv420p', output])
+    '-vf', `fps=${outputFps}`, '-frames:v', String(frameCount), '-an', '-c:v', 'libx264', '-preset', 'medium',
+    '-tune', 'stillimage', '-crf', '17', '-pix_fmt', 'yuv420p', output])
 }
 
 export async function renderStillSceneClip(
@@ -310,21 +313,28 @@ export async function renderStillSceneClip(
   output: string,
   duration: number,
   format: VideoFormat = 'LANDSCAPE',
-  zoomDirection: 'in' | 'out' = 'in',
-  fps = 60
+  _zoomDirection: 'in' | 'out' = 'in',
+  fps = 30
 ): Promise<void> {
   const [w, h] = format === 'REEL' ? [1080, 1920] : format === 'SQUARE' ? [1080, 1080] : [1920, 1080];
-  const frames = Math.max(fps, Math.ceil(duration * fps));
-  const zExpr = zoomDirection === 'in' ? 'min(zoom+0.0004,1.10)' : 'min(zoom+0.0002,1.06)';
-  const vf = `scale=3840:-1,zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:fps=${fps}`;
+  // Dùng filter scale lanczos và yuv420p để giữ nguyên 100% độ sắc nét chuẩn gốc
+  // Tuyệt đối không dùng zoompan (gây méo ảnh, mờ căm và vỡ hạt)
+  const vf = `scale=${w}:${h}:flags=lanczos,format=yuv420p`;
   await run('ffmpeg', [
-    '-y', '-loop', '1', '-i', imagePath,
+    '-y',
+    '-loop', '1',
+    '-framerate', String(fps),
+    '-i', imagePath,
     '-vf', vf,
     '-t', duration.toFixed(6),
     '-an',
     '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '20',
+    '-preset', 'medium',
+    '-tune', 'stillimage',
+    '-crf', '17',
+    '-b:v', '8000k',
+    '-maxrate', '12000k',
+    '-bufsize', '16000k',
     '-pix_fmt', 'yuv420p',
     output
   ]);

@@ -17,10 +17,10 @@ export function stickSourceForProvider(provider?: AIProviderName): StickSource {
 }
 
 export const DEFAULT_STICKY_MAN_PROMPT =
-  '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, no 3D, no CGI, no realistic human skin, no photorealism.'
+  '2D animated comic style, character Sticky Man, iconic minimalist stick figure with perfectly round white head, thick bold black outlines, expressive cartoon face with thick angular black eyebrows, large black cartoon eyes, and expressive smirk or talking mouth line. Wearing a sharp tailored black suit blazer, white collared shirt, and vibrant red necktie. High contrast dramatic background, cel-shaded 2D vector animation art, graphic novel illustration, wide angle framed shot, medium shot, entire character positioned fully inside the camera view with plenty of headroom and margins on all sides, centered composition, entire figure fully visible, no 3D, no CGI, no realistic human skin, no close-up, no cropped head, no clipped body, no cropped edges.'
 export const DEFAULT_BETTER_MIND_PROMPT = DEFAULT_STICKY_MAN_PROMPT
 export const DEFAULT_FLUX_PROMPT =
-  'Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, no text, no watermark, no split screens.'
+  'Masterpiece, cinematic lighting, photorealistic, highly detailed, 8k resolution, dramatic atmosphere, expressive storytelling composition, professional cinematography, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cropped head, no cut off edges, no text, no watermark, no split screens.'
 
 type Props = {
   projectId?: string
@@ -926,7 +926,7 @@ export function StoryMediaFlow(props: Props) {
                 <span className="scene-setting-tag">{formatDuration(scene.duration)}</span>
               </div>
               <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '6px' }}>
-                <img src={stickSceneImageUrl(scene)} alt={`Phân đoạn ${scene.index}`} />
+                <img src={stickSceneImageUrl(scene)} alt={`Phân đoạn ${scene.index}`} style={{ objectFit: 'contain', background: '#070a13' }} />
                 <div className="card-hover-preview">
                   🔍 Xem lớn
                 </div>

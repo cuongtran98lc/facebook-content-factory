@@ -414,3 +414,56 @@ export interface StudioReelEpisode {
   hashtags: string[];
   outputDir: string;
 }
+
+export type StudioImageStyle = 'STICKMAN_2D' | 'STICKMAN_3D' | 'AI_BETTER_MIND' | 'AI_FLUX';
+
+export interface StudioSceneImageItem {
+  sceneNumber: number;
+  filePath: string;
+  fileUrl: string;
+  fileName: string;
+}
+
+export interface GenerateStudioSceneImagesInput {
+  projectId: string;
+  scriptId?: string;
+  scenes: EngineScene[];
+  format: 'SHORT' | 'LONG';
+  style: StudioImageStyle;
+  hfToken?: string;
+}
+
+export interface GenerateEpisodeImagesInput {
+  projectId: string;
+  scriptId: string;
+  style: StudioImageStyle;
+  hfToken?: string;
+}
+
+export interface GenerateStudioThumbnailInput {
+  projectId: string;
+  scriptId?: string;
+  prompt: string;
+  textOverlay?: string;
+  format: 'SHORT' | 'LONG';
+  style?: StudioImageStyle;
+  hfToken?: string;
+}
+
+export interface StudioSceneVideoItem {
+  sceneNumber: number;
+  filePath: string;
+  fileUrl: string;
+  fileName: string;
+  duration: number;
+}
+
+export interface GenerateStudioSceneVideosInput {
+  projectId: string;
+  scriptId?: string;
+  scenes: EngineScene[];
+  format: 'SHORT' | 'LONG';
+  style: StudioImageStyle;
+  singleSceneNumber?: number;
+}
+
