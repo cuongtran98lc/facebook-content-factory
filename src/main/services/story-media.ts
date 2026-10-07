@@ -1,3 +1,4 @@
+import { resolveThumbnailTitle } from './thumbnail-title'
 import { composeThumbnail } from './thumbnail-layout'
 import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../shared/thumbnail-concepts'
 import { audiencePrompt, getCtaText } from '../../shared/audience'
@@ -2434,7 +2435,10 @@ Respond ONLY with valid JSON array:
     const storyText = script.content.replace(/\s+/g, ' ').trim()
     const context = storyText.length <= 12000 ? storyText : `${storyText.slice(0, 6000)} … ${storyText.slice(-6000)}`
     if (!Object.prototype.hasOwnProperty.call(THUMBNAIL_CONCEPTS, concept)) throw new Error('Concept thumbnail không hợp lệ.')
-    const title = customTitle?.trim() || script.title || project.name
+    const sourceTitle = customTitle?.trim() || script.title || project.name
+    const title = await resolveThumbnailTitle(sourceTitle, context, async prompt =>
+      new AIService().provider().generateText({ json: true, prompt, system: 'Create a faithful, direct story thumbnail headline. Return JSON only.' })
+    )
     const prompt = buildGoogleFlowThumbnailPrompt({
       title,
       concept,
@@ -2459,7 +2463,7 @@ Respond ONLY with valid JSON array:
         style: 'GOOGLE_FLOW_2D',
         prompt: customPrompt?.trim() || null,
         generatedPrompt: prompt,
-        sourceTitle: title,
+        sourceTitle,
         generationMode: 'STORY_TITLE',
         includeTextOverlay,
         provider: image.provider,

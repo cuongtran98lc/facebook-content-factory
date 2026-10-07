@@ -106,7 +106,7 @@ export function ThumbnailGenerator({
       <label className="thumbnail-title-box">
         <strong>Tiêu đề truyện dùng để tạo thumbnail</strong>
         <textarea rows={2} value={imageTitle} disabled={busy} onChange={event => setImageTitle(event.target.value)} placeholder="Nhập tiêu đề truyện muốn minh họa…" />
-        <span>Lấy từ tiêu đề truyện đang mở. Thumbnail dùng nội dung truyện hiện tại để chọn đúng nhân vật, sự kiện và đạo cụ.</span>
+        <span>Lấy từ truyện đang mở. Nếu tiêu đề cũ dạng “What if…”, AI sẽ viết câu ngắn mô tả nội dung truyện cho thumbnail; tiêu đề gốc không thay đổi.</span>
       </label>
 
       <div className="thumbnail-tabs">
