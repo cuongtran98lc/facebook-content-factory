@@ -1,3 +1,4 @@
+import { composeThumbnail } from './thumbnail-layout'
 import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../shared/thumbnail-concepts'
 import { audiencePrompt, getCtaText } from '../../shared/audience'
 import { createHash, randomUUID } from 'node:crypto'
@@ -11,13 +12,14 @@ import { pathToFileURL } from 'node:url'
 import type { BackgroundKind, EmotionDemoDTO, FitMode, FlowSceneImageDTO, FlowSceneSource, FlowSceneStylePreset, GenerateSingleImageInput, GenerateSingleImageResult, GoogleFlowCaptureStatus, ReelVideoProgress, SoundEffectOptions, StickmanSceneImageDTO, StickVisualStyle, StoryMediaDTO, StoryVideoProgress, VideoFormat } from '../../shared/types'
 import { getOutputRoot } from './paths'
 import { getPrisma } from './database'
-import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatAnimationScenes, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, renderStillSceneClip, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
+import { DEFAULT_SOUND_EFFECT_OPTIONS, SFX_RENDER_VERSION, burnVideoCaptions, concatAnimationScenes, concatMp3Parts, normalizeSoundEffectOptions, probeDuration, renderLoopedVideo, renderStillSceneClip, renderVideoSceneClip, resolveSoundEffectPreset, extractVideoFrame } from './ffmpeg'
 import { ProjectStorageService } from './storage'
 import { VoiceService } from './voices'
 import { ThumbnailService } from './thumbnails'
 import { PublishingMetadataService, type PublishMetadata, type PublishMode, type PublishTarget } from './video-metadata'
 import { createAssSubtitles, SUBTITLE_RENDER_VERSION } from './subtitles'
 import { SettingsService } from './settings'
+import { museWindowManager, buildMusePrompt, generateMuseVideoViaApi } from './muse'
 
 import { AIService } from './ai'
 import type { AIProvider } from './ai/types'
@@ -331,91 +333,8 @@ function storyRenderFormat(path: string | null, preset?: StoryVideoPreset | null
   return 'LANDSCAPE'
 }
 
-function normalizeThumbnail(bytes: Buffer): Buffer {
-  const source = nativeImage.createFromBuffer(bytes)
-  if (source.isEmpty()) throw new Error('Provider trả về dữ liệu ảnh không hợp lệ.')
-  const { width, height } = source.getSize()
-  const targetRatio = 16 / 9
-  const sourceRatio = width / height
-  const cropWidth = sourceRatio > targetRatio ? Math.round(height * targetRatio) : width
-  const cropHeight = sourceRatio > targetRatio ? height : Math.round(width / targetRatio)
-  const cropped = source.crop({
-    x: Math.max(0, Math.floor((width - cropWidth) / 2)),
-    y: Math.max(0, Math.floor((height - cropHeight) / 2)),
-    width: cropWidth,
-    height: cropHeight
-  })
-  return cropped.resize({ width: 1280, height: 720, quality: 'best' }).toPNG()
-}
-
 function escapeSvgText(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
-}
-
-function landscapeThumbnailLines(title: string): string[] {
-  const clean = title.replace(/\s+/g, ' ').trim()
-  if (!clean) return ['WHAT IF...?']
-  const words = clean.split(' ').filter(Boolean)
-  const lines: string[] = []
-  for (const word of words) {
-    const current = lines[lines.length - 1]
-    if (!current || (current.length + word.length + 1 > 18 && lines.length < 2)) {
-      lines.push(word)
-    } else {
-      lines[lines.length - 1] = `${current} ${word}`
-    }
-  }
-  if (lines.length > 2) lines.splice(2)
-  if (lines[1]?.length > 24) lines[1] = `${lines[1].slice(0, 23).trimEnd()}…`
-  return lines
-}
-
-function renderLandscapeThumbnailOverlay(title: string, concept?: ThumbnailConcept, topic?: string): Buffer {
-  const width = 1280
-  const height = 720
-  const lines = landscapeThumbnailLines(title)
-  const isWhatIf = title.toLowerCase().includes('what if') || title.toLowerCase().startsWith('nếu')
-  const badgeText = isWhatIf ? '⚡ WHAT IF...?' : concept === 'HIGH_STAKES' ? '⚖️ LỰA CHỌN KHÓ' : concept === 'SPLIT_SCREEN' ? '🔥 TRƯỚC & SAU' : '⚠️ KỊCH TÍNH'
-
-  const startX = 48
-  const startY = 48
-  const fontSize = lines.length > 1 ? 56 : 64
-  const lineHeight = fontSize + 16
-  const maxChars = Math.max(...lines.map(l => l.length))
-  const plateWidth = Math.min(width - 96, Math.max(460, Math.round(maxChars * (fontSize * 0.62) + 76)))
-  const plateHeight = 64 + lines.length * lineHeight + 18
-  const badgeWidth = Math.round(badgeText.length * 11) + 40
-
-  const textSpans = lines.map((line, idx) => {
-    const fill = idx === 0 ? '#FFE600' : '#FFFFFF'
-    return `<text x="${startX + 28}" y="${startY + 72 + (idx + 1) * lineHeight - 14}" font-family="'Arial Black', Arial, 'Segoe UI', sans-serif" font-size="${fontSize}" font-weight="900" fill="${fill}" stroke="#000000" stroke-width="12" stroke-linejoin="round" paint-order="stroke fill" filter="url(#thumb-shadow)">${escapeSvgText(line.toUpperCase())}</text>`
-  }).join('\n')
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-    <defs>
-      <filter id="thumb-shadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="4" dy="6" stdDeviation="0" flood-color="#000000" flood-opacity="0.95"/>
-      </filter>
-      <linearGradient id="thumb-plate" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#050811" stop-opacity="0.88"/>
-        <stop offset="100%" stop-color="#0f172a" stop-opacity="0.80"/>
-      </linearGradient>
-      <linearGradient id="badge-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stop-color="#ef4444"/>
-        <stop offset="100%" stop-color="#dc2626"/>
-      </linearGradient>
-    </defs>
-    <!-- Background Shield / Plate -->
-    <rect x="${startX}" y="${startY}" width="${plateWidth}" height="${plateHeight}" rx="20" fill="url(#thumb-plate)" stroke="#f59e0b" stroke-width="3" filter="url(#thumb-shadow)"/>
-    <rect x="${startX + 8}" y="${startY + 8}" width="${plateWidth - 16}" height="${plateHeight - 16}" rx="14" fill="none" stroke="#ffffff" stroke-opacity="0.2" stroke-width="1.5"/>
-    <!-- Topic / Concept Badge -->
-    <rect x="${startX + 24}" y="${startY + 18}" width="${badgeWidth}" height="32" rx="16" fill="url(#badge-grad)" stroke="#ffffff" stroke-width="2"/>
-    <text x="${startX + 24 + badgeWidth / 2}" y="${startY + 39}" font-family="Arial, sans-serif" font-size="13" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="0.8">${escapeSvgText(badgeText)}</text>
-    <!-- Punchy Title Text -->
-    ${textSpans}
-  </svg>`
-
-  return Buffer.from(svg)
 }
 
 function thumbnailTitleLines(value: string): string[] {
@@ -2512,8 +2431,8 @@ Respond ONLY with valid JSON array:
       prisma.script.findUniqueOrThrow({ where: { id: scriptId } })
     ])
     if (script.projectId !== projectId || script.type !== 'LONG_STORY') throw new Error('Script không hợp lệ để tạo thumbnail.')
-    const context = script.content.replace(/\s+/g, ' ').trim().slice(0, 3500)
-    if (!context) throw new Error('Story đang trống, không thể tạo thumbnail.')
+    const storyText = script.content.replace(/\s+/g, ' ').trim()
+    const context = storyText.length <= 12000 ? storyText : `${storyText.slice(0, 6000)} … ${storyText.slice(-6000)}`
     if (!Object.prototype.hasOwnProperty.call(THUMBNAIL_CONCEPTS, concept)) throw new Error('Concept thumbnail không hợp lệ.')
     const title = customTitle?.trim() || script.title || project.name
     const prompt = buildGoogleFlowThumbnailPrompt({
@@ -2524,17 +2443,9 @@ Respond ONLY with valid JSON array:
       customPrompt,
       audience: audiencePrompt(project)
     })
-    const image = await this.thumbnails.generate(prompt, concept, engine)
+    const image = await this.thumbnails.generate(prompt, concept, engine, { title, content: context, visualDetails: customPrompt?.trim() || undefined })
     if (!image.bytes.length) throw new Error('Provider trả về thumbnail rỗng.')
-    const normalized = normalizeThumbnail(image.bytes)
-    let thumbnailBytes = normalized
-    if (includeTextOverlay) {
-      const overlay = renderLandscapeThumbnailOverlay(title, concept, project.topic || undefined)
-      thumbnailBytes = await sharp(normalized)
-        .composite([{ input: overlay, top: 0, left: 0 }])
-        .png()
-        .toBuffer()
-    }
+    const thumbnailBytes = await composeThumbnail(image.bytes, title, includeTextOverlay, image.design)
     const path = await this.storage.writeOutputBuffer(projectId, 'images/thumbnail.png', thumbnailBytes)
     await prisma.asset.deleteMany({ where: { projectId, type: 'THUMBNAIL' } })
     await prisma.asset.create({ data: {
@@ -2548,11 +2459,14 @@ Respond ONLY with valid JSON array:
         style: 'GOOGLE_FLOW_2D',
         prompt: customPrompt?.trim() || null,
         generatedPrompt: prompt,
+        sourceTitle: title,
+        generationMode: 'STORY_TITLE',
         includeTextOverlay,
         provider: image.provider,
         model: image.model,
         mimeType: 'image/png',
         sourceMimeType: image.mimeType,
+        design: image.design ?? null,
         width: 1280,
         height: 720,
         scriptId
@@ -2994,65 +2908,93 @@ Respond ONLY with valid JSON array:
 
     try {
       for (const [index, segment] of audioSegments.entries()) {
-        let png: Buffer
-        try {
-          const sourceBytes = await this.readFlowImageSource(sources[index])
-          const image = sharp(sourceBytes).rotate()
-          const meta = await image.metadata()
-          const srcW = meta.width || dims[0]
-          const srcH = meta.height || dims[1]
-          const srcAspect = srcW / srcH
-          const targetAspect = dims[0] / dims[1]
-          const aspectDiff = Math.abs(srcAspect - targetAspect) / targetAspect
-
-          if (aspectDiff < 0.06) {
-            // Tỉ lệ tương đồng: Canh giữa, bảo toàn đầy đủ khung cảnh, nội suy Lanczos3 sắc nét
-            png = await sharp(sourceBytes)
-              .rotate()
-              .resize(dims[0], dims[1], {
-                fit: 'cover',
-                position: 'center',
-                kernel: sharp.kernel.lanczos3
-              })
-              .png({ quality: 100 })
-              .toBuffer()
-          } else {
-            // Tỉ lệ khác nhau (ảnh ngang đưa vào video dọc 9:16 hoặc ảnh vuông):
-            // Giữ TRỌN VẸN 100% ẢNH VỪA KHÍT MÀN HÌNH trên nền mờ nghệ thuật cùng tông màu (không zoom to, không vỡ hạt)
-            const bgBuffer = await sharp(sourceBytes)
-              .rotate()
-              .resize(dims[0], dims[1], {
-                fit: 'cover',
-                position: 'center'
-              })
-              .blur(30)
-              .modulate({ brightness: 0.55 })
-              .png()
-              .toBuffer()
-
-            const fgBuffer = await sharp(sourceBytes)
-              .rotate()
-              .resize(dims[0], dims[1], {
-                fit: 'contain',
-                background: { r: 0, g: 0, b: 0, alpha: 0 },
-                kernel: sharp.kernel.lanczos3
-              })
-              .png()
-              .toBuffer()
-
-            png = await sharp(bgBuffer)
-              .composite([{ input: fgBuffer, gravity: 'center' }])
-              .png({ quality: 100 })
-              .toBuffer()
-          }
-        } catch (error) {
-          throw new Error(`Ảnh cho phân đoạn ${index + 1} không hợp lệ: ${error instanceof Error ? error.message : String(error)} Nếu link Flow cần đăng nhập, hãy tải ảnh về máy rồi dùng "Chọn ảnh đã tải".`)
-        }
+        const source = sources[index]
+        const sourceVal = (source?.value || '').toLowerCase()
+        const isVideoFile = sourceVal.endsWith('.mp4') || sourceVal.endsWith('.webm') || sourceVal.endsWith('.mov') || sourceVal.endsWith('.m4v')
+        const sourceBytes = await this.readFlowImageSource(sources[index])
+        const isVideoBytes = !isVideoFile && sourceBytes.length > 8 && (
+          sourceBytes.slice(4, 8).toString() === 'ftyp' ||
+          sourceBytes.slice(0, 4).toString() === '\x1a\x45\xdf\xa3'
+        )
 
         const fileName = `${String(index + 1).padStart(3, '0')}-${segment.kind === 'CTA' ? 'cta' : 'story'}.png`
-        const imagePath = await this.storage.writeOutputBuffer(projectId, `${imageRelativeDir}/${fileName}`, png)
         const clipPath = join(tempDir, `${String(index + 1).padStart(3, '0')}.mp4`)
-        await renderStillSceneClip(imagePath, clipPath, segment.duration, format, index % 2 ? 'out' : 'in', 30)
+        let imagePath: string
+
+        if (isVideoFile || isVideoBytes) {
+          const rawVideoPath = join(tempDir, `raw_${String(index + 1).padStart(3, '0')}.mp4`)
+          await writeFile(rawVideoPath, sourceBytes)
+          try {
+            await renderVideoSceneClip(rawVideoPath, clipPath, segment.duration, effectiveFormat, 30)
+            const extractedThumbPath = join(tempDir, `thumb_${String(index + 1).padStart(3, '0')}.png`)
+            await extractVideoFrame(clipPath, extractedThumbPath, 0).catch(async () => {
+              const [w, h] = dims
+              await sharp({ create: { width: w, height: h, channels: 3, background: { r: 15, g: 23, b: 42 } } }).png().toFile(extractedThumbPath)
+            })
+            const thumbBuffer = await readFile(extractedThumbPath).catch(() => Buffer.alloc(0))
+            imagePath = await this.storage.writeOutputBuffer(projectId, `${imageRelativeDir}/${fileName}`, thumbBuffer)
+          } finally {
+            await unlink(rawVideoPath).catch(() => undefined)
+          }
+        } else {
+          let png: Buffer
+          try {
+            const image = sharp(sourceBytes).rotate()
+            const meta = await image.metadata()
+            const srcW = meta.width || dims[0]
+            const srcH = meta.height || dims[1]
+            const srcAspect = srcW / srcH
+            const targetAspect = dims[0] / dims[1]
+            const aspectDiff = Math.abs(srcAspect - targetAspect) / targetAspect
+
+            if (aspectDiff < 0.06) {
+              // Tỉ lệ tương đồng: Canh giữa, bảo toàn đầy đủ khung cảnh, nội suy Lanczos3 sắc nét
+              png = await sharp(sourceBytes)
+                .rotate()
+                .resize(dims[0], dims[1], {
+                  fit: 'cover',
+                  position: 'center',
+                  kernel: sharp.kernel.lanczos3
+                })
+                .png({ quality: 100 })
+                .toBuffer()
+            } else {
+              // Tỉ lệ khác nhau (ảnh ngang đưa vào video dọc 9:16 hoặc ảnh vuông):
+              // Giữ TRỌN VẸN 100% ẢNH VỪA KHÍT MÀN HÌNH trên nền mờ nghệ thuật cùng tông màu (không zoom to, không vỡ hạt)
+              const bgBuffer = await sharp(sourceBytes)
+                .rotate()
+                .resize(dims[0], dims[1], {
+                  fit: 'cover',
+                  position: 'center'
+                })
+                .blur(30)
+                .modulate({ brightness: 0.55 })
+                .png()
+                .toBuffer()
+
+              const fgBuffer = await sharp(sourceBytes)
+                .rotate()
+                .resize(dims[0], dims[1], {
+                  fit: 'contain',
+                  background: { r: 0, g: 0, b: 0, alpha: 0 },
+                  kernel: sharp.kernel.lanczos3
+                })
+                .png()
+                .toBuffer()
+
+              png = await sharp(bgBuffer)
+                .composite([{ input: fgBuffer, gravity: 'center' }])
+                .png({ quality: 100 })
+                .toBuffer()
+            }
+          } catch (error) {
+            throw new Error(`Tài nguyên cho phân đoạn ${index + 1} không hợp lệ: ${error instanceof Error ? error.message : String(error)} Nếu link cần đăng nhập, hãy tải về máy rồi dùng "Chọn ảnh/video đã tải".`)
+          }
+
+          imagePath = await this.storage.writeOutputBuffer(projectId, `${imageRelativeDir}/${fileName}`, png)
+          await renderStillSceneClip(imagePath, clipPath, segment.duration, format, index % 2 ? 'out' : 'in', 30)
+        }
+
         storedScenes.push({
           index: segment.index,
           kind: segment.kind,
@@ -3294,5 +3236,191 @@ Respond ONLY with valid JSON array:
       await prisma.project.update({ where: { id: projectId }, data: { status: 'FAILED' } })
       throw error
     }
+  }
+
+  async openMuseWindow(url?: string): Promise<void> {
+    const webUrl = url || this.settings.getMuse().webUrl || 'https://muse.ai';
+    await museWindowManager.ensureWindow(webUrl);
+  }
+
+  async startMuseCapture(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+  ): Promise<GoogleFlowCaptureStatus> {
+    const prisma = getPrisma();
+    const [script, audio] = await Promise.all([
+      prisma.script.findFirst({ where: { id: scriptId, projectId } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } })
+    ]);
+    if (!script) throw new Error('Hãy chọn kịch bản trước khi tạo video Muse AI.');
+    const isReel = script.type === 'REEL' || format === 'REEL';
+    let audioAsset = audio;
+    if (script.type === 'REEL') {
+      const reelAudios = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'desc' } });
+      const matching = reelAudios.find(r => parseMeta(r.metadata).reelId === script.id);
+      if (matching) audioAsset = matching;
+    }
+    const audioMeta = parseMeta(audioAsset?.metadata);
+    let segments = parseAudioSegments(audioMeta.segments);
+    if (!segments.length) {
+      const sections = storySections(script.content, isReel);
+      const totalDur = (typeof audioMeta.duration === 'number' && audioMeta.duration > 0) ? audioMeta.duration : (sections.length * 6);
+      const perSecDur = totalDur / Math.max(1, sections.length);
+      segments = sections.map((text, idx) => ({
+        index: idx + 1,
+        total: sections.length,
+        kind: 'STORY' as const,
+        text,
+        path: audioAsset?.path || '',
+        duration: perSecDur,
+      }));
+    }
+    const webUrl = this.settings.getMuse().webUrl || 'https://muse.ai';
+    return museWindowManager.startCapture(projectId, scriptId, segments.length, webUrl, onProgress);
+  }
+
+  async startMuseSceneAutomation(
+    projectId: string,
+    scriptId: string,
+    format: VideoFormat,
+    onProgress?: (status: GoogleFlowCaptureStatus) => void,
+    apiUrl?: string,
+    apiKey?: string,
+  ): Promise<GoogleFlowCaptureStatus> {
+    if (!['LANDSCAPE', 'REEL', 'SQUARE'].includes(format)) throw new Error('Định dạng video không hợp lệ.');
+    await this.cancelGoogleFlowCapture();
+
+    const museSettings = this.settings.getMuse();
+    const effectiveApiUrl = apiUrl || museSettings.apiUrl || 'http://127.0.0.1:8000';
+    const effectiveApiKey = apiKey !== undefined ? apiKey : museSettings.apiKey;
+
+    const prisma = getPrisma();
+    const [script, audio] = await Promise.all([
+      prisma.script.findFirst({ where: { id: scriptId, projectId } }),
+      prisma.asset.findFirst({ where: { projectId, type: 'STORY_AUDIO' }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    if (!script) throw new Error('Hãy chọn kịch bản trước khi tạo video Muse AI.');
+
+    const isReel = script.type === 'REEL' || format === 'REEL';
+    const effectiveFormat: VideoFormat = isReel ? 'REEL' : format;
+
+    let audioAsset = audio;
+    if (script.type === 'REEL') {
+      const reelAudios = await prisma.asset.findMany({ where: { projectId, type: 'REEL_AUDIO' }, orderBy: { createdAt: 'desc' } });
+      const matching = reelAudios.find(r => parseMeta(r.metadata).reelId === script.id);
+      if (matching) audioAsset = matching;
+    }
+
+    const audioMeta = parseMeta(audioAsset?.metadata);
+    let segments = parseAudioSegments(audioMeta.segments);
+    if (!segments.length) {
+      const sections = storySections(script.content, isReel);
+      const totalDur = (typeof audioMeta.duration === 'number' && audioMeta.duration > 0) ? audioMeta.duration : (sections.length * 6);
+      const perSecDur = totalDur / Math.max(1, sections.length);
+      segments = sections.map((text, idx) => ({
+        index: idx + 1,
+        total: sections.length,
+        kind: 'STORY' as const,
+        text,
+        path: audioAsset?.path || '',
+        duration: perSecDur,
+      }));
+    }
+
+    const total = segments.length;
+    const baseStatus: GoogleFlowCaptureStatus = {
+      projectId,
+      scriptId,
+      captured: 0,
+      total,
+      stage: 'CONNECTING',
+      message: `Đang kết nối Muse AI API Bridge (${effectiveApiUrl})...`,
+    };
+    onProgress?.(baseStatus);
+
+    const folderName = `muse-flow-${scriptId}`;
+    const targetDir = this.storage.getProjectPath(projectId, 'videos', folderName);
+    await mkdir(targetDir, { recursive: true }).catch(() => undefined);
+
+    const sources: FlowSceneSource[] = [];
+    const abortController = new AbortController();
+    this.fluxAutomationAbort = abortController;
+
+    try {
+      for (let i = 0; i < total; i++) {
+        if (abortController.signal.aborted) {
+          throw new Error('Tiến trình tạo video Muse AI đã bị hủy.');
+        }
+
+        const segment = segments[i];
+        const sceneNum = i + 1;
+        const targetDur = Math.max(3, Math.min(10, segment.duration || 5));
+
+        baseStatus.stage = 'GENERATING';
+        baseStatus.message = `Đang gen video Muse AI cảnh ${sceneNum}/${total} (${Math.round(targetDur)}s)...`;
+        baseStatus.captured = i;
+        onProgress?.({ ...baseStatus });
+
+        const prompt = buildMusePrompt({
+          narration: segment.text,
+          visualDescription: segment.text,
+          format: effectiveFormat,
+          duration: targetDur,
+        });
+
+        const res = await generateMuseVideoViaApi({
+          apiUrl: effectiveApiUrl,
+          apiKey: effectiveApiKey,
+          prompt,
+          duration: targetDur,
+          format: effectiveFormat,
+        });
+
+        const rawVideoPath = join(targetDir, `raw_scene_${String(sceneNum).padStart(3, '0')}.mp4`);
+        const finalScenePath = join(targetDir, `scene_${String(sceneNum).padStart(3, '0')}.mp4`);
+        await writeFile(rawVideoPath, res.buffer);
+        try {
+          await renderVideoSceneClip(rawVideoPath, finalScenePath, targetDur, effectiveFormat, 30);
+        } finally {
+          await unlink(rawVideoPath).catch(() => undefined);
+        }
+
+        sources.push({ kind: 'FILE', value: finalScenePath });
+        baseStatus.captured = sources.length;
+        baseStatus.message = `Đã xong video Muse cảnh ${sceneNum}/${total}!`;
+        onProgress?.({ ...baseStatus });
+      }
+
+      baseStatus.stage = 'BUILDING';
+      baseStatus.message = `Đã tạo đủ ${total} video Muse AI. Đang ghép video hoàn chỉnh theo audio...`;
+      onProgress?.({ ...baseStatus });
+
+      await this.importFlowSceneImages(projectId, scriptId, format, sources);
+
+      baseStatus.stage = 'DONE';
+      baseStatus.captured = total;
+      baseStatus.message = `🎉 Đã tạo và ghép thành công ${total} video Muse AI theo phân đoạn!`;
+      onProgress?.({ ...baseStatus });
+      return baseStatus;
+    } catch (err) {
+      const canceled = abortController.signal.aborted;
+      const errorStatus: GoogleFlowCaptureStatus = {
+        ...baseStatus,
+        stage: canceled ? 'CANCELED' : 'ERROR',
+        message: canceled ? 'Đã hủy tạo video Muse AI.' : `Lỗi Muse AI: ${err instanceof Error ? err.message : String(err)}`,
+      };
+      onProgress?.(errorStatus);
+      throw err;
+    } finally {
+      if (this.fluxAutomationAbort === abortController) {
+        this.fluxAutomationAbort = null;
+      }
+    }
+  }
+
+  cancelMuseCapture(): void {
+    museWindowManager.cancelCapture();
   }
 }

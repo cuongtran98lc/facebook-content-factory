@@ -37,6 +37,20 @@ export interface GenerateSingleImageResult {
   modelUsed: string;
 }
 
+export interface MuseSettingsDTO {
+  apiUrl: string;
+  apiKey?: string;
+  webUrl: string;
+  hasApiKey: boolean;
+}
+
+export interface SaveMuseSettingsInput {
+  apiUrl?: string;
+  apiKey?: string;
+  webUrl?: string;
+  clearApiKey?: boolean;
+}
+
 export type StickVisualStyle = 'DOODLE_2D' | 'ENGINEER_3D';
 export type FitMode = 'CROP' | 'FIT';
 export type BackgroundKind = 'VIDEO' | 'IMAGE';
@@ -657,6 +671,11 @@ export interface ContentFactoryAPI {
     openOutput(projectId: string): Promise<void>;
     generateSingleImage(input: GenerateSingleImageInput): Promise<GenerateSingleImageResult>;
     saveImageToProjectScene?(input: { projectId: string; dataUrl: string; targetFolder?: 'better-mind-scenes' | 'flux-scenes' }): Promise<{ filePath: string; fileName: string; fileUrl: string }>;
+    openMuseWindow(url?: string): Promise<void>;
+    startMuseCapture(input: { projectId: string; scriptId: string; format: VideoFormat }): Promise<GoogleFlowCaptureStatus>;
+    startMuseSceneAutomation(input: { projectId: string; scriptId: string; format: VideoFormat; apiUrl?: string; apiKey?: string }): Promise<GoogleFlowCaptureStatus>;
+    cancelMuseCapture(): Promise<void>;
+    onMuseCapture(callback: (status: GoogleFlowCaptureStatus) => void): () => void;
   };
   settings: {
     getAI(): Promise<AISettingsDTO>;
@@ -666,6 +685,9 @@ export interface ContentFactoryAPI {
     saveVoice(input: SaveVoiceSettingsInput): Promise<VoiceSettingsDTO>;
     getHuggingFaceToken(): Promise<string | null>;
     saveHuggingFaceToken(token: string): Promise<void>;
+    getMuse(): Promise<MuseSettingsDTO>;
+    saveMuse(input: SaveMuseSettingsInput): Promise<MuseSettingsDTO>;
+    testMuse(): Promise<{ ok: boolean; message: string }>;
   };
   pipeline: { generateDemo(projectId: string): Promise<{ jobId: string }> };
   scheduler: {
@@ -703,6 +725,8 @@ export interface ContentFactoryAPI {
     expandShortToLong(input: import('./stickman-engine').ExpandShortToLongInput): Promise<import('./stickman-engine').StickmanIdea>;
     generateStudioSceneImages(input: import('./stickman-engine').GenerateStudioSceneImagesInput): Promise<{ sceneImages: import('./stickman-engine').StudioSceneImageItem[]; outputDir: string }>;
     generateStudioSceneVideos(input: import('./stickman-engine').GenerateStudioSceneVideosInput): Promise<{ sceneVideos: import('./stickman-engine').StudioSceneVideoItem[]; outputDir: string }>;
+    importStudioSceneVideo(input: { projectId: string; scriptId?: string; sceneNumber: number; filePath: string; format?: 'SHORT' | 'LONG' }): Promise<{ sceneVideo: import('./stickman-engine').StudioSceneVideoItem }>;
+    chooseSceneVideoFiles(multiple?: boolean): Promise<string[] | null>;
     generateEpisodeImages(input: import('./stickman-engine').GenerateEpisodeImagesInput): Promise<{ sceneImages: import('./stickman-engine').StudioSceneImageItem[]; outputDir: string; thumbnail?: { filePath: string; fileUrl: string } }>;
     generateStudioThumbnail(input: import('./stickman-engine').GenerateStudioThumbnailInput): Promise<{ filePath: string; fileUrl: string }>;
     parseScriptToBeats(input: { content: string; title?: string; format?: 'SHORT' | 'LONG' }): Promise<{

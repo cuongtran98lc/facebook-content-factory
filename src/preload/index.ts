@@ -126,6 +126,15 @@ const api: ContentFactoryAPI = {
     openOutput: projectId => ipcRenderer.invoke('story-media:open-output', projectId),
     generateSingleImage: input => ipcRenderer.invoke('story-media:generate-single-image', input),
     saveImageToProjectScene: input => ipcRenderer.invoke('story-media:save-image-to-project-scene', input),
+    openMuseWindow: (url?: string) => ipcRenderer.invoke('story-media:open-muse-window', url),
+    startMuseCapture: input => ipcRenderer.invoke('story-media:start-muse-capture', input),
+    startMuseSceneAutomation: input => ipcRenderer.invoke('story-media:start-muse-scene-automation', input),
+    cancelMuseCapture: () => ipcRenderer.invoke('story-media:cancel-muse-capture'),
+    onMuseCapture: callback => {
+      const listener = (_event: Electron.IpcRendererEvent, status: GoogleFlowCaptureStatus) => callback(status);
+      ipcRenderer.on('story-media:muse-capture', listener);
+      return () => ipcRenderer.removeListener('story-media:muse-capture', listener);
+    },
   },
   settings: {
     getAI: () => ipcRenderer.invoke('settings:ai:get'),
@@ -135,6 +144,9 @@ const api: ContentFactoryAPI = {
     saveVoice: input => ipcRenderer.invoke('settings:voice:save', input),
     getHuggingFaceToken: () => ipcRenderer.invoke('settings:hf:get'),
     saveHuggingFaceToken: token => ipcRenderer.invoke('settings:hf:save', token),
+    getMuse: () => ipcRenderer.invoke('settings:muse:get'),
+    saveMuse: input => ipcRenderer.invoke('settings:muse:save', input),
+    testMuse: () => ipcRenderer.invoke('settings:muse:test'),
   },
   pipeline: {
     generateDemo: projectId => ipcRenderer.invoke('pipeline:demo', projectId),
@@ -184,6 +196,8 @@ const api: ContentFactoryAPI = {
     expandShortToLong: input => ipcRenderer.invoke('stickman:short-to-long:expand', input),
     generateStudioSceneImages: input => ipcRenderer.invoke('stickman:studio-scene-images', input),
     generateStudioSceneVideos: input => ipcRenderer.invoke('stickman:studio-scene-videos', input),
+    importStudioSceneVideo: input => ipcRenderer.invoke('stickman:import-scene-video', input),
+    chooseSceneVideoFiles: multiple => ipcRenderer.invoke('stickman:choose-scene-video-files', multiple),
     generateEpisodeImages: input => ipcRenderer.invoke('stickman:episode-images', input),
     generateStudioThumbnail: input => ipcRenderer.invoke('stickman:studio-thumbnail', input),
     parseScriptToBeats: input => ipcRenderer.invoke('stickman:script:parse-to-beats', input),

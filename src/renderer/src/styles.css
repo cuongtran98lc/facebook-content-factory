@@ -1558,8 +1558,9 @@ select:focus {
 .thumbnail-result img {
   display: block;
   width: 100%;
-  aspect-ratio: 16/9;
-  object-fit: cover;
+  max-height: 520px;
+  object-fit: contain;
+  background: #080d18;
   border-radius: 8px;
 }
 .thumbnail-result strong {
@@ -4373,3 +4374,16 @@ select:focus {
   transform: translateY(-1px);
 }
 
+
+.thumbnail-concepts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.thumbnail-concepts button { display: grid; align-content: start; gap: 10px; text-align: left; padding: 12px; border: 1px solid #334155; border-radius: 12px; background: #101827; color: #e2e8f0; }
+.thumbnail-concepts button.selected { border-color: #fbbf24; background: #242333; box-shadow: 0 0 0 1px #fbbf2440; }
+.thumbnail-concepts small { color: #aeb5c0; line-height: 1.5; }
+.thumbnail-concept-art { height: 72px; display: flex; justify-content: center; align-items: center; gap: 16px; background: radial-gradient(ellipse at center, #fbbf2440, #17243b); border-radius: 7px; overflow: hidden; }
+.thumbnail-concept-art i { width: 24px; height: 34px; border-radius: 50% 50% 30% 30%; background: #f8fafc; border: 3px solid #0f172a; box-shadow: 0 10px 0 -5px #fbbf24; }
+.concept-0 i:first-child, .concept-0 i:last-child { width: 12px; height: 12px; background: #fbbf24; transform: rotate(15deg); }
+.concept-1 { background: linear-gradient(110deg, #164e63 49%, #67e8f9 50%, #713f12 51%); }
+.concept-1 i:last-child { display: none; }
+.concept-2 { background: linear-gradient(110deg, #4c1d95, #17243b, #164e63); }
+.concept-2 i:first-child, .concept-2 i:last-child { width: 18px; height: 20px; background: #c4b5fd; }
+@media (max-width: 760px) { .thumbnail-concepts { grid-template-columns: 1fr; } }

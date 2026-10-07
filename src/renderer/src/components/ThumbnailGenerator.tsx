@@ -1,4 +1,4 @@
-import { THUMBNAIL_CONCEPTS, type ThumbnailConcept } from '../../../shared/thumbnail-concepts'
+import { type ThumbnailConcept } from '../../../shared/thumbnail-concepts'
 import { useState, useEffect } from 'react'
 import type { StoryMediaDTO } from '../../../shared/types'
 
@@ -22,10 +22,8 @@ export function ThumbnailGenerator({
   onExtractFromVideo,
 }: Props) {
   const [mode, setMode] = useState<'ai' | 'video'>('ai')
-  const [engine, setEngine] = useState<'AI' | 'BUILTIN_2D'>('AI')
+  const [engine, setEngine] = useState<'AI' | 'BUILTIN_2D'>('BUILTIN_2D')
   const [includeTextOverlay, setIncludeTextOverlay] = useState<boolean>(true)
-  const [concept, setConcept] = useState<ThumbnailConcept>(media?.thumbnailConcept ?? 'PROBLEM_STATE')
-  useEffect(() => { if (media?.thumbnailConcept) setConcept(media.thumbnailConcept) }, [media?.thumbnailConcept])
   const [imageTitle, setImageTitle] = useState(title)
   useEffect(() => { setImageTitle(title) }, [title])
 
@@ -106,9 +104,9 @@ export function ThumbnailGenerator({
       </div>
 
       <label className="thumbnail-title-box">
-        <strong>Title · What if…?</strong>
-        <textarea rows={2} value={imageTitle} disabled={busy} onChange={event => setImageTitle(event.target.value)} placeholder="What if…?" />
-        <span>Nhân vật phóng lớn, biểu cảm và bối cảnh theo title này.</span>
+        <strong>Tiêu đề truyện dùng để tạo thumbnail</strong>
+        <textarea rows={2} value={imageTitle} disabled={busy} onChange={event => setImageTitle(event.target.value)} placeholder="Nhập tiêu đề truyện muốn minh họa…" />
+        <span>Lấy từ tiêu đề truyện đang mở. Thumbnail dùng nội dung truyện hiện tại để chọn đúng nhân vật, sự kiện và đạo cụ.</span>
       </label>
 
       <div className="thumbnail-tabs">
@@ -117,7 +115,7 @@ export function ThumbnailGenerator({
           className={mode === 'ai' ? 'active' : ''}
           onClick={() => setMode('ai')}
         >
-          Dùng AI Tạo Ảnh
+          Thiết kế thumbnail
         </button>
         <button
           type="button"
@@ -132,29 +130,23 @@ export function ThumbnailGenerator({
         <div className="thumbnail-ai-section">
           <div className="thumbnail-style-badge">
             <span style={{ fontSize: '16px' }}>🎨</span>
-            <span><strong>Phong cách: Google Flow 2D Stickman</strong> · Nét vẽ vector 2D tối giản, đầu tròn trắng viền đen, biểu cảm kịch tính, nền sáng tương phản cao.</span>
+            <span><strong>Phong cách: Minh họa Stickman</strong> · Dùng bộ nhân vật người que có sẵn: đầu trắng, nét đen, giữ tóc, trang phục và biểu cảm theo truyện. Bố cục 1–5 nhân vật với ánh sáng làm nổi bật nhân vật chính. Màu sắc, cử chỉ và đạo cụ thay đổi theo truyện.</span>
           </div>
 
           <label className="thumbnail-direction">
             Phương thức tạo ảnh
             <select value={engine} disabled={busy} onChange={e => setEngine(e.target.value as 'AI' | 'BUILTIN_2D')}>
-              <option value="AI">Google Flow AI (Gemini / DALL-E 3)</option>
-              <option value="BUILTIN_2D">Google Flow 2D Vector (Vector Art SVG)</option>
+              <option value="AI">AI tạo ảnh (Gemini / OpenAI)</option>
+              <option value="BUILTIN_2D">Minh họa 2D theo cốt truyện</option>
             </select>
-            <span>{engine === 'AI' ? 'Dùng AI vẽ ảnh người que 2D mới theo cốt truyện chuẩn phong cách concept.' : 'Phân tích cốt truyện và tạo vector 2D SVG mới chuẩn tỷ lệ 1280×720.'}</span>
+            <span>{engine === 'AI' ? 'AI minh họa tiêu đề bằng tạo hình người que của dự án; ảnh mẫu chỉ định hướng bố cục.' : 'AI phân tích tiêu đề / truyện, chọn cảnh và dàn nhân vật; bộ dựng 2D xuất ảnh 1280×720. Cần cấu hình AI để phân tích.'}</span>
           </label>
 
-          <label className="thumbnail-direction">
-            Concept nhân vật
-            <select value={concept} disabled={busy} onChange={event => setConcept(event.target.value as ThumbnailConcept)}>
-              {Object.entries(THUMBNAIL_CONCEPTS).map(([key, value], index) => <option key={key} value={key}>Concept {index + 1}: {value.label}</option>)}
-            </select>
-            <span>{THUMBNAIL_CONCEPTS[concept].description}</span>
-          </label>
           <label className="thumbnail-direction">
             Mô tả thêm cho ảnh (không bắt buộc)
             <textarea
               rows={2}
+              disabled={busy}
               value={prompt}
               onChange={(event) => onPromptChange(event.target.value)}
               placeholder="Ví dụ: người mẹ đứng trước căn nhà cũ, ánh sáng điện ảnh, tông xanh lạnh..."
@@ -168,13 +160,13 @@ export function ThumbnailGenerator({
               onChange={e => setIncludeTextOverlay(e.target.checked)}
             />
             <span>
-              ✨ Phủ chữ giật tít nổi bật (Text Hook Overlay · Đậm nét 3D, từ khóa vàng kim, tag kịch tính)
+              Chữ lớn theo ảnh mẫu · tiêu đề phía trên, câu phụ phía dưới nếu phù hợp
             </span>
           </label>
           <button
             type="button"
             className="primary full thumbnail-button"
-            onClick={() => onGenerate(imageTitle.trim(), concept, engine, includeTextOverlay)}
+            onClick={() => onGenerate(imageTitle.trim(), 'PROBLEM_STATE', engine, includeTextOverlay)}
             disabled={busy || !imageTitle.trim()}
           >
             {busy ? 'Đang xử lý...' : media?.thumbnailPath ? `Generate lại Thumbnail (${engine === 'AI' ? 'Google Flow AI' : '2D Vector'})` : `Generate Thumbnail (${engine === 'AI' ? 'Google Flow AI' : '2D Vector'})`}
@@ -182,7 +174,7 @@ export function ThumbnailGenerator({
         </div>
       ) : (
         <div className="thumbnail-video-extractor">
-          <p>Trích nguyên khung hình video, giữ cả phụ đề và kích thước nhân vật. Để tạo nhân vật lớn theo title, chọn “Dùng AI Tạo Ảnh”.</p>
+          <p>Trích nguyên khung hình video, giữ cả phụ đề và kích thước nhân vật. Để tạo nhân vật lớn theo title, chọn “Thiết kế thumbnail”.</p>
           <div className="video-sources">
             {hasBgVideo && (
               <label className="video-source-option">
@@ -256,7 +248,7 @@ export function ThumbnailGenerator({
 
       {media?.thumbnailUrl && (
         <div className="thumbnail-result">
-          <img src={media.thumbnailUrl} alt="Thumbnail của truyện" />
+          <img key={media.thumbnailUrl} src={media.thumbnailUrl} alt="Thumbnail của truyện" />
           {media.thumbnailTitle && <strong>{media.thumbnailTitle}</strong>}
           <span>Đã lưu tại images/thumbnail.png trong project.</span>
         </div>

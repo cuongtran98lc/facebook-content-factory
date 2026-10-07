@@ -210,9 +210,13 @@ export function registerIpcHandlers(): void {
   );
   ipcMain.handle('story-media:choose-flow-scene-image-files', async () => {
     const result = await dialog.showOpenDialog({
-      title: 'Chọn ảnh Google Flow theo thứ tự phân đoạn',
+      title: 'Chọn ảnh hoặc video phân đoạn (MP4/PNG/JPG...)',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Ảnh', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif'] }],
+      filters: [
+        { name: 'Media (Ảnh & Video)', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif', 'mp4', 'mov', 'webm', 'm4v'] },
+        { name: 'Video', extensions: ['mp4', 'mov', 'webm', 'm4v'] },
+        { name: 'Ảnh', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif'] },
+      ],
     });
     return result.canceled ? null : result.filePaths;
   });
@@ -235,6 +239,21 @@ export function registerIpcHandlers(): void {
     }, input.hfToken, input.stylePreset, input.customPrompt, input.cleanPrevious),
   );
   ipcMain.handle('story-media:cancel-google-flow-capture', () => storyMedia.cancelGoogleFlowCapture());
+  ipcMain.handle('story-media:open-muse-window', (_event, url?: string) => storyMedia.openMuseWindow(url));
+  ipcMain.handle('story-media:start-muse-capture', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['startMuseCapture']>[0]) =>
+    storyMedia.startMuseCapture(input.projectId, input.scriptId, input.format, status => {
+      if (!event.sender.isDestroyed()) event.sender.send('story-media:muse-capture', status);
+    }),
+  );
+  ipcMain.handle('story-media:start-muse-scene-automation', (event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['startMuseSceneAutomation']>[0]) =>
+    storyMedia.startMuseSceneAutomation(input.projectId, input.scriptId, input.format, status => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('story-media:muse-capture', status);
+        event.sender.send('story-media:google-flow-capture', status);
+      }
+    }, input.apiUrl, input.apiKey),
+  );
+  ipcMain.handle('story-media:cancel-muse-capture', () => storyMedia.cancelMuseCapture());
   ipcMain.handle('story-media:generate-emotion-demo', (_event, input: Parameters<import('../../shared/types').ContentFactoryAPI['storyMedia']['generateEmotionDemo']>[0]) =>
     storyMedia.generateEmotionDemo(input.projectId, input.emotion, input.format, input.visualStyle),
   );
@@ -286,6 +305,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('settings:ai:save', (_event, input: SaveAISettingsInput) => settings.saveAI(input));
   ipcMain.handle('settings:hf:get', () => settings.getHuggingFaceToken());
   ipcMain.handle('settings:hf:save', (_event, token: string) => settings.saveHuggingFaceToken(token));
+  ipcMain.handle('settings:muse:get', () => settings.getMuse());
+  ipcMain.handle('settings:muse:save', (_event, input: any) => settings.saveMuse(input));
+  ipcMain.handle('settings:muse:test', () => settings.testMuse());
   ipcMain.handle('settings:ai:test', async (_event, provider?: AIProviderName) => {
     try {
       return await ai.test(provider);
@@ -345,6 +367,15 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('stickman:short-to-long:expand', (_event, input: any) => stickmanEngine.expandShortToLong(input));
   ipcMain.handle('stickman:studio-scene-images', (_event, input: any) => stickmanEngine.generateStudioSceneImages(input));
   ipcMain.handle('stickman:studio-scene-videos', (_event, input: any) => stickmanEngine.generateStudioSceneVideos(input));
+  ipcMain.handle('stickman:import-scene-video', (_event, input: any) => stickmanEngine.importStudioSceneVideo(input));
+  ipcMain.handle('stickman:choose-scene-video-files', async (_event, multiple?: boolean) => {
+    const result = await dialog.showOpenDialog({
+      title: 'Chọn file video phân cảnh (MP4/WebM/MOV)',
+      properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'webm', 'm4v'] }],
+    });
+    return result.canceled ? null : result.filePaths;
+  });
   ipcMain.handle('stickman:episode-images', (_event, input: any) => stickmanEngine.generateEpisodeImages(input));
   ipcMain.handle('stickman:studio-thumbnail', (_event, input: any) => stickmanEngine.generateStudioThumbnail(input));
   ipcMain.handle('stickman:script:parse-to-beats', (_event, input: any) => stickmanEngine.parseScriptToBeats(input));

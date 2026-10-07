@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import sharp from 'sharp';
@@ -28,11 +29,13 @@ import {
   type StudioImageStyle,
   type StudioSceneImageItem,
   type StudioSceneVideoItem,
+  type StudioVideoEngine,
 } from '../../shared/stickman-engine';
 import { AIService } from './ai';
 import { ACTIONS, SETTINGS, fallbackStickScenes, stickFrame, storySections, type StickScene } from './stick-animation';
-import { renderAnimationCycle } from './ffmpeg';
+import { renderAnimationCycle, renderVideoSceneClip, probeDuration } from './ffmpeg';
 import { SettingsService } from './settings';
+import { buildMusePrompt, generateMuseVideoViaApi } from './muse';
 import type { StickVisualStyle, VideoFormat } from '../../shared/types';
 import { parseScreenplay, screenplayToEngineScenes, screenplayToScriptBeats, screenplayToStickmanIdea } from '../../shared/screenplay-parser';
 
@@ -472,8 +475,8 @@ ALLOWED STICKMAN SPECS:
 - Props: phone, book, coffee, briefcase, knife, umbrella, camera, key, microphone, car_wheel, envelope, shopping_bag, laptop, gamepad, gift, money, flowers
 
 For EACH beat, produce a comprehensive scene with:
-- visualDescription and imagePrompt: one static illustration with a large, consistent stickman, white round head, bold black limbs and crisp outlines. Match expression, outfit and resting pose to the narration. Describe a detailed story-specific environment: location layout, foreground/midground/background, architecture, furniture, 3-5 relevant objects, materials, time of day, lighting and shadows. Maintain location continuity; avoid a blank white backdrop, clutter or invented plot facts.
-- animationPrompt: High-precision Video AI motion prompt (for Kling AI, Luma Dream Machine, Runway Gen-3, Pika). MUST describe specific character motion: character speaking actively with dynamic talking mouth movement and lip-sync (opening and closing mouth in sync with talking pace), expressive eyebrow and head motion, natural blinking, gesturing with hands, smooth fluid 2D cel-shaded animation, locked static camera, no distortion, no morphing.
+- visualDescription and imagePrompt: 2D minimalist explainer comic illustration with diverse character forms: (1) expressive stickman protagonist with round white head, crisp black outlines, neat black necktie, animated gestures; and/or (2) solid black silhouette characters such as desk clerks with round white glasses, writing at desks with towering paper stacks. Describe a flexible, story-specific environment: location layout, architecture, furniture, relevant objects, materials, time of day, lighting and shadows adapting to each scene. Maintain high contrast clean line art, no clutter.
+- animationPrompt: High-precision Video AI motion prompt (for Kling AI, Luma Dream Machine, Runway Gen-3, Pika, Muse AI). MUST describe specific character motion: character speaking actively with dynamic talking mouth movement and lip-sync (opening and closing mouth in sync with talking pace), expressive eyebrow and head motion, natural blinking, gesturing with hands, or writing with a pen at a desk, smooth fluid 2D cel-shaded animation, locked static camera, no distortion, no morphing.
 
 Return ONLY a JSON array of scenes:
 [
@@ -482,17 +485,18 @@ Return ONLY a JSON array of scenes:
     "duration": 5,
     "location": "office",
     "characters": [
-      { "name": "Leo", "action": "stand", "emotion": "shocked", "outfit": "suit", "prop": "phone" }
+      { "name": "Leo", "action": "point", "emotion": "happy", "outfit": "suit", "prop": "none" },
+      { "name": "Clerk", "action": "write", "emotion": "neutral", "outfit": "plain", "glasses": true }
     ],
     "narration": "...",
     "dialogue": "",
-    "action": "stand",
-    "emotion": "shocked",
-    "camera": "close-up",
-    "visualDescription": "Leo looking at his phone in shock as the screen glows in a dark office room",
-    "imagePrompt": "Static 2D stickman illustration, white round head, black stick body, black suit with red tie, shocked expression with wide eyes and sweat drop, standing still beside a desk in a modern office with whiteboard and clock, bold clean doodle lines, layered office background, oak desk with a resting phone in the foreground, filing cabinets and a clock in the midground, tall windows overlooking evening buildings in the background, warm desk lamp and soft shadows, character occupying 70% of frame height",
-    "animationPrompt": "2D cel-shaded vector animation of character Sticky Man actively speaking with dynamic talking mouth movement and lip sync opening and closing naturally in sync with narration, expressive eyebrows, subtle head nods, natural blinking eyes, gesturing with hands in an office. Smooth fluid 60fps motion, static camera wide shot, clean black outlines, no morphing.",
-    "soundEffect": "gasp_whoosh"
+    "action": "point",
+    "emotion": "happy",
+    "camera": "medium",
+    "visualDescription": "Leo in a suit presenting towards a desk clerk who is hunched over writing at a desk with towering paper stacks",
+    "imagePrompt": "Minimalist 2D doodle explainer comic illustration, warm cream office background, crisp black outlines. Left: expressive stick figure with round white head, black necktie, smiling, left hand on hip and right hand gesturing towards the right. Right: solid black silhouette clerk wearing round white glasses writing with a pen at a black desk flanked by tall paper stacks. High contrast, clean negative space, YouTube storytelling animation aesthetic.",
+    "animationPrompt": "2D cel-shaded vector animation of stickman actively presenting and speaking with dynamic lip-sync mouth movements, smiling expression, right hand gesturing towards colleague writing at desk. Smooth fluid 60fps motion, static camera wide shot, clean black outlines, no morphing.",
+    "soundEffect": "whoosh_slide"
   },
   ...
 ]`;
@@ -744,9 +748,9 @@ Generate an expanded Long-Form Story Concept in JSON:
         const basePrompt = (s.imagePrompt || s.visualDescription || s.narration || '').trim();
         let promptToUse = basePrompt;
         if (input.style === 'AI_BETTER_MIND') {
-          promptToUse = `Sticky Man 2D vector comic illustration. In this specific scene: ${basePrompt}. Iconic minimalist character Sticky Man with round white head, bold black outlines, sharp black tailored suit, vibrant red necktie. Centered framed composition, cel-shaded graphic novel art, full character visible inside borders with generous margins, clean background, no realistic human, no 3D CGI.`;
+          promptToUse = `Minimalist 2D doodle explainer comic illustration. Scene ${sceneNum}: ${basePrompt}. Character designs: expressive stick figure with round white head, crisp bold black outlines, neat black necktie, alongside solid black silhouette desk clerk with round white glasses where relevant. Flexible story background for location: ${s.location || 'setting'}. High contrast, crisp line art, clean negative space, YouTube storytelling animation aesthetic, no realistic human, no 3D CGI.`;
         } else if (input.style === 'AI_FLUX') {
-          promptToUse = `Cinematic film still, Scene ${sceneNum}: ${basePrompt}. Masterpiece, dramatic atmospheric lighting, photorealistic 8k, professional cinematography, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cropped head, no cut off edges, no text, no watermark.`;
+          promptToUse = `Cinematic 2D graphic explainer still, Scene ${sceneNum}: ${basePrompt}. Setting: ${s.location || 'environment'}. Minimalist stick figure and silhouette character art, crisp vector outlines, rich environmental storytelling lighting, wide angle framed composition, entire subject fully inside frame with generous margins, centered, no cut off edges, no text, no watermark.`;
         }
 
         let imgBuffer: Buffer | null = null;
@@ -883,11 +887,59 @@ Generate an expanded Long-Form Story Concept in JSON:
       ? input.scenes.filter(s => (s.sceneNumber || 1) === input.singleSceneNumber)
       : input.scenes;
 
+    const isMuse = input.videoEngine === 'MUSE_AI';
+    let museApiUrl = input.museApiUrl;
+    let museApiKey = input.museApiKey;
+    if (isMuse && !museApiUrl) {
+      const settings = new SettingsService();
+      const museSettings = settings.getMuse();
+      museApiUrl = museSettings.apiUrl;
+      museApiKey = museSettings.apiKey;
+    }
+
     for (let i = 0; i < scenesToProcess.length; i++) {
       const s = scenesToProcess[i];
       const sceneNum = s.sceneNumber || i + 1;
       const fileName = `scene_${String(sceneNum).padStart(2, '0')}_talk.mp4`;
       const videoPath = join(outputDir, fileName);
+
+      if (isMuse) {
+        const musePrompt = buildMusePrompt({
+          narration: s.narration,
+          action: s.action,
+          location: s.location,
+          visualDescription: s.visualDescription,
+          format: input.format,
+          duration: s.duration,
+          characters: s.characters,
+        });
+
+        const targetDur = Math.max(3, Math.min(10, s.duration || 5));
+        const res = await generateMuseVideoViaApi({
+          apiUrl: museApiUrl || 'http://127.0.0.1:8000',
+          apiKey: museApiKey,
+          prompt: musePrompt,
+          duration: targetDur,
+          format: effectiveFormat,
+        });
+
+        const rawMusePath = join(outputDir, `raw_scene_${String(sceneNum).padStart(2, '0')}.mp4`);
+        await writeFile(rawMusePath, res.buffer);
+        try {
+          await renderVideoSceneClip(rawMusePath, videoPath, targetDur, effectiveFormat, 30);
+        } finally {
+          await unlink(rawMusePath).catch(() => undefined);
+        }
+
+        sceneVideos.push({
+          sceneNumber: sceneNum,
+          filePath: videoPath,
+          fileUrl: `local-media://file/${encodeURIComponent(videoPath)}?v=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          fileName,
+          duration: targetDur,
+        });
+        continue;
+      }
 
       let setting = (SETTINGS.includes(s.location as any) ? s.location : undefined);
       let action = (ACTIONS.includes(s.action as any) ? s.action : undefined);
@@ -938,6 +990,44 @@ Generate an expanded Long-Form Story Concept in JSON:
     }
 
     return { sceneVideos, outputDir };
+  }
+
+  async importStudioSceneVideo(input: {
+    projectId: string;
+    scriptId?: string;
+    sceneNumber: number;
+    filePath: string;
+    format?: 'SHORT' | 'LONG';
+  }): Promise<{ sceneVideo: StudioSceneVideoItem }> {
+    if (!existsSync(input.filePath)) throw new Error('File video không tồn tại.');
+    const effectiveFormat: VideoFormat = input.format === 'LONG' ? 'LANDSCAPE' : 'REEL';
+    const storage = new ProjectStorageService();
+    let outputDir: string;
+    if (input.scriptId) {
+      const sample = await storage.getStudioOutputPath(input.projectId, input.scriptId, 'videos', 'scenes', 'sample.txt');
+      outputDir = dirname(sample);
+    } else {
+      outputDir = storage.getProjectPath(input.projectId, 'videos', 'studio-scenes');
+    }
+    await mkdir(outputDir, { recursive: true }).catch(() => undefined);
+
+    const fileName = `scene_${String(input.sceneNumber).padStart(2, '0')}_talk.mp4`;
+    const targetPath = join(outputDir, fileName);
+
+    const dur = await probeDuration(input.filePath).catch(() => 5);
+    const sceneDuration = Math.max(2, Math.min(60, dur));
+
+    await renderVideoSceneClip(input.filePath, targetPath, sceneDuration, effectiveFormat, 30);
+
+    const sceneVideo: StudioSceneVideoItem = {
+      sceneNumber: input.sceneNumber,
+      filePath: targetPath,
+      fileUrl: `local-media://file/${encodeURIComponent(targetPath)}?v=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      fileName,
+      duration: sceneDuration,
+    };
+
+    return { sceneVideo };
   }
 
   async generateStudioThumbnail(input: GenerateStudioThumbnailInput): Promise<{ filePath: string; fileUrl: string }> {

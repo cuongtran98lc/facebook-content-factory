@@ -2,26 +2,17 @@ import type { AIProviderName } from '../../shared/types';
 import type { ThumbnailConcept } from '../../shared/thumbnail-concepts';
 import { SettingsService } from './settings';
 import { AIService } from './ai';
-import fs from 'node:fs';
-import path from 'node:path';
 import sharp from 'sharp';
-import {
-  parseStickScenes,
-  stickFrame,
-  stickPrompt,
-  stickConceptFrame,
-  stickConceptPrompt,
-  parseConceptData
-} from './stick-animation';
+import { thumbnailScenePrompt, renderThumbnailScene, parseThumbnailScene, type ThumbnailDesign } from './thumbnail-scene';
 
-type GeneratedImage = { bytes: Buffer; mimeType: string; model: string; provider: AIProviderName };
+type GeneratedImage = { design?: ThumbnailDesign; bytes: Buffer; mimeType: string; model: string; provider: AIProviderName };
 
 type ErrorResponse = { error?: { message?: string } };
 
 export class ThumbnailService {
   constructor(private readonly settings = new SettingsService()) {}
 
-  async generate(prompt: string, concept: ThumbnailConcept = 'PROBLEM_STATE', engine?: 'AI' | 'BUILTIN_2D'): Promise<GeneratedImage> {
+  async generate(prompt: string, concept: ThumbnailConcept = 'PROBLEM_STATE', engine?: 'AI' | 'BUILTIN_2D', storySource?: { title: string; content: string; visualDetails?: string }): Promise<GeneratedImage> {
     const ai = this.settings.getAI();
     const preferredProvider = this.settings.getProvider();
 
@@ -57,34 +48,33 @@ export class ThumbnailService {
 
     // 2. Builtin or fallback: Dynamically generate 2D vector storyboard thumbnail tailored to story & concept
     console.log(`[ThumbnailService] Generating fresh 2D vector storyboard thumbnail for concept ${concept}`);
-    return this.generateStoryboardThumbnail(prompt, concept, preferredProvider);
+    return this.generateStoryboardThumbnail(storySource ? JSON.stringify(storySource) : prompt, concept, preferredProvider);
   }
 
   private async generateStoryboardThumbnail(prompt: string, concept: ThumbnailConcept, provider: AIProviderName): Promise<GeneratedImage> {
-    let conceptData;
+    let planned;
     try {
       const response = await new AIService(this.settings).provider(provider).generateText({
         json: true,
-        prompt: stickConceptPrompt(concept, prompt),
-        system: `Design a high-converting stickman thumbnail scene for concept ${concept}. Return JSON only.`
+        prompt: thumbnailScenePrompt(prompt),
+        system: 'Design one story-specific multi-character stickman thumbnail. Return valid JSON only.'
       });
-      conceptData = parseConceptData(response, concept);
-    } catch {
-      conceptData = parseConceptData('{}', concept);
+      planned = parseThumbnailScene(response);
+    } catch (error) {
+      throw new Error(`Không phân tích được nội dung để dựng thumbnail. Kiểm tra cấu hình AI rồi thử lại. ${error instanceof Error ? error.message : String(error)}`);
     }
-    const colors = new Map<string, string>();
-    const svg = stickConceptFrame(concept, conceptData, 0, 'LANDSCAPE', colors, true);
+    const svg = renderThumbnailScene(planned.scene, planned.design);
     const bytes = await sharp(Buffer.from(svg))
       .resize(1280, 720)
       .png()
       .toBuffer();
-    return { bytes, mimeType: 'image/png', model: `stick-${concept.toLowerCase()}`, provider };
+    return { bytes, design: planned.design, mimeType: 'image/png', model: 'stick-title-scene', provider };
   }
 
   private async generateOpenAI(prompt: string): Promise<GeneratedImage> {
     const key = this.settings.getApiKey('openai');
     const model = 'dall-e-3';
-    const cleanPrompt = prompt.slice(0, 1000);
+    const cleanPrompt = prompt.slice(0, 4000);
     const response = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: {
@@ -118,7 +108,7 @@ export class ThumbnailService {
     const key = this.settings.getApiKey('gemini');
     const models = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001'];
     let lastError: Error | null = null;
-    const cleanPrompt = prompt.slice(0, 1000);
+    const cleanPrompt = prompt.slice(0, 4000);
 
     for (const model of models) {
       try {

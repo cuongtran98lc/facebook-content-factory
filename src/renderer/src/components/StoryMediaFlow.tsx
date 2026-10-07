@@ -45,6 +45,7 @@ type Props = {
   onStartGoogleFlowAutomation?(): void
   onStartFluxSceneAutomation?(hfToken?: string): void
   onStartBetterMindAutomation?(hfToken?: string, customPrompt?: string, cleanPrevious?: boolean): void
+  onStartMuseSceneAutomation?(apiUrl?: string, apiKey?: string): void
   onChangeHfToken?(): void
   onStartGoogleFlowCapture?(): void
   onCancelGoogleFlowCapture?(): void
@@ -176,6 +177,81 @@ export function StoryMediaFlow(props: Props) {
   const [singleError, setSingleError] = useState<string | null>(null)
   const [singleSaveSuccess, setSingleSaveSuccess] = useState<string | null>(null)
   const [singleSaving, setSingleSaving] = useState(false)
+
+  // State cho Muse AI
+  const [museModalOpen, setMuseModalOpen] = useState(false)
+  const [museApiUrlInput, setMuseApiUrlInput] = useState('http://127.0.0.1:8000')
+  const [museApiKeyInput, setMuseApiKeyInput] = useState('')
+  const [museWebUrlInput, setMuseWebUrlInput] = useState('https://muse.ai')
+  const [museTesting, setMuseTesting] = useState(false)
+  const [museTestMessage, setMuseTestMessage] = useState<string | null>(null)
+
+  const handleOpenMuseWindow = async () => {
+    try {
+      await window.contentFactory.storyMedia.openMuseWindow()
+    } catch (err) {
+      alert(`Không thể mở cửa sổ Muse AI: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleOpenMuseSettings = async () => {
+    try {
+      const s = await window.contentFactory.settings.getMuse()
+      setMuseApiUrlInput(s.apiUrl || 'http://127.0.0.1:8000')
+      setMuseApiKeyInput(s.apiKey || '')
+      setMuseWebUrlInput(s.webUrl || 'https://muse.ai')
+      setMuseTestMessage(null)
+      setMuseModalOpen(true)
+    } catch (err) {
+      alert(`Lỗi đọc cài đặt Muse: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSaveMuseSettings = async () => {
+    try {
+      await window.contentFactory.settings.saveMuse({
+        apiUrl: museApiUrlInput,
+        apiKey: museApiKeyInput,
+        webUrl: museWebUrlInput,
+      })
+      setMuseModalOpen(false)
+      alert('✓ Đã lưu cài đặt Muse AI!')
+    } catch (err) {
+      alert(`Lỗi lưu cài đặt: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleTestMuseConnection = async () => {
+    try {
+      setMuseTesting(true)
+      setMuseTestMessage(null)
+      const res = await window.contentFactory.settings.testMuse()
+      setMuseTestMessage(res.ok ? `✓ ${res.message}` : `⚠️ ${res.message}`)
+    } catch (err) {
+      setMuseTestMessage(`❌ Lỗi: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setMuseTesting(false)
+    }
+  }
+
+  const handleStartMuseBatchClick = async () => {
+    if (!props.onStartMuseSceneAutomation) {
+      alert('Chưa hỗ trợ khởi động tiến trình Muse AI tự động.')
+      return
+    }
+    try {
+      const s = await window.contentFactory.settings.getMuse()
+      props.onStartMuseSceneAutomation(s.apiUrl, s.apiKey)
+    } catch {
+      props.onStartMuseSceneAutomation()
+    }
+  }
+
+  const getSegmentMusePrompt = (segment: { text: string; index: number; duration: number }) => {
+    const isVertical = props.videoFormat === 'REEL'
+    const ratio = isVertical ? 'Vertical 9:16 portrait video' : 'Widescreen 16:9 cinematic video'
+    return `${ratio}, photorealistic cinematic video, 8k resolution, fluid natural motion: ${segment.text}. Dynamic cinematic lighting, subtle slow tracking shot, high aesthetic quality, clean scene, no text, no watermark.`
+  }
 
   useEffect(() => {
     setCtaTextInput(getCtaText(props.contentLanguage))
@@ -704,271 +780,16 @@ export function StoryMediaFlow(props: Props) {
       </details>
     )}
 
-    {!audioSegments.length && (
-      <section className="flow-scenes-import" style={{ borderStyle: 'dashed', opacity: 0.9 }}>
-        <div className="flow-scenes-heading">
-          <div>
-            <strong>Bước 2: Ảnh kịch bản theo phân đoạn</strong>
-            <span>Chưa có audio phân đoạn</span>
-          </div>
-          <div className="flow-connect-actions">
-            <button
-              type="button"
-              className="primary flux-auto-btn"
-              title="Cần có audio phân đoạn trước khi tạo ảnh"
-              onClick={() => void handleStartFluxClick()}
-              disabled={props.busy}>
-              ⚡ Tạo ảnh chi tiết (FLUX HF)
-            </button>
-            <button
-              type="button"
-              className="primary better-mind-auto-btn"
-              style={{
-                background: 'linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #3730a3 100%)',
-                borderColor: '#6366f1',
-                color: '#e0e7ff',
-                boxShadow: '0 0 10px rgba(99, 102, 241, 0.4)',
-                fontWeight: 600,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-              title="Tự động tạo hoạt cảnh phong cách A Better Mind (Dark Minimalist, Sơ đồ tư duy, Não bộ, Silhouette)"
-              onClick={() => void handleStartBetterMindClick()}
-              disabled={props.busy}>
-              <span>🧠</span> Tạo ảnh A Better Mind
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              style={{
-                background: 'linear-gradient(135deg, rgba(234, 88, 12, 0.2) 0%, rgba(249, 115, 22, 0.15) 100%)',
-                borderColor: '#f97316',
-                color: '#fdba74',
-                fontWeight: 600,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px'
-              }}
-              title="Mở Studio thử nghiệm tạo 1 ảnh độc lập với Prompt tùy biến và xem kết quả ngay"
-              onClick={() => void handleOpenSingleStudio('BETTER_MIND')}
-              disabled={props.busy || singleLoading}>
-              <span>🎨</span> Thử tạo 1 ảnh
-            </button>
-            <button
-              type="button"
-              className="secondary small"
-              title="Cài đặt hoặc cập nhật Hugging Face Access Token"
-              onClick={() => void handleOpenHfModal()}
-              disabled={props.busy}>
-              🔑 Token
-            </button>
-          </div>
-        </div>
-        <div style={{ padding: '12px 14px', background: 'rgba(30, 41, 59, 0.5)', borderRadius: '8px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6, marginTop: '8px' }}>
-          💡 Hãy bấm nút <strong>"Generate Story MP3"</strong> ở Bước 1 ở trên trước. Hệ thống sẽ tự động phân tách kịch bản thành các đoạn audio nhỏ và khớp ảnh chi tiết tương ứng với từng phân đoạn. Bạn cũng có thể bấm <strong>"🔑 Token"</strong> để cài đặt sẵn Hugging Face Token ngay bây giờ!
-        </div>
-      </section>
-    )}
-
-    {!!audioSegments.length && props.onImportFlowSceneImages && (
-      <section className="flow-scenes-import">
-        <div className="flow-scenes-heading">
-          <div>
-            <strong>Ảnh Google Flow theo phân đoạn</strong>
-            <span>{flowCaptureActive ? `${projectFlowCapture?.captured ?? availableFlowScenes.length}/${audioSegments.length} ảnh đang tạo` : `${availableFlowScenes.length}/${audioSegments.length} ảnh đã sẵn sàng`}</span>
-          </div>
-          <div className="flow-connect-actions">
-            {flowCaptureActive ? (
-              <button type="button" className="secondary" onClick={props.onCancelGoogleFlowCapture} disabled={props.googleFlowCapture?.stage === 'BUILDING'}>
-                {projectFlowCapture?.stage === 'BUILDING' ? 'Đang ghép video...' : 'Dừng tạo ảnh'}
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="primary flux-auto-btn"
-                  title="Tự động tạo ảnh chi tiết tả thực với FLUX qua Hugging Face Inference API (Miễn phí 100%)"
-                  onClick={() => void handleStartFluxClick()}
-                  disabled={props.busy}>
-                  ⚡ Tạo ảnh chi tiết (FLUX HF)
-                </button>
-                <button
-                  type="button"
-                  className="primary better-mind-auto-btn"
-                  style={{
-                    background: 'linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #3730a3 100%)',
-                    borderColor: '#6366f1',
-                    color: '#e0e7ff',
-                    boxShadow: '0 0 10px rgba(99, 102, 241, 0.4)',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                  }}
-                  title="Tự động tạo hoạt cảnh phong cách A Better Mind (Dark Minimalist, Sơ đồ tư duy, Não bộ, Silhouette) cho từng phân đoạn"
-                  onClick={() => void handleStartBetterMindClick()}
-                  disabled={props.busy}>
-                  <span>🧠</span> Tạo ảnh A Better Mind
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  style={{
-                    background: 'linear-gradient(135deg, rgba(234, 88, 12, 0.2) 0%, rgba(249, 115, 22, 0.15) 100%)',
-                    borderColor: '#f97316',
-                    color: '#fdba74',
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                  }}
-                  title="Mở Studio thử nghiệm tạo 1 ảnh độc lập với Prompt tùy biến và xem kết quả ngay"
-                  onClick={() => void handleOpenSingleStudio('BETTER_MIND')}
-                  disabled={props.busy || singleLoading}>
-                  <span>🎨</span> Thử tạo 1 ảnh
-                </button>
-                <button
-                  type="button"
-                  className="secondary small"
-                  title="Cài đặt hoặc cập nhật Hugging Face Access Token"
-                  onClick={() => void handleOpenHfModal()}
-                  disabled={props.busy}>
-                  🔑 Token
-                </button>
-                <button type="button" className="secondary" onClick={props.onStartGoogleFlowAutomation} disabled={props.busy}>
-                  Tự động bằng Flow
-                </button>
-                <button type="button" className="secondary" onClick={props.onStartGoogleFlowCapture} disabled={props.busy}>
-                  Nhận ảnh tải từ Flow
-                </button>
-              </>
-            )}
-            <button type="button" className="secondary" onClick={() => void handleChooseFlowFiles()} disabled={props.busy || flowCaptureActive}>
-              Chọn ảnh đã tải
-            </button>
-          </div>
-        </div>
-        {projectFlowCapture && (
-          <div className={`flow-capture-status stage-${projectFlowCapture.stage.toLowerCase()}`} role="status">
-            <progress value={projectFlowCapture.captured} max={Math.max(1, projectFlowCapture.total)} />
-            <span>{projectFlowCapture.message}</span>
-          </div>
-        )}
-        <div className="flow-url-list">
-          {audioSegments.map((segment, index) => {
-            const flowCopyKey = `flow-${segment.index}`
-            const isFlowCopied = copiedKey === flowCopyKey
-            return (
-              <label className="flow-url-row" key={segment.path}>
-                <div className="flow-url-row-head">
-                  <span>{segment.kind === 'CTA' ? 'CTA' : `Đoạn ${segment.index}`} · {formatDuration(segment.duration)}</span>
-                  <button
-                    type="button"
-                    className={`flow-copy-btn ${isFlowCopied ? 'copied' : ''}`}
-                    title="Sao chép text phân đoạn này để dán vào prompt Google Flow"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      void handleCopyText(segment.text, flowCopyKey)
-                    }}>
-                    {isFlowCopied ? '✓ Đã copy' : '📋 Copy text'}
-                  </button>
-                </div>
-                <input
-                  type="url"
-                  value={flowImageUrls[index] ?? ''}
-                  placeholder="https://...googleusercontent.com/..."
-                  disabled={props.busy}
-                  onChange={event => setFlowImageUrls(current => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))}
-                />
-                <small title={segment.text}>{segment.text}</small>
-              </label>
-            )
-          })}
-        </div>
-        <div className="flow-scenes-actions">
-          {flowInputError && <span role="alert">{flowInputError}</span>}
-          <button type="button" className="secondary" onClick={handleFetchFlowUrls} disabled={props.busy}>
-            Tải link và ghép video
-          </button>
-        </div>
-      </section>
-    )}
-
-    {!!availableFlowScenes.length && (
-      <div className={`scene-images-gallery flow-scenes-gallery format-${props.videoFormat.toLowerCase()}`}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
-          <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span>🖼️ Xem trước ảnh phân đoạn ({availableFlowScenes.length}/{audioSegments.length || availableFlowScenes.length} đoạn)</span>
-            {flowCaptureActive && (
-              <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '12px', background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', border: '1px solid #0284c7', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#38bdf8', display: 'inline-block', boxShadow: '0 0 8px #38bdf8' }} />
-                Đang tạo trực tiếp...
-              </span>
-            )}
-          </h4>
-          <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-            💡 Nhấp vào bất kỳ ảnh nào để xem trước cỡ lớn (Lightbox Zoom)
-          </span>
-        </div>
-        <div className="scene-images-grid">
-          {availableFlowScenes.map(scene => (
-            <div
-              key={scene.index}
-              className="scene-image-card"
-              style={{ cursor: 'pointer', transition: 'transform 0.15s ease, border-color 0.15s ease' }}
-              onClick={() => setLightboxSceneIndex(scene.index)}
-              title={`Nhấp để mở xem chi tiết phân đoạn ${scene.index}`}
-            >
-              <div className="scene-image-header">
-                <span className="scene-number">{scene.kind === 'CTA' ? 'CTA' : `Đoạn ${scene.index}`}</span>
-                <span className="scene-setting-tag">{formatDuration(scene.duration)}</span>
-              </div>
-              <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '6px' }}>
-                <img src={stickSceneImageUrl(scene)} alt={`Phân đoạn ${scene.index}`} style={{ objectFit: 'contain', background: '#070a13' }} />
-                <div className="card-hover-preview">
-                  🔍 Xem lớn
-                </div>
-              </div>
-              <p className="scene-text" title={scene.sectionText}>{scene.sectionText}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    )}
-
     <div className="media-step media-step-2">
       <div className="media-step-head">
         <b>2</b>
         <div>
-          <strong>{props.stickVisualStyle === 'ENGINEER_3D' ? 'Hoạt hình 3D Engineer' : 'Hoạt hình người que 2D'} / Background</strong>
+          <strong>Hoạt hình người que 2D / Background</strong>
           <span>{videoHint}</span>
         </div>
       </div>
       <div className="media-step-row">
         <div className="stick-render-settings">
-         <div className="stick-style-selector" aria-label="Phong cách nhân vật">
-          <span className="stick-format-label">NHÂN VẬT:</span>
-          <div className="stick-format-group">
-            <button
-              type="button"
-              className={`stick-format-btn ${props.stickVisualStyle === 'DOODLE_2D' ? 'active' : ''}`}
-              onClick={() => props.onStickVisualStyleChange('DOODLE_2D')}
-              disabled={props.busy}
-            >
-              2D Doodle
-            </button>
-            <button
-              type="button"
-              className={`stick-format-btn ${props.stickVisualStyle === 'ENGINEER_3D' ? 'active engineer-3d' : ''}`}
-              onClick={() => props.onStickVisualStyleChange('ENGINEER_3D')}
-              disabled={props.busy}
-            >
-              3D Engineer
-            </button>
-          </div>
-         </div>
          <div className="stick-format-selector">
           <span className="stick-format-label">ĐỊNH DẠNG:</span>
           <div className="stick-format-group">
@@ -1014,16 +835,12 @@ export function StoryMediaFlow(props: Props) {
             onClick={() => props.onGenerateStickVideo(stickSource)}
             disabled={props.busy}
           >
-            {props.videoFormat === 'REEL'
-              ? props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo Short 3D (9:16)' : 'Tạo Short 2D (9:16)'
-              : props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo hoạt hình 3D Engineer' : 'Tạo hoạt hình người que 2D'}
+            {props.videoFormat === 'REEL' ? 'Tạo Short 2D (9:16)' : 'Tạo hoạt hình người que 2D'}
           </button>
           {props.busy && <p role="status">Chưa thể tạo video: {props.busyMessage || 'app đang xử lý tác vụ khác'}. Nút sẽ mở khi tác vụ kết thúc.</p>}
           {props.onGenerateStickmanSceneImages && (
             <button className="secondary" onClick={() => props.onGenerateStickmanSceneImages?.(stickSource)} disabled={props.busy}>
-              {props.videoFormat === 'REEL'
-                ? props.stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D (9:16)' : 'Bộ ảnh 2D (9:16)'
-                : props.stickVisualStyle === 'ENGINEER_3D' ? 'Tạo bộ ảnh 3D' : 'Tạo bộ ảnh 2D'}
+              {props.videoFormat === 'REEL' ? 'Bộ ảnh 2D (9:16)' : 'Tạo bộ ảnh 2D'}
             </button>
           )}
           <button className="secondary" onClick={()=>props.onChooseBackground('VIDEO')} disabled={props.busy || !canChooseBackground}>{backgroundDone && props.media?.backgroundKind === 'VIDEO' ? 'Đổi Video' : 'Chọn Video'}</button>
@@ -1896,11 +1713,21 @@ export function StoryMediaFlow(props: Props) {
 
           {/* Body: Image with Left / Right Navigation */}
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#05070e', flex: 1, minHeight: '360px', maxHeight: '60vh', overflow: 'hidden', padding: '14px' }}>
-            <img
-              src={stickSceneImageUrl(activeLightboxScene)}
-              alt={`Phân đoạn ${activeLightboxScene.index}`}
-              style={{ maxWidth: '100%', maxHeight: '56vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 8px 30px rgba(0,0,0,0.6)' }}
-            />
+            {activeLightboxScene.filePath?.toLowerCase().endsWith('.mp4') || activeLightboxScene.filePath?.toLowerCase().endsWith('.webm') ? (
+              <video
+                src={stickSceneImageUrl(activeLightboxScene)}
+                controls
+                autoPlay
+                loop
+                style={{ maxWidth: '100%', maxHeight: '56vh', borderRadius: '8px', boxShadow: '0 8px 30px rgba(0,0,0,0.6)' }}
+              />
+            ) : (
+              <img
+                src={stickSceneImageUrl(activeLightboxScene)}
+                alt={`Phân đoạn ${activeLightboxScene.index}`}
+                style={{ maxWidth: '100%', maxHeight: '56vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 8px 30px rgba(0,0,0,0.6)' }}
+              />
+            )}
 
             {/* Prev button */}
             <button
@@ -1976,6 +1803,102 @@ export function StoryMediaFlow(props: Props) {
             <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.5, color: '#f1f5f9', background: 'rgba(30, 41, 59, 0.4)', padding: '10px 14px', borderRadius: '8px', borderLeft: '3px solid #6366f1' }}>
               {activeLightboxScene.sectionText}
             </p>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {museModalOpen && (
+      <div className="modal-backdrop" onClick={() => setMuseModalOpen(false)}>
+        <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: '580px', width: '92%' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: '#f472b6' }}>
+            <span>🎥</span> Cấu hình Muse AI Video (Từng phân đoạn)
+          </h3>
+          <div style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: '1.6', marginBottom: '14px' }}>
+            <p style={{ margin: '0 0 12px', color: '#e2e8f0' }}>
+              Tạo video ngắn điện ảnh cho từng câu thoại / phân đoạn bằng Muse AI. Bạn có thể sử dụng giao diện <strong>Web Workspace</strong> hoặc kết nối <strong>API Bridge</strong> (như <code style={{ color: '#ec4899', background: '#1e1b4b', padding: '1px 5px', borderRadius: '4px' }}>muse2api</code> local bridge tại <code style={{ color: '#ec4899' }}>http://127.0.0.1:8000</code>).
+            </p>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#fbcfe8' }}>
+                🔗 Muse AI Web Workspace URL:
+              </label>
+              <input
+                type="text"
+                value={museWebUrlInput}
+                onChange={e => setMuseWebUrlInput(e.target.value)}
+                placeholder="https://muse.ai"
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', background: '#0f172a', border: '1px solid #334155', color: '#fff', fontSize: '13px', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#fbcfe8' }}>
+                ⚡ Local API Bridge URL (Tùy chọn):
+              </label>
+              <input
+                type="text"
+                value={museApiUrlInput}
+                onChange={e => setMuseApiUrlInput(e.target.value)}
+                placeholder="http://127.0.0.1:8000"
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', background: '#0f172a', border: '1px solid #334155', color: '#fff', fontSize: '13px', boxSizing: 'border-box' }}
+              />
+              <small style={{ color: '#94a3b8', fontSize: '11px', display: 'block', marginTop: '4px' }}>
+                Endpoint tương thích OpenAI / video generation của local bridge.
+              </small>
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontWeight: 600, marginBottom: '6px', color: '#fbcfe8' }}>
+                🔑 Muse API Key (Nếu bridge yêu cầu):
+              </label>
+              <input
+                type="password"
+                value={museApiKeyInput}
+                onChange={e => setMuseApiKeyInput(e.target.value)}
+                placeholder="Để trống nếu không yêu cầu auth"
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', background: '#0f172a', border: '1px solid #334155', color: '#fff', fontSize: '13px', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            {museTestMessage && (
+              <div style={{ padding: '8px 12px', borderRadius: '6px', background: museTestMessage.startsWith('✓') ? 'rgba(5, 150, 105, 0.2)' : 'rgba(239, 68, 68, 0.2)', border: '1px solid #334155', fontSize: '12px', color: '#f8fafc', marginBottom: '12px' }}>
+                {museTestMessage}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                className="secondary"
+                disabled={museTesting}
+                onClick={() => void handleTestMuseConnection()}
+              >
+                {museTesting ? 'Đang kiểm tra…' : '🔍 Kiểm tra API'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void handleOpenMuseWindow()}
+              >
+                🌐 Mở Web Muse
+              </button>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button type="button" className="secondary" onClick={() => setMuseModalOpen(false)}>
+                Đóng
+              </button>
+              <button
+                type="button"
+                className="primary"
+                style={{ background: '#db2777', borderColor: '#f472b6' }}
+                onClick={() => void handleSaveMuseSettings()}
+              >
+                ✓ Lưu cấu hình
+              </button>
+            </div>
           </div>
         </div>
       </div>

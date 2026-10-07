@@ -163,7 +163,7 @@ export default function App() {
  const [voiceAudio, setVoiceAudio] = useState('');
  const [storyMedia, setStoryMedia] = useState<StoryMediaDTO | null>(null);
  const [videoFormat, setVideoFormat] = useState<VideoFormat>('LANDSCAPE');
- const [stickVisualStyle, setStickVisualStyle] = useState<StickVisualStyle>('ENGINEER_3D');
+ const [stickVisualStyle, setStickVisualStyle] = useState<StickVisualStyle>('DOODLE_2D');
  const [fitMode, setFitMode] = useState<FitMode>('CROP');
  const [soundEffect, setSoundEffect] = useState<SoundEffectOptions>({ preset: 'DYNAMIC', volume: 70 });
  const [includeSubtitles, setIncludeSubtitles] = useState(true);
@@ -181,8 +181,8 @@ export default function App() {
   [projects, selectedId],
  );
  useEffect(() => {
-  setThumbnailPrompt(storyMedia?.thumbnailPrompt ?? '');
- }, [selected?.id, storyMedia?.thumbnailPrompt]);
+  setThumbnailPrompt('');
+ }, [selected?.id, activeScriptId]);
  const selectedRef = useRef(selected);
  selectedRef.current = selected;
  const stories = useMemo(
@@ -280,6 +280,13 @@ export default function App() {
  useEffect(() => window.contentFactory.storyMedia.onReelVideoProgress(setReelProgress), []);
  useEffect(() => window.contentFactory.storyMedia.onStoryVideoProgress(setStoryVideoProgress), []);
  useEffect(() => window.contentFactory.storyMedia.onGoogleFlowCapture(status => {
+  setGoogleFlowCapture(status);
+  setMessage(status.message);
+  if (status.stage === 'DONE' && selectedRef.current?.id === status.projectId) {
+   void window.contentFactory.storyMedia.get(status.projectId).then(setStoryMedia);
+  }
+ }), []);
+ useEffect(() => window.contentFactory.storyMedia.onMuseCapture(status => {
   setGoogleFlowCapture(status);
   setMessage(status.message);
   if (status.stage === 'DONE' && selectedRef.current?.id === status.projectId) {
@@ -759,10 +766,10 @@ export default function App() {
   title?: string,
   concept?: ThumbnailConcept,
   engine?: 'AI' | 'BUILTIN_2D',
-  includeTextOverlay = true,
+  includeTextOverlay = false,
  ) {
   if (!selected || !activeScript || activeScript.type !== 'LONG_STORY') return;
-  if (!editorContent.trim()) return setMessage('Story hiện tại đang trống.');
+  if (!title?.trim() && !activeScript.title?.trim() && !editorContent.trim()) return setMessage('Nhập tiêu đề hoặc nội dung truyện để tạo thumbnail.');
   if (engine !== 'BUILTIN_2D') {
    const hasKey =
     settings.provider.endsWith('-cli') ||
@@ -1081,6 +1088,40 @@ export default function App() {
     await window.contentFactory.settings.saveHuggingFaceToken(prompted.trim());
    }
    alert(prompted.trim() ? '✓ Đã lưu Hugging Face Token thành công!' : 'Đã xoá Hugging Face Token.');
+  }
+ }
+
+ async function startMuseSceneAutomation(apiUrl?: string, apiKey?: string) {
+  if (!selected || !activeScript) {
+   alert('Hãy chọn kịch bản trước khi tự động tạo video Muse AI.');
+   return setMessage('Hãy chọn kịch bản trước khi tự động tạo video Muse AI.');
+  }
+  const isReel = activeScript.type === 'REEL';
+  const targetFormat: VideoFormat = isReel ? 'REEL' : videoFormat;
+
+  if (!health?.ffmpeg) {
+   alert('Cần FFmpeg để ghép video. Hãy kiểm tra cài đặt FFmpeg.');
+   return setMessage('Cần FFmpeg để ghép video.');
+  }
+  if (!isReel && !storyMedia?.audioSegments?.length) {
+   alert('Hãy bấm "Generate Story MP3" ở Bước 1 để tạo audio phân đoạn trước khi tạo video.');
+   return setMessage('Hãy Generate Story MP3 + phân đoạn trước khi tạo video.');
+  }
+  try {
+   setMessage('🎥 Đang khởi động tiến trình tạo video Muse AI...');
+   const status = await window.contentFactory.storyMedia.startMuseSceneAutomation({
+    projectId: selected.id,
+    scriptId: activeScript.id,
+    format: targetFormat,
+    apiUrl,
+    apiKey,
+   });
+   setGoogleFlowCapture(status);
+   setMessage(status.message);
+  } catch (error) {
+   const errMsg = error instanceof Error ? error.message : String(error);
+   setMessage(errMsg);
+   alert(`Lỗi khi tạo video Muse AI: ${errMsg}`);
   }
  }
 
@@ -2127,14 +2168,14 @@ export default function App() {
              onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
              disabled={busy}
              title={busy ? message || 'Đang xử lý tác vụ khác' : 'Dựng video người que từ kịch bản và MP3 hiện có'}>
-             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo video 3D Engineer' : 'Tạo video người que 2D'}
+             Tạo video người que 2D
             </button>
             <button
              type="button"
              className="secondary"
              onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
              disabled={busy}>
-             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo ảnh 3D phân đoạn' : 'Tạo ảnh 2D phân đoạn'}
+             Tạo ảnh 2D phân đoạn
             </button>
            </div>
           ) : (
@@ -2146,14 +2187,14 @@ export default function App() {
              className="primary"
              onClick={() => void generateStickVideo(stickSourceForProvider(settings.provider))}
              disabled={busy || !selected?.voiceId}>
-             {stickVisualStyle === 'ENGINEER_3D' ? 'Tạo Short 3D (9:16)' : 'Tạo Short 2D (9:16)'}
+             Tạo Short 2D (9:16)
             </button>
             <button
              className="secondary"
              onClick={() => void generateStickmanSceneImages(stickSourceForProvider(settings.provider))}
              disabled={busy}
-             title="Vẽ bộ ảnh hoạt hình người que 2D/3D tỷ lệ 9:16 theo phân đoạn">
-             {stickVisualStyle === 'ENGINEER_3D' ? 'Bộ ảnh 3D (9:16)' : 'Bộ ảnh 2D (9:16)'}
+             title="Vẽ bộ ảnh hoạt hình người que 2D tỷ lệ 9:16 theo phân đoạn">
+             Bộ ảnh 2D (9:16)
             </button>
             <button
              type="button"
@@ -2271,7 +2312,6 @@ export default function App() {
           <ThumbnailGenerator
            key={activeScript.id}
            title={
-            storyMedia?.storyVideoOutputs?.find(output => output.format === videoFormat)?.parts[0]?.publishTitle ||
             activeScript.title ||
             selected?.name ||
             ''
@@ -2384,6 +2424,7 @@ export default function App() {
             googleFlowCapture={googleFlowCapture}
             onStartFluxSceneAutomation={token => void startFluxSceneAutomation('FLUX_CINEMATIC', token)}
             onStartBetterMindAutomation={(token, prompt, clean) => void startFluxSceneAutomation('BETTER_MIND', token, prompt, clean)}
+            onStartMuseSceneAutomation={(apiUrl, apiKey) => void startMuseSceneAutomation(apiUrl, apiKey)}
             onChangeHfToken={() => void promptChangeHfToken()}
             onStartGoogleFlowCapture={() => void startGoogleFlowCapture()}
             onCancelGoogleFlowCapture={() => void cancelGoogleFlowCapture()}

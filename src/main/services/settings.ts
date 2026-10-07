@@ -4,7 +4,9 @@ import { dirname, join } from 'node:path';
 import type {
   AIProviderName,
   AISettingsDTO,
+  MuseSettingsDTO,
   SaveAISettingsInput,
+  SaveMuseSettingsInput,
   SaveVoiceSettingsInput,
   VoiceSettingsDTO,
   YouTubeAuthStatus,
@@ -30,6 +32,9 @@ interface SettingsSchema {
   facebookPageId?: string;
   facebookAccessTokenEncrypted?: string;
   huggingFaceTokenEncrypted?: string;
+  museApiUrl?: string;
+  museApiKeyEncrypted?: string;
+  museWebUrl?: string;
 }
 
 const DEFAULT_SETTINGS: SettingsSchema = {
@@ -316,4 +321,54 @@ export class SettingsService {
     }
     writeSettings(s);
   }
+
+  getMuse(): MuseSettingsDTO {
+    const s = readSettings();
+    const apiUrl = s.museApiUrl || getEnvKey('MUSE_API_URL') || 'http://127.0.0.1:8000';
+    const webUrl = s.museWebUrl || getEnvKey('MUSE_WEB_URL') || 'https://muse.ai';
+    const key = decrypt(s.museApiKeyEncrypted) || getEnvKey('MUSE_API_KEY');
+    return {
+      apiUrl,
+      apiKey: key || undefined,
+      webUrl,
+      hasApiKey: Boolean(key),
+    };
+  }
+
+  saveMuse(input: SaveMuseSettingsInput): MuseSettingsDTO {
+    const s = readSettings();
+    if (typeof input.apiUrl === 'string') s.museApiUrl = input.apiUrl.trim() || undefined;
+    if (typeof input.webUrl === 'string') s.museWebUrl = input.webUrl.trim() || undefined;
+    if (input.clearApiKey) {
+      delete s.museApiKeyEncrypted;
+    } else if (input.apiKey && input.apiKey.trim()) {
+      s.museApiKeyEncrypted = encrypt(input.apiKey.trim());
+    }
+    writeSettings(s);
+    return this.getMuse();
+  }
+
+  async testMuse(): Promise<{ ok: boolean; message: string }> {
+    const { apiUrl, apiKey } = this.getMuse();
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const cleanUrl = apiUrl.replace(/\/$/, '');
+      const res = await fetch(`${cleanUrl}/health`, { signal: controller.signal, headers }).catch(async () => {
+        return fetch(`${cleanUrl}/v1/models`, { signal: controller.signal, headers });
+      }).catch(async () => {
+        return fetch(`${cleanUrl}/`, { signal: controller.signal, headers });
+      });
+      clearTimeout(timer);
+      if (res.ok || res.status === 401 || res.status === 404) {
+        return { ok: true, message: `Kết nối thành công tới ${apiUrl} (Mã HTTP: ${res.status})` };
+      }
+      return { ok: false, message: `Server phản hồi mã lỗi ${res.status}: ${res.statusText}` };
+    } catch (err) {
+      return { ok: false, message: `Không thể kết nối tới Muse API Bridge tại ${apiUrl}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
 }
+

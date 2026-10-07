@@ -458,12 +458,17 @@ export interface StudioSceneVideoItem {
   duration: number;
 }
 
+export type StudioVideoEngine = 'STICKMAN_LIPSYNC' | 'MUSE_AI';
+
 export interface GenerateStudioSceneVideosInput {
   projectId: string;
   scriptId?: string;
   scenes: EngineScene[];
   format: 'SHORT' | 'LONG';
   style: StudioImageStyle;
+  videoEngine?: StudioVideoEngine;
   singleSceneNumber?: number;
+  museApiUrl?: string;
+  museApiKey?: string;
 }
 

@@ -340,6 +340,33 @@ export async function renderStillSceneClip(
   ]);
 }
 
+export async function renderVideoSceneClip(
+  videoPath: string,
+  output: string,
+  duration: number,
+  format: VideoFormat = 'LANDSCAPE',
+  fps = 30
+): Promise<void> {
+  const [w, h] = format === 'REEL' ? [1080, 1920] : format === 'SQUARE' ? [1080, 1080] : [1920, 1080];
+  const vf = `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h},fps=${fps},format=yuv420p`;
+  await run('ffmpeg', [
+    '-y',
+    '-stream_loop', '-1',
+    '-i', videoPath,
+    '-vf', vf,
+    '-t', duration.toFixed(6),
+    '-an',
+    '-c:v', 'libx264',
+    '-preset', 'medium',
+    '-crf', '17',
+    '-b:v', '8000k',
+    '-maxrate', '12000k',
+    '-bufsize', '16000k',
+    '-pix_fmt', 'yuv420p',
+    output
+  ]);
+}
+
 export async function concatAnimationScenes(listFile: string, output: string): Promise<void> {
   await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c', 'copy', '-movflags', '+faststart', output])

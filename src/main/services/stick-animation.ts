@@ -7,7 +7,7 @@ import sharp from 'sharp'
 import { addAnimationNarration, concatAnimationScenes, renderAnimationCycle, renderStillSceneClip } from './ffmpeg'
 import type { StickVisualStyle, VideoFormat } from '../../shared/types'
 
-import { ARCHETYPES, TRAITS, OVERLAYS, parseOverlay, renderOverlay, type SceneOverlay, ROLE_COLORS, CHARACTER_ROLES, AGES, EMOTIONS, HAIR, OBJECTS, OUTFITS, PROPS, characterHair, characterOutfit, heldProp, parseDetails, parseObjects, sceneObjects, type CharacterDetails } from './stick-details'
+import { ARCHETYPES, TRAITS, OVERLAYS, parseOverlay, renderOverlay, type SceneOverlay, ROLE_COLORS, CHARACTER_ROLES, CHARACTER_FORMS, AGES, EMOTIONS, HAIR, OBJECTS, OUTFITS, PROPS, characterHair, characterOutfit, heldProp, parseDetails, parseObjects, sceneObjects, type CharacterDetails } from './stick-details'
 import {
   THUMBNAIL_CONCEPTS,
   type ThumbnailConcept,
@@ -19,7 +19,7 @@ import {
 
 export const ACTIONS = [
   'stand', 'walk', 'run', 'talk', 'cry', 'happy', 'angry', 'sit', 'wave', 'read', 'phone', 'carry', 'point',
-  'shock', 'think', 'beg', 'fight', 'fall', 'kneel', 'laugh', 'cheer', 'shrug', 'facepalm', 'drive', 'drink', 'dance', 'type', 'handshake', 'sleep'
+  'shock', 'think', 'beg', 'fight', 'fall', 'kneel', 'laugh', 'cheer', 'shrug', 'facepalm', 'drive', 'drink', 'dance', 'type', 'handshake', 'sleep', 'write'
 ] as const
 export const SETTINGS = [
   'home', 'street', 'park', 'office', 'school', 'hospital',
@@ -100,28 +100,31 @@ export function fallbackStickScenes(sections: string[]): StickScene[] {
       : /contract|hợp đồng/.test(text) ? 'contract'
       : /money|tiền|lương/.test(text) ? 'money'
       : 'none'
+    const isOfficeScene = setting === 'office'
     const objects: NonNullable<StickScene['objects']> = isFridge
       ? ['table', 'clock']
-      : setting === 'office'
-        ? ['computer_desk', 'clock']
+      : isOfficeScene
+        ? ['paper_stacks', 'clock']
         : setting === 'bedroom' || setting === 'hospital' ? ['bed', 'lamp']
         : setting === 'home' ? ['table', 'sofa']
         : setting === 'park' ? ['bench', 'plant']
         : []
 
     const hasBrain = /não\s*:|nhân vật não|khoanh tay|đeo kính/.test(text)
+    const hasClerk = isOfficeScene && !hasBrain && /sếp|đồng nghiệp|nhân viên|kế toán|báo cáo|deadline|viết|tài liệu|clerk|desk|office/.test(text)
     const actors: StickScene['actors'] = [
       {
         name: /tôi\s*:|mình/.test(text) ? 'Tôi' : 'Alex',
         role: 'MAIN',
-        action: hasBrain && /não\s*:/.test(text) ? 'talk' : action,
+        form: 'stick',
+        action: hasBrain && /não\s*:/.test(text) ? 'talk' : (hasClerk && action === 'stand' ? 'point' : action),
         emotion,
         prop,
         outfit: 'suit',
         hair: 'none',
         age: 'adult',
         glasses: false,
-        position: hasBrain ? 'left' : 'center',
+        position: hasBrain || hasClerk ? 'left' : 'center',
         facing: 'right'
       }
     ]
@@ -130,9 +133,24 @@ export function fallbackStickScenes(sections: string[]): StickScene[] {
       actors.push({
         name: 'Não',
         role: 'SUPPORTING',
+        form: 'stick',
         action: /vỗ tay/.test(text) ? 'cheer' : 'stand',
         emotion: 'happy',
         outfit: 'uniform',
+        hair: 'none',
+        age: 'adult',
+        glasses: true,
+        position: 'right',
+        facing: 'left'
+      })
+    } else if (hasClerk) {
+      actors.push({
+        name: /sếp/.test(text) ? 'Sếp' : 'Đồng nghiệp',
+        role: 'SUPPORTING',
+        form: 'silhouette',
+        action: 'write',
+        emotion: 'neutral',
+        outfit: 'suit',
         hair: 'none',
         age: 'adult',
         glasses: true,
@@ -196,7 +214,7 @@ export function parseStickScenes(text: string, count: number): StickScene[] {
   }
 
   const wardrobe = new Map<string, CharacterDetails['outfit']>()
-  const identities = new Map<string, Pick<CharacterDetails, 'hair' | 'age' | 'role' | 'archetype'>>()
+  const identities = new Map<string, Pick<CharacterDetails, 'hair' | 'age' | 'role' | 'archetype' | 'form'>>()
 
   return scenesArray.map((scene: any) => {
     const setting = (SETTINGS as readonly string[]).includes(scene?.setting) ? scene.setting : 'home'
@@ -212,6 +230,7 @@ export function parseStickScenes(text: string, count: number): StickScene[] {
         details.hair ??= details.role === 'GIRLFRIEND' ? 'ponytail' : details.role === 'BEST_FRIEND' ? 'short' : 'none'
         details.age ??= 'adult'
       }
+      identity.form ??= details.form
       identity.archetype ??= details.archetype
       identity.role ??= details.role
       identity.hair ??= details.hair
@@ -486,21 +505,9 @@ export function renderSettingDecor(setting: typeof SETTINGS[number], w: number, 
     `
   } else if (setting === 'office') {
     decor = `
-      <line x1="25" y1="${floor}" x2="${w - 25}" y2="${floor}" stroke="${ink}" stroke-width="2.5"/>
-      <rect x="${w * .15}" y="${floor - 290}" width="${w * .42}" height="105" rx="5" fill="#f8fafc" stroke="${ink}" stroke-width="2.5"/>
-      <line x1="${w * .15 + 15}" y1="${floor - 200}" x2="${w * .15 + 160}" y2="${floor - 200}" stroke="#94a3b8" stroke-width="2"/>
-      <rect x="${w * .15 + 25}" y="${floor - 240}" width="15" height="40" fill="#38bdf8"/>
-      <rect x="${w * .15 + 50}" y="${floor - 260}" width="15" height="60" fill="#3b82f6"/>
-      <rect x="${w * .15 + 75}" y="${floor - 275}" width="15" height="75" fill="#1d4ed8"/>
-      <path d="M${w * .15 + 105} ${floor - 220}l20 -25l25 10l30 -35" stroke="#ef4444" stroke-width="3" fill="none"/>
-      <rect x="${w * .76}" y="${floor - 240}" width="70" height="240" fill="#e2e8f0" stroke="${ink}" stroke-width="2.5"/>
-      <line x1="${w * .76}" y1="${floor - 160}" x2="${w * .76 + 70}" y2="${floor - 160}" stroke="${ink}" stroke-width="2"/>
-      <line x1="${w * .76}" y1="${floor - 80}" x2="${w * .76 + 70}" y2="${floor - 80}" stroke="${ink}" stroke-width="2"/>
-      <circle cx="${w * .76 + 35}" cy="${floor - 200}" r="4" fill="#64748b"/>
-      <circle cx="${w * .76 + 35}" cy="${floor - 120}" r="4" fill="#64748b"/>
-      <circle cx="${w * .76 + 35}" cy="${floor - 40}" r="4" fill="#64748b"/>
-      <circle cx="${w * .65}" cy="${floor - 265}" r="16" fill="#fff" stroke="${ink}" stroke-width="2"/>
-      <path d="M${w * .65} ${floor - 265}v-9m0 9l6 3" stroke="${ink}" stroke-width="2"/>
+      <line x1="25" y1="${floor}" x2="${w - 25}" y2="${floor}" stroke="${ink}" stroke-width="2" opacity=".4"/>
+      <circle cx="${w * .65}" cy="${floor - 275}" r="16" fill="#fff" stroke="${ink}" stroke-width="2"/>
+      <path d="M${w * .65} ${floor - 275}v-9m0 9l6 3" stroke="${ink}" stroke-width="2"/>
     `
   } else if (setting === 'school') {
     decor = `
@@ -589,6 +596,118 @@ export function renderSettingDecor(setting: typeof SETTINGS[number], w: number, 
   return decor
 }
 
+export function renderSilhouetteActor(
+  actor: ({ name: string; action: typeof ACTIONS[number] } & CharacterDetails),
+  x: number,
+  y: number,
+  scale: number,
+  phase: number,
+  still = false,
+  showName = true,
+  forcedFacing?: -1 | 1
+): string {
+  const facing = forcedFacing ?? (actor.facing === 'left' ? -1 : 1)
+  const isDeskWriting = ['write', 'sit', 'type', 'read'].includes(actor.action)
+  const penMove = !still && isDeskWriting ? Math.sin(phase * 8) * 3 : 0
+  const writeSway = !still && isDeskWriting ? Math.sin(phase * 2) * 1.5 : 0
+
+  if (isDeskWriting) {
+    // Exact desk clerk from reference image: solid black silhouette hunched at desk writing with pen, with chair wheels and book/paper stacks
+    return `<g transform="translate(${x} ${y}) scale(${scale})" stroke-linecap="round" stroke-linejoin="round">
+      <g transform="scale(${facing} 1)">
+        <!-- Chair wheels beneath desk -->
+        <g stroke="#111" stroke-width="3">
+          <line x1="0" y1="-8" x2="0" y2="-32" stroke-width="7"/>
+          <line x1="-30" y1="-8" x2="30" y2="-8" stroke-width="4"/>
+          <circle cx="-30" cy="-6" r="6" fill="#111"/>
+          <circle cx="-12" cy="-6" r="6" fill="#111"/>
+          <circle cx="12" cy="-6" r="6" fill="#111"/>
+          <circle cx="30" cy="-6" r="6" fill="#111"/>
+        </g>
+        <!-- Desk -->
+        <rect x="-92" y="-102" width="184" height="74" rx="2" fill="#111"/>
+        <line x1="-92" y1="-80" x2="92" y2="-80" stroke="#222" stroke-width="3"/>
+        <rect x="-85" y="-28" width="16" height="28" fill="#111"/>
+        <rect x="69" y="-28" width="16" height="28" fill="#111"/>
+
+        <!-- Left Stack: horizontal paper sheets -->
+        <g transform="translate(-62 -102)">
+          <rect x="-22" y="-38" width="44" height="38" rx="1" fill="#fffdfa" stroke="#111" stroke-width="2.5"/>
+          <line x1="-16" y1="-30" x2="16" y2="-30" stroke="#94a3b8" stroke-width="1.8"/>
+          <line x1="-16" y1="-22" x2="16" y2="-22" stroke="#94a3b8" stroke-width="1.8"/>
+          <line x1="-16" y1="-14" x2="16" y2="-14" stroke="#94a3b8" stroke-width="1.8"/>
+          <line x1="-16" y1="-6" x2="16" y2="-6" stroke="#94a3b8" stroke-width="1.8"/>
+        </g>
+
+        <!-- Right Stack: 3 stacked books -->
+        <g transform="translate(62 -102)">
+          <rect x="-24" y="-12" width="48" height="12" rx="2" fill="#111" stroke="#333" stroke-width="1.5"/>
+          <rect x="-22" y="-23" width="44" height="11" rx="2" fill="#1e293b" stroke="#333" stroke-width="1.5"/>
+          <rect x="-20" y="-34" width="40" height="11" rx="2" fill="#334155" stroke="#333" stroke-width="1.5"/>
+          <line x1="-20" y1="-7" x2="20" y2="-7" stroke="#fff" stroke-width="1.2" opacity=".6"/>
+          <line x1="-18" y1="-18" x2="18" y2="-18" stroke="#fff" stroke-width="1.2" opacity=".6"/>
+          <line x1="-16" y1="-29" x2="16" y2="-29" stroke="#fff" stroke-width="1.2" opacity=".6"/>
+        </g>
+
+        <!-- Hunched silhouette body -->
+        <path d="M-44 -102 Q-48 -180 0 -192 Q48 -180 44 -102 Z" fill="#111"/>
+
+        <!-- Arms resting on desk writing -->
+        <path d="M-38 -150 Q-18 -108 -4 ${-108 + penMove}" stroke="#111" stroke-width="16" stroke-linecap="round" fill="none"/>
+        <path d="M38 -150 Q18 -108 4 ${-108 + penMove}" stroke="#111" stroke-width="16" stroke-linecap="round" fill="none"/>
+        <!-- Pen and notepad under hand -->
+        <rect x="-18" y="-116" width="36" height="14" fill="#fffdfa" stroke="#111" stroke-width="1.5"/>
+        <line x1="${2 + penMove}" y1="-106" x2="${-6 + penMove}" y2="-120" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+
+        <!-- Solid silhouette head -->
+        <g transform="translate(${writeSway} -212)">
+          <circle cx="0" cy="0" r="32" fill="#111"/>
+          <!-- Iconic round white glasses -->
+          <circle cx="-13" cy="0" r="10" fill="none" stroke="#fff" stroke-width="3.8"/>
+          <circle cx="13" cy="0" r="10" fill="none" stroke="#fff" stroke-width="3.8"/>
+          <line x1="-3" y1="0" x2="3" y2="0" stroke="#fff" stroke-width="3.5"/>
+          <path d="M-23 0l-8 -4M23 0l8 -4" stroke="#fff" stroke-width="2.5"/>
+        </g>
+      </g>
+      ${showName && !still ? `<text x="0" y="-258" stroke="none" fill="#475569" font-family="sans-serif" font-size="14" font-weight="600" text-anchor="middle">${xml(actor.name)}</text>` : ''}
+    </g>`
+  }
+
+  // Standing / walking solid silhouette figure
+  const moving = ['walk', 'run', 'dance'].includes(actor.action)
+  const step = Math.sin(phase * (actor.action === 'run' ? 2 : 1))
+  const stride = moving ? step * 24 : 0
+  const torsoLift = 70
+  const hip = -28 - torsoLift
+  const head = -178
+
+  return `<g transform="translate(${x} ${y}) scale(${scale})" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="scale(${facing} 1)">
+      <!-- Legs -->
+      <path d="M-12 ${hip}L${-18 - stride} -4L${-28 - stride} 0 M12 ${hip}L${18 + stride} -4L${28 + stride} 0" fill="none" stroke="#111" stroke-width="11"/>
+      <!-- Torso -->
+      <path d="M-18 ${head + 49}Q-24 -84 -18 -28L18 -28Q24 -84 18 ${head + 49}Z" fill="#111"/>
+      <!-- Arms -->
+      <path d="M-21 ${head + 68}Q-45 -90 -38 -60" fill="none" stroke="#111" stroke-width="10"/>
+      <path d="M21 ${head + 68}Q45 -90 42 -60" fill="none" stroke="#111" stroke-width="10"/>
+      <!-- Head -->
+      <circle cx="0" cy="${head}" r="48" fill="#111"/>
+      <!-- White Glasses -->
+      <g stroke="#fff" stroke-width="3.5" fill="none">
+        <circle cx="-16" cy="${head + 6}" r="11"/>
+        <circle cx="12" cy="${head + 6}" r="11"/>
+        <line x1="-5" y1="${head + 6}" x2="1" y2="${head + 6}"/>
+        <path d="M-27 ${head + 6}l-7 -4 M23 ${head + 6}l7 -4" stroke-width="2"/>
+      </g>
+    </g>
+    ${showName && !still ? `<text x="0" y="${head - 72}" stroke="none" fill="#475569" font-family="sans-serif" font-size="14" font-weight="600" text-anchor="middle">${xml(actor.name)}</text>` : ''}
+  </g>`
+}
+
+function loopHand(x: number, y: number, angleDeg: number, ink: string): string {
+  return `<ellipse cx="${x}" cy="${y}" rx="4.2" ry="7.2" transform="rotate(${angleDeg} ${x} ${y})" fill="#fff" stroke="${ink}" stroke-width="3.2"/>`
+}
+
 export function renderSingleActor(
   actor: ({ name: string; action: typeof ACTIONS[number] } & CharacterDetails),
   x: number,
@@ -601,229 +720,169 @@ export function renderSingleActor(
   jitter = false,
   forcedFacing?: -1 | 1
 ): string {
-  const ink = '#222222'
+  if (actor.form === 'silhouette') {
+    return renderSilhouetteActor(actor, x, y, scale, phase, still, showName, forcedFacing)
+  }
+  const ink = '#1a1a2e'
+  const strokeW = 3.6
   const moving = ['walk', 'run', 'dance'].includes(actor.action)
   const step = Math.sin(phase * (actor.action === 'run' ? 2 : 1))
-  const stride = moving ? step * (actor.action === 'run' ? 34 : 24) : 0
-  const danceX = actor.action === 'dance' ? Math.sin(phase * 2) * 14 : 0
-  const danceY = actor.action === 'dance' ? Math.abs(Math.sin(phase * 2)) * 10 : 0
-  const jitterX = jitter && !still ? Math.sin(phase * 16) * 3 : 0
+  const stride = moving ? step * (actor.action === 'run' ? 24 : 16) : 0
+  const danceX = actor.action === 'dance' ? Math.sin(phase * 2) * 10 : 0
+  const danceY = actor.action === 'dance' ? Math.abs(Math.sin(phase * 2)) * 8 : 0
+  const jitterX = jitter && !still ? Math.sin(phase * 16) * 2 : 0
   const actualX = x + danceX + jitterX
-  const jumpY = ['happy', 'cheer'].includes(actor.action)
-    ? Math.abs(step) * 16
-    : actor.action === 'laugh'
-    ? Math.abs(Math.sin(phase * 4)) * 6
-    : actor.action === 'shock'
-    ? Math.abs(Math.sin(phase * 4)) * 6
-    : actor.action === 'run'
-    ? Math.abs(step) * 5
-    : 0
+  const jumpY = ['happy', 'cheer'].includes(actor.action) ? Math.abs(step) * 12 : actor.action === 'run' ? Math.abs(step) * 4 : 0
   const actualY = y - jumpY - danceY
-  const head = actor.action === 'sit' ? -147 : actor.action === 'kneel' ? -132 : actor.action === 'sleep' ? -142 : actor.action === 'shrug' ? -164 : -178
-  const raised = ['wave', 'happy', 'angry', 'cheer'].includes(actor.action)
-
-  let handY: number
-  let handX: number
-  if (actor.action === 'phone') { handX = 58; handY = head + 18 }
-  else if (actor.action === 'read') { handX = 8; handY = -97 + step * 2 }
-  else if (actor.action === 'point') { handX = 83; handY = -115 + step * 3 }
-  else if (actor.action === 'cry') { handX = 28; handY = head + 27 }
-  else if (actor.action === 'shock') { handX = 38; handY = head + 12 }
-  else if (actor.action === 'think') { handX = 14; handY = head + 38 }
-  else if (actor.action === 'beg') { handX = 32; handY = head + 35 + step * 4 }
-  else if (actor.action === 'fight') { handX = 75 + step * 16; handY = head + 38 }
-  else if (actor.action === 'fall') { handX = 60; handY = head - 20 }
-  else if (actor.action === 'laugh') { handX = 14; handY = -55 }
-  else if (actor.action === 'cheer') { handX = 52; handY = head - 28 }
-  else if (actor.action === 'shrug') { handX = 66; handY = -85 }
-  else if (actor.action === 'facepalm') { handX = 2; handY = head + 12 }
-  else if (actor.action === 'drive') { handX = 42; handY = head + 45 }
-  else if (actor.action === 'drink') { handX = 12; handY = head + 26 }
-  else if (actor.action === 'type') { handX = 36 + Math.sin(phase * 6) * 4; handY = -62 + Math.cos(phase * 6) * 3 }
-  else if (actor.action === 'handshake') { handX = 76; handY = -85 }
-  else if (actor.action === 'sleep') { handX = 20; handY = -65 }
-  else if (raised) { handX = 51; handY = head + step * 9 }
-  else if (actor.action === 'talk') { handX = 51; handY = -112 + step * 9 }
-  else { handX = 51; handY = -61 - stride }
-
-  // Left arm configuration
-  let leftHandX = -45
-  let leftHandY = -64 + stride
-  let leftCurveX = -55
-  let leftCurveY = -86
-  if (actor.action === 'cheer') {
-    leftHandX = -52; leftHandY = head - 28; leftCurveX = -58; leftCurveY = head + 8
-  } else if (actor.action === 'shock') {
-    leftHandX = -38; leftHandY = head + 12; leftCurveX = -54; leftCurveY = head + 8
-  } else if (actor.action === 'shrug') {
-    leftHandX = -66; leftHandY = -85; leftCurveX = -58; leftCurveY = -90
-  } else if (actor.action === 'beg') {
-    leftHandX = 24; leftHandY = handY; leftCurveX = 0; leftCurveY = -90
-  } else if (actor.action === 'fight') {
-    leftHandX = -6; leftHandY = head + 45; leftCurveX = -30; leftCurveY = -90
-  } else if (actor.action === 'type') {
-    leftHandX = -12 + Math.sin(phase * 6) * 4; leftHandY = -62 - Math.cos(phase * 6) * 3; leftCurveX = -38; leftCurveY = -90
-  }
-
-  const fixedRole = actor.role && actor.role !== 'SUPPORTING' ? actor.role : undefined
-  const actorAccent = (fixedRole ? ROLE_COLORS[fixedRole] : accent) ?? '#6ba7db'
-  const emotion = actor.emotion ?? (
-    actor.trait === 'shy' || actor.trait === 'jealous' ? 'worried'
-    : actor.trait === 'funny' ? 'laughing'
-    : actor.action === 'cry' ? 'crying'
-    : actor.action === 'shock' ? 'shocked'
-    : actor.action === 'laugh' ? 'laughing'
-    : actor.action === 'angry' || actor.action === 'fight' ? 'angry'
-    : actor.action === 'happy' || actor.action === 'cheer' ? 'happy'
-    : 'neutral'
-  )
   const facing = forcedFacing ?? (actor.facing === 'left' ? -1 : 1)
-  const prop = actor.prop ?? (actor.action === 'read' ? 'book' : actor.action === 'phone' ? 'phone' : actor.action === 'drink' ? 'cup' : actor.action === 'drive' ? 'car_wheel' : 'none')
+  const crouched = ['sit', 'kneel', 'sleep'].includes(actor.action)
+  const headY = crouched ? -155 : -205
+  const neckY = headY + 36
+  const hipY = crouched ? -45 : -80
+  const footLift = moving ? Math.max(0, step) * 12 : 0
+
+  // Head and Face
+  const eyeY = headY - 2
   const blink = still ? false : (Math.round(phase * 60 / Math.PI) % 120 >= 106 && Math.round(phase * 60 / Math.PI) % 120 <= 112)
+  const eyesSvg = blink
+    ? `<line x1="-19" y1="${eyeY}" x2="-11" y2="${eyeY}" stroke="${ink}" stroke-width="2.5" stroke-linecap="round"/><line x1="11" y1="${eyeY}" x2="19" y2="${eyeY}" stroke="${ink}" stroke-width="2.5" stroke-linecap="round"/>`
+    : `<ellipse cx="-15" cy="${eyeY}" rx="2.5" ry="4.5" fill="${ink}" stroke="none"/><ellipse cx="15" cy="${eyeY}" rx="2.5" ry="4.5" fill="${ink}" stroke="none"/>`
 
-  // Action specific effect stickers
-  let actionEffect = ''
-  if (actor.action === 'shock') {
-    actionEffect = `<line x1="0" y1="${head - 68}" x2="0" y2="${head - 88}" stroke="#f59e0b" stroke-width="3"/><line x1="-22" y1="${head - 64}" x2="-36" y2="${head - 80}" stroke="#f59e0b" stroke-width="3"/><line x1="22" y1="${head - 64}" x2="36" y2="${head - 80}" stroke="#f59e0b" stroke-width="3"/>`
-  } else if (actor.action === 'think') {
-    actionEffect = `<text x="32" y="${head - 55}" font-family="sans-serif" font-size="28" font-weight="bold" fill="#3b82f6" stroke="none">?</text>`
-  } else if (actor.action === 'fight') {
-    actionEffect = `<path d="M${handX + 10} ${handY - 10}l16 -4M${handX + 14} ${handY}l20 0M${handX + 10} ${handY + 10}l16 4" stroke="#ef4444" stroke-width="2.5" fill="none"/>`
-  } else if (actor.action === 'fall') {
-    actionEffect = `<g fill="#f59e0b" stroke="none"><polygon points="18,${head - 55} 22,${head - 47} 30,${head - 47} 24,${head - 40} 26,${head - 32} 18,${head - 37} 10,${head - 32} 12,${head - 40} 6,${head - 47} 14,${head - 47}"/><circle cx="-20" cy="${head - 50}" r="3.5"/><circle cx="0" cy="${head - 65}" r="4"/></g>`
-  } else if (actor.action === 'laugh') {
-    actionEffect = `<text x="30" y="${head - 50}" font-family="sans-serif" font-size="15" font-weight="bold" fill="#f59e0b" stroke="none">Haha!</text>`
+  let mouthSvg = `<path d="M-9 ${headY + 15} Q0 ${headY + 23} 9 ${headY + 15}" fill="none" stroke="${ink}" stroke-width="2.6" stroke-linecap="round"/>`
+  if (actor.action === 'talk' || actor.action === 'phone' || actor.prop === 'microphone') {
+    mouthSvg = `<ellipse cx="0" cy="${headY + 16}" rx="3.5" ry="5.5" fill="#fff" stroke="${ink}" stroke-width="2.2"/>`
+  } else if (actor.action === 'point' || actor.emotion === 'neutral') {
+    mouthSvg = `<line x1="-7" y1="${headY + 15}" x2="7" y2="${headY + 15}" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/>`
+  } else if (actor.emotion === 'worried' || actor.emotion === 'sad') {
+    mouthSvg = `<path d="M-8 ${headY + 19} Q0 ${headY + 13} 8 ${headY + 19}" fill="none" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/>`
+  } else if (actor.emotion === 'shocked' || actor.action === 'shock') {
+    mouthSvg = `<ellipse cx="0" cy="${headY + 17}" rx="6" ry="8" fill="#fff" stroke="${ink}" stroke-width="2.4"/>`
+  } else if (actor.emotion === 'crying' || actor.action === 'cry') {
+    mouthSvg = `<path d="M-8 ${headY + 19} Q0 ${headY + 13} 8 ${headY + 19}" fill="none" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/><path d="M-15 ${headY + 3}v18 M15 ${headY + 3}v18" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>`
+  } else if (actor.emotion === 'laughing' || actor.action === 'laugh') {
+    mouthSvg = `<path d="M-11 ${headY + 13} Q0 ${headY + 26} 11 ${headY + 13} Z" fill="#ef4444" stroke="${ink}" stroke-width="2"/>`
+  }
+
+  // Pear Torso
+  const pearTorsoSvg = `<path d="M-13 ${neckY} C-15 ${neckY + 22}, -34 ${neckY + 52}, -33 ${hipY - 10} C-32 ${hipY + 8}, -18 ${hipY + 12}, 0 ${hipY + 12} C18 ${hipY + 12}, 32 ${hipY + 8}, 33 ${hipY - 10} C34 ${neckY + 52}, 15 ${neckY + 22}, 13 ${neckY} Z" fill="#fff" stroke="${ink}" stroke-width="${strokeW}" stroke-linejoin="round"/>`
+
+  // Presenter / Suit Necktie (Only when outfit is suit)
+  const isSuit = actor.outfit === 'suit'
+  const tieSvg = isSuit
+    ? `<polygon points="0,${neckY + 3} -5,${neckY + 10} 0,${neckY + 16} 5,${neckY + 10}" fill="#111" stroke="none"/><polygon points="-4,${neckY + 16} 4,${neckY + 16} 6,${neckY + 58} 0,${neckY + 68} -6,${neckY + 58}" fill="#111" stroke="none"/>`
+    : ''
+
+  // Arms and loop hands
+  const prop = actor.prop ?? (actor.action === 'read' ? 'book' : actor.action === 'phone' ? 'phone' : actor.action === 'drink' ? 'cup' : actor.action === 'drive' ? 'car_wheel' : 'none')
+  let leftArmSvg = ''
+  let rightArmSvg = ''
+
+  if (actor.action === 'point') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-30 ${neckY + 24} -12 ${neckY + 36}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-12, neckY + 36, 45, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q36 ${neckY + 18} 74 ${neckY + 14}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(80, neckY + 14, 90, ink)}`
+  } else if (actor.action === 'wave') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-32 ${neckY + 36} -28 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-28, neckY + 64, 15, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q34 ${neckY - 10} 52 ${headY - 14}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(56, headY - 20, -30, ink)}`
   } else if (actor.action === 'cheer') {
-    actionEffect = `<circle cx="-38" cy="${head - 35}" r="3.5" fill="#fbbf24" stroke="none"/><circle cx="38" cy="${head - 35}" r="3.5" fill="#ec4899" stroke="none"/><polygon points="0,${head - 72} 3,${head - 64} 11,${head - 64} 5,${head - 59} 7,${head - 51} 0,${head - 56} -7,${head - 51} -5,${head - 59} -11,${head - 64} -3,${head - 64}" fill="#38bdf8" stroke="none"/>`
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-48 ${neckY + 18} -48 ${headY - 12}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-48, headY - 18, -15, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q48 ${neckY + 18} 48 ${headY - 12}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(48, headY - 18, 15, ink)}`
   } else if (actor.action === 'dance') {
-    actionEffect = `<g fill="#8b5cf6" stroke="none" font-family="sans-serif" font-weight="bold"><text x="-38" y="${head - 30}" font-size="20">♪</text><text x="34" y="${head - 45}" font-size="24">♫</text><text x="12" y="${head - 70}" font-size="16">♬</text></g>`
-  } else if (actor.action === 'sleep') {
-    actionEffect = `<g fill="#6366f1" stroke="none" font-family="sans-serif" font-weight="bold"><text x="14" y="${head - 40}" font-size="14">z</text><text x="25" y="${head - 58}" font-size="18">Z</text><text x="40" y="${head - 80}" font-size="22">Z</text></g>`
-  }
-
-  // Facial expression rendering
-  let faceSvg = ''
-  if (emotion === 'crying') {
-    faceSvg = `
-      <path d="M-28 ${head - 8}l12 6m10 0l12 -6" stroke-width="2.5" fill="none"/>
-      <path d="M-22 ${head + 10}q-4 18 -2 34M8 ${head + 10}q4 18 2 34" stroke="#38bdf8" stroke-width="3.5" stroke-linecap="round" fill="none"/>
-      <circle cx="-25" cy="${head + 48}" r="3" fill="#38bdf8" stroke="none"/>
-      <circle cx="11" cy="${head + 48}" r="3" fill="#38bdf8" stroke="none"/>
-      <path d="M-14 ${head + 30}q7 -8 14 0" fill="none" stroke-width="2.5"/>
-    `
-  } else if (emotion === 'laughing') {
-    faceSvg = `
-      <path d="M-24 ${head + 4}l8 5l-8 5m22 -10l-8 5l8 5" fill="none" stroke-width="3"/>
-      <path d="M-16 ${head + 25}q9 15 18 0Z" fill="#ef4444" stroke="${ink}" stroke-width="2"/>
-      <line x1="-28" y1="${head + 18}" x2="-18" y2="${head + 22}" stroke="#f43f5e" stroke-width="2"/>
-      <line x1="12" y1="${head + 18}" x2="22" y2="${head + 22}" stroke="#f43f5e" stroke-width="2"/>
-    `
-  } else if (emotion === 'shocked') {
-    faceSvg = `
-      <circle cx="-18" cy="${head + 7}" r="7" fill="#fff" stroke="${ink}" stroke-width="2.5"/>
-      <circle cx="-18" cy="${head + 7}" r="2" fill="${ink}"/>
-      <circle cx="8" cy="${head + 7}" r="7" fill="#fff" stroke="${ink}" stroke-width="2.5"/>
-      <circle cx="8" cy="${head + 7}" r="2" fill="${ink}"/>
-      <ellipse cx="-5" cy="${head + 30}" rx="6" ry="10" fill="${ink}"/>
-      <path d="M28 ${head - 8}q4 -8 8 0q0 7 -4 7t-4 -7Z" fill="#38bdf8" stroke="none"/>
-    `
-  } else if (emotion === 'smug') {
-    faceSvg = `
-      <path d="M-27 ${head - 12}q6 -8 13 -2m7 3q6 3 12 0" fill="none" stroke-width="2.5"/>
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-      <path d="M-11 ${head + 26}q11 4 17 -10" fill="none" stroke-width="3"/>
-    `
-  } else if (emotion === 'in_love') {
-    faceSvg = `
-      <g fill="#ef4444" stroke="none">
-        <path d="M-22 ${head + 2}q-5 -6 0 -11q5 0 5 5q0 -5 5 -5q5 5 0 11l-5 5Z"/>
-        <path d="M6 ${head + 2}q-5 -6 0 -11q5 0 5 5q0 -5 5 -5q5 5 0 11l-5 5Z"/>
-      </g>
-      <path d="M-12 ${head + 25}q7 9 14 0" fill="none" stroke-width="3"/>
-      <ellipse cx="-24" cy="${head + 19}" rx="5" ry="2.5" fill="#f472b6" stroke="none"/>
-      <ellipse cx="14" cy="${head + 19}" rx="5" ry="2.5" fill="#f472b6" stroke="none"/>
-    `
-  } else if (emotion === 'furious') {
-    faceSvg = `
-      <path d="M-29 ${head - 11}l13 7m7 0l13 -7" stroke="#dc2626" stroke-width="3.5" fill="none"/>
-      <rect x="-15" y="${head + 23}" width="20" height="9" rx="2" fill="#fff" stroke="${ink}" stroke-width="2"/>
-      <line x1="-15" y1="${head + 27}" x2="5" y2="${head + 27}" stroke="${ink}" stroke-width="1.5"/>
-      <line x1="-9" y1="${head + 23}" x2="-9" y2="${head + 32}" stroke="${ink}" stroke-width="1"/>
-      <line x1="-1" y1="${head + 23}" x2="-1" y2="${head + 32}" stroke="${ink}" stroke-width="1"/>
-      <path d="M16 ${head - 33}l7 7m-7 0l7 -7M13 ${head - 30}h13M19 ${head - 37}v14" stroke="#ef4444" stroke-width="2.5" fill="none"/>
-    `
-  } else if (emotion === 'sad') {
-    faceSvg = `
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-      <path d="M-13 ${head + 29}q7 -7 14 0" fill="none"/>
-      <path d="M-24 ${head + 15}q-7 ${8 + Math.abs(step) * 10} 0 17q7 -2 0 -17" fill="#87c5e8" stroke="none"/>
-    `
-  } else if (emotion === 'angry') {
-    faceSvg = `
-      <path d="M-30 ${head - 10}l13 7m10 0l13 -7M-13 ${head + 25}q7 -4 14 0" fill="none"/>
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-    `
-  } else if (emotion === 'surprised') {
-    faceSvg = `
-      <ellipse cx="-8" cy="${head + 27}" rx="6" ry="9" fill="#fff"/>
-      <path d="M-30 ${head - 10}q7 -7 14 0m9 0q7 -7 14 0" fill="none"/>
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-    `
-  } else if (emotion === 'worried') {
-    faceSvg = `
-      <path d="M-29 ${head - 7}l12 -5m10 0l12 5M-15 ${head + 29}q7 -5 14 0" fill="none"/>
-      <circle cx="24" cy="${head - 2}" r="3" fill="#38bdf8" stroke="none"/>
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-    `
-  } else if (actor.action === 'talk' || actor.action === 'phone') {
-    // Natural speech cadence lip-sync (~4.2 syllables per second)
-    const speechCycle = !still ? Math.abs(Math.sin(phase * 8)) : 0.5;
-    const mouthH = Math.max(1.8, speechCycle * 6.5);
-    faceSvg = `
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-      <ellipse cx="-8" cy="${head + 26}" rx="5.5" ry="${mouthH}" fill="${ink}"/>
-    `;
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-36 ${neckY + 28} -44 ${neckY + 38}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-48, neckY + 36, -45, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q36 ${neckY + 28} 44 ${neckY + 38}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(48, neckY + 36, 45, ink)}`
+  } else if (actor.action === 'beg' || actor.trait === 'shy') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-30 ${neckY + 36} -6 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-6, neckY + 58, 45, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q30 ${neckY + 36} 6 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(6, neckY + 58, -45, ink)}`
+  } else if (actor.action === 'walk' || actor.action === 'run') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-26 ${neckY + 34} -12 ${neckY + 50}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-12, neckY + 50, 20, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q26 ${neckY + 34} 12 ${neckY + 50}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(12, neckY + 50, -20, ink)}`
+  } else if (actor.action === 'phone') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-32 ${neckY + 36} -28 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-28, neckY + 64, 15, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q38 ${neckY + 16} 38 ${headY + 10}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>`
+  } else if (actor.action === 'drink') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-32 ${neckY + 36} -28 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-28, neckY + 64, 15, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q32 ${neckY + 26} 20 ${neckY + 36}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(20, neckY + 36, -30, ink)}`
+  } else if (actor.action === 'talk') {
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-32 ${neckY + 28} -28 ${neckY + 20}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q32 ${neckY + 28} 54 ${neckY + 8}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(58, neckY + 6, 45, ink)}`
   } else {
-    faceSvg = `
-      <path d="M-25 ${head + 1}${blink ? 'h6' : 'v9'}m27 -9${blink ? 'h6' : 'v9'}" fill="none" stroke-width="3.5"/>
-      <path d="M-14 ${head + 24}q6 ${emotion === 'happy' ? 10 : 3} 12 0" fill="none"/>
-      ${emotion === 'happy' ? `<line x1="-27" y1="${head + 16}" x2="-18" y2="${head + 20}" stroke="#fb7185" stroke-width="2"/><line x1="11" y1="${head + 16}" x2="20" y2="${head + 20}" stroke="#fb7185" stroke-width="2"/>` : ''}
+    leftArmSvg = `<path d="M-14 ${neckY + 12} Q-30 ${neckY + 36} -26 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(-26, neckY + 64, 15, ink)}`
+    rightArmSvg = `<path d="M14 ${neckY + 12} Q30 ${neckY + 36} 26 ${neckY + 58}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>${loopHand(26, neckY + 64, -15, ink)}`
+  }
+
+  // Legs and Loop Feet
+  let legsSvg = ''
+  const footLeft = `<ellipse cx="-18" cy="-3" rx="8" ry="3.8" fill="#fff" stroke="${ink}" stroke-width="3.2"/>`
+  const footRight = `<ellipse cx="18" cy="-3" rx="8" ry="3.8" fill="#fff" stroke="${ink}" stroke-width="3.2"/>`
+
+  if (actor.action === 'dance') {
+    legsSvg = `
+      <line x1="-14" y1="${hipY + 8}" x2="-14" y2="-3" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      ${footLeft}
+      <path d="M14 ${hipY + 8} L14 ${hipY + 44} L36 ${hipY + 30}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(18 ${hipY + 33})">${footRight}</g>
+    `
+  } else if (actor.action === 'walk' || actor.action === 'run') {
+    legsSvg = `
+      <path d="M-14 ${hipY + 8} Q${-14 - stride * 0.5} ${hipY * 0.5} ${-14 - stride} ${-3 - footLift}" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      <g transform="translate(${-stride} ${-footLift})">${footLeft}</g>
+      <path d="M14 ${hipY + 8} Q${14 + stride * 0.5} ${hipY * 0.5} ${14 + stride} -3" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      <g transform="translate(${stride} 0)">${footRight}</g>
+    `
+  } else if (actor.action === 'sit') {
+    legsSvg = `
+      <path d="M-14 ${hipY + 8} L-36 ${hipY + 28} L-36 -3 M14 ${hipY + 8} L36 ${hipY + 28} L36 -3" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      <g transform="translate(-22 0)">${footLeft}</g>
+      <g transform="translate(22 0)">${footRight}</g>
+    `
+  } else {
+    legsSvg = `
+      <line x1="-14" y1="${hipY + 8}" x2="-14" y2="-3" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      ${footLeft}
+      <line x1="14" y1="${hipY + 8}" x2="14" y2="-3" stroke="${ink}" stroke-width="3.4" stroke-linecap="round"/>
+      ${footRight}
     `
   }
 
-  const crouched = ['sit', 'kneel', 'beg', 'sleep'].includes(actor.action)
-  const torsoLift = crouched ? 35 : 75
-  const hip = -28 - torsoLift
-  const footLift = moving ? Math.max(0, step) * 16 : 0
-  let legsSvg = `<path d="M-12 ${hip}Q${-18 - stride * .5} ${hip * .5} ${-26 - stride} ${-footLift} M12 ${hip}Q${18 + stride * .5} ${hip * .5} ${26 + stride} ${moving ? -Math.max(0, -step) * 16 : 0}" fill="none" stroke-width="10"/>`
-  if (actor.action === 'sit' || actor.action === 'sleep') {
-    legsSvg = `<path d="M-12 ${hip}L-40 -40L-40 0M12 ${hip}L40 -40L40 0" fill="none" stroke-width="10"/>`
-  } else if (actor.action === 'kneel' || actor.action === 'beg') {
-    legsSvg = `<path d="M-12 ${hip}L-30 -5L-5 -5M12 ${hip}L32 -5L54 -5" fill="none" stroke-width="10"/>`
+  // Props
+  let propSvg = ''
+  if (actor.action === 'phone') {
+    propSvg = heldProp('phone', 38, headY + 10)
+  } else if (actor.action === 'drink') {
+    propSvg = heldProp('coffee', 20, neckY + 36)
+  } else if (actor.action === 'talk' && (prop === 'microphone' || actor.prop === 'microphone')) {
+    propSvg = heldProp('microphone', -38, neckY + 16)
+  } else if (prop && prop !== 'none') {
+    propSvg = heldProp(prop, 20, neckY + 40)
   }
+
+  // Hair & Glasses
+  const hairSvg = actor.hair === 'ponytail'
+    ? `<path d="M-42 ${headY - 14} Q-68 ${headY - 32} -62 ${headY + 10} Q-62 ${headY + 22} -72 ${headY + 26} Q-50 ${headY + 34} -48 ${headY + 4} Z" fill="#151515"/>`
+    : actor.hair === 'short'
+    ? `<path d="M-6 ${headY - 36}q-3 -10 -8 -14 M0 ${headY - 36}q0 -12 -3 -16 M6 ${headY - 36}q3 -10 8 -14" fill="none" stroke="${ink}" stroke-width="2.5" stroke-linecap="round"/>`
+    : ''
+
+  const glassesSvg = actor.glasses
+    ? `<circle cx="-15" cy="${eyeY}" r="9" fill="none" stroke="${ink}" stroke-width="2"/><circle cx="15" cy="${eyeY}" r="9" fill="none" stroke="${ink}" stroke-width="2"/><line x1="-6" y1="${eyeY}" x2="6" y2="${eyeY}" stroke="${ink}" stroke-width="2"/>`
+    : ''
 
   const fallRotate = actor.action === 'fall' ? `rotate(${24 + Math.sin(phase) * 5} 0 0)` : ''
 
-  return `<g transform="translate(${actualX} ${actualY}) scale(${scale})" stroke="${ink}" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round" fill="#fff">
+  return `<g transform="translate(${actualX} ${actualY}) scale(${scale})" stroke-linecap="round" stroke-linejoin="round">
     <g transform="scale(${facing} 1) ${fallRotate}">
-    ${legsSvg}
-    <g transform="translate(0 ${-torsoLift})">
-    ${actor.action === 'sit' ? '<path d="M-37 -43h74v43m-74 -43v43" fill="#d5c2aa"/>' : ''}
-    <path d="M-14 ${head + 49}Q-20 -84 -15 -28L15 -28Q20 -84 14 ${head + 49}Z" fill="${ink}"/>
-    <g transform="scale(.7 1)">${characterOutfit(actor.outfit ?? (fixedRole === 'MAIN' || actor.archetype === 'boss' ? 'suit' : fixedRole === 'GIRLFRIEND' ? 'dress' : 'plain'), head, actorAccent)}</g>
-    <path d="M-21 ${head + 68}Q${leftCurveX} ${leftCurveY} ${leftHandX} ${leftHandY}" fill="none" stroke-width="13"/>
-    <path d="M-21 ${head + 68}Q${leftCurveX} ${leftCurveY} ${leftHandX} ${leftHandY}" fill="none" stroke="${ink}" stroke-width="6"/>
-    <path d="M20 ${head + 68}Q58 ${handY + 48} ${handX} ${handY}" fill="none" stroke-width="14"/>
-    <path d="M20 ${head + 68}Q58 ${handY + 48} ${handX} ${handY}" fill="none" stroke="${ink}" stroke-width="7"/>
-    <circle cx="0" cy="${head}" r="52" fill="#fff" stroke-width="6"/>
-    ${characterHair(actor.hair ?? (fixedRole === 'GIRLFRIEND' ? 'ponytail' : fixedRole === 'BEST_FRIEND' ? 'short' : 'none'), head)}
-    <g transform="translate(7 0)">${faceSvg}</g>
-
-    ${actor.glasses || actor.age === 'elder' || actor.archetype === 'teacher' || actor.archetype === 'mentor' ? `<g fill="none" stroke-width="2"><circle cx="-22" cy="${head + 7}" r="12"/><circle cx="7" cy="${head + 7}" r="12"/><path d="M-10 ${head + 7}h5M-36 ${head + 28}l8 3m20 8h12"/></g>` : ''}
-    ${heldProp(prop, handX, handY + (prop === 'briefcase' ? 22 : 0))}
-    ${actionEffect}
-    </g></g>
-    ${showName && !still ? `<text x="0" y="${head - torsoLift - 82}" stroke="none" fill="#666" font-family="sans-serif" font-size="14" text-anchor="middle">${xml(actor.name)}</text>` : ''}
+      ${legsSvg}
+      ${pearTorsoSvg}
+      ${tieSvg}
+      ${leftArmSvg}
+      ${rightArmSvg}
+      <ellipse cx="0" cy="${headY}" rx="46" ry="36" fill="#fff" stroke="${ink}" stroke-width="${strokeW}"/>
+      ${hairSvg}
+      ${eyesSvg}
+      ${mouthSvg}
+      ${glassesSvg}
+      ${propSvg}
+    </g>
+    ${showName && !still ? `<text x="0" y="${headY - 50}" stroke="none" fill="#666" font-family="sans-serif" font-size="14" text-anchor="middle">${xml(actor.name)}</text>` : ''}
   </g>`
 }
 
@@ -957,7 +1016,7 @@ function renderEngineer3DActor(
 }
 
 export function stickFrame(scene: StickScene, frame: number, format: VideoFormat, colors: Map<string, string>, still = false, visualStyle: StickVisualStyle = 'DOODLE_2D'): string {
-  if (still && visualStyle === 'DOODLE_2D') scene = { ...scene, actors: scene.actors.map(actor => ({ ...actor, action: actor.action === 'sit' ? 'sit' : 'stand' })) }
+  if (still && visualStyle === 'DOODLE_2D') scene = { ...scene, actors: scene.actors.map(actor => ({ ...actor, action: ['sit', 'write', 'point'].includes(actor.action) ? actor.action : 'stand' })) }
   const w = format === 'REEL' ? 540 : 960
   const h = format === 'LANDSCAPE' ? 540 : format === 'REEL' ? 960 : 960
   const floor = h * (still ? .88 : .76)
@@ -970,18 +1029,18 @@ export function stickFrame(scene: StickScene, frame: number, format: VideoFormat
 
   const outdoor = ['street', 'park', 'beach'].includes(scene.setting)
   const settingThemes: Record<string, { top: string; bot: string; floor: string; floorLine: string }> = {
-    home: { top: '#0f172a', bot: '#1e293b', floor: '#090d16', floorLine: '#38bdf8' },
-    bedroom: { top: '#1e1b4b', bot: '#312e81', floor: '#0f172a', floorLine: '#818cf8' },
-    office: { top: '#090d16', bot: '#1e293b', floor: '#020617', floorLine: '#60a5fa' },
-    street: { top: '#020617', bot: '#1e1b4b', floor: '#09090b', floorLine: '#c084fc' },
-    park: { top: '#064e3b', bot: '#022c22', floor: '#052e16', floorLine: '#34d399' },
-    hospital: { top: '#042f2e', bot: '#0f172a', floor: '#022c22', floorLine: '#2dd4bf' },
-    restaurant: { top: '#1c1917', bot: '#451a03', floor: '#0c0a09', floorLine: '#fbbf24' },
-    cafe: { top: '#292524', bot: '#44403c', floor: '#1c1917', floorLine: '#fb923c' },
-    car: { top: '#020617', bot: '#0f172a', floor: '#000000', floorLine: '#60a5fa' },
-    beach: { top: '#7c2d12', bot: '#1e3a8a', floor: '#0c4a6e', floorLine: '#fb923c' },
-    courtroom: { top: '#1e1b4b', bot: '#451a03', floor: '#09090b', floorLine: '#f87171' },
-    school: { top: '#1e293b', bot: '#0f172a', floor: '#090d16', floorLine: '#818cf8' },
+    home: { top: '#fbf7ee', bot: '#f0e6d2', floor: '#e2d3b8', floorLine: '#222222' },
+    bedroom: { top: '#f5f3ff', bot: '#ede9fe', floor: '#ddd6fe', floorLine: '#6366f1' },
+    office: { top: '#fbf4e2', bot: '#f3e5c8', floor: '#e8d5b0', floorLine: '#222222' },
+    street: { top: '#f8fafc', bot: '#e2e8f0', floor: '#cbd5e1', floorLine: '#334155' },
+    park: { top: '#e0f2fe', bot: '#dcfce7', floor: '#bbf7d0', floorLine: '#16a34a' },
+    hospital: { top: '#f0fdfa', bot: '#ccfbf1', floor: '#99f6e4', floorLine: '#0d9488' },
+    restaurant: { top: '#fffbeb', bot: '#fef3c7', floor: '#fde68a', floorLine: '#b45309' },
+    cafe: { top: '#fdf6ee', bot: '#f5e6d3', floor: '#e2ccb3', floorLine: '#78350f' },
+    car: { top: '#f0f9ff', bot: '#e0f2fe', floor: '#cbd5e1', floorLine: '#1e293b' },
+    beach: { top: '#e0f2fe', bot: '#ffedd5', floor: '#fed7aa', floorLine: '#ea580c' },
+    courtroom: { top: '#faf5ee', bot: '#f1e7d8', floor: '#decab1', floorLine: '#78350f' },
+    school: { top: '#f0fdf4', bot: '#dcfce7', floor: '#bbf7d0', floorLine: '#15803d' },
   }
   const baseTheme = settingThemes[scene.setting] || settingThemes.home
   const theme = isEngineer3D
@@ -994,13 +1053,13 @@ export function stickFrame(scene: StickScene, frame: number, format: VideoFormat
       <stop offset="100%" stop-color="${theme.bot}"/>
     </linearGradient>
     <linearGradient id="floor-grad-${frame}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="${theme.floorLine}" stop-opacity="0.45"/>
+      <stop offset="0%" stop-color="${theme.floorLine}" stop-opacity="${isEngineer3D ? '0.45' : '0.12'}"/>
       <stop offset="25%" stop-color="${theme.floor}"/>
-      <stop offset="100%" stop-color="#020617"/>
+      <stop offset="100%" stop-color="${isEngineer3D ? '#020617' : theme.floor}"/>
     </linearGradient>
     <radialGradient id="vignette-${frame}" cx="50%" cy="50%" r="75%">
-      <stop offset="55%" stop-color="#000" stop-opacity="0"/>
-      <stop offset="100%" stop-color="#000" stop-opacity="0.6"/>
+      <stop offset="65%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="${isEngineer3D ? '0.6' : '0.08'}"/>
     </radialGradient>
     ${isEngineer3D ? `<radialGradient id="head-3d-${frame}" cx="32%" cy="24%" r="78%"><stop offset="0%" stop-color="#ffffff"/><stop offset="58%" stop-color="#eef2f7"/><stop offset="100%" stop-color="#a8b5c2"/></radialGradient>
     <linearGradient id="body-3d-${frame}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#536579"/><stop offset="42%" stop-color="#1f2937"/><stop offset="100%" stop-color="#080d16"/></linearGradient>
@@ -1023,7 +1082,7 @@ export function stickFrame(scene: StickScene, frame: number, format: VideoFormat
     const scale = (still ? Math.min(h * .70 / 320, w / (scene.actors.length * 160)) : 1) * (scene.actors.length === 3 && w === 540 ? .76 : 1) * (actor.age === 'child' ? .78 : actor.age === 'elder' ? .94 : 1)
     return isEngineer3D
       ? `<ellipse cx="${x}" cy="${floor + 2}" rx="${62 * scale}" ry="${15 * scale}" fill="#020617" opacity=".52" filter="url(#engineer-shadow-${frame})"/>`
-      : `<ellipse cx="${x - 35 * scale}" cy="${floor - 170 * scale}" rx="${55 * scale}" ry="${95 * scale}" fill="#000000" opacity="0.22"/><ellipse cx="${x}" cy="${floor - 2}" rx="${48 * scale}" ry="${12 * scale}" fill="#000000" opacity="0.38"/>`
+      : `<ellipse cx="${x}" cy="${floor - 2}" rx="${50 * scale}" ry="${12 * scale}" fill="#000000" opacity="0.16"/>`
   }).join('')
 
   const actors = scene.actors.map((actor, i) => {
@@ -1073,7 +1132,7 @@ export function stickConceptFrame(
     const dangerTag = pData?.dangerTag || 'PROBLEM STATE'
     const decor = renderSettingDecor(setting, w, floor, ink)
     const accent = colors.get(actor.name) ?? ROLE_COLORS.MAIN
-    const scale = (still ? Math.min(h * 0.82 / 320, w / 200) : 1.35) * (format === 'REEL' ? 1.15 : 1.35)
+    const scale = still ? Math.min(h * 0.68 / 320, w / 240) : 1.35 * (format === 'REEL' ? 1.15 : 1.35)
     const actorSvg = renderSingleActor(actor, w * 0.45, floor, scale, phase, accent, still, false, true)
 
     const bg = `<defs>
@@ -1260,7 +1319,7 @@ export function stickConceptFrame(
   const rightChoice = hData?.rightChoice || { title: 'OPTION B: CONFESS', stake: 'LOSE CAREER & BROKE', prop: 'blue_button' }
   const dilemmaQuestion = hData?.dilemmaQuestion || 'WHAT WOULD YOU CHOOSE?'
 
-  const centerScale = (still ? Math.min(h * 0.82 / 320, w / 200) : 1.32) * (format === 'REEL' ? 1.15 : 1.25)
+  const centerScale = still ? Math.min(h * 0.68 / 320, w / 240) : 1.32 * (format === 'REEL' ? 1.15 : 1.25)
   const headFacing: -1 | 1 = still ? 1 : (Math.sin(phase * 2) > 0 ? -1 : 1)
   const centerSvg = renderSingleActor(centerActor, w * 0.5, floor, centerScale, phase, ROLE_COLORS.MAIN, still, false, false, headFacing)
 

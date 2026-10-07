@@ -9,9 +9,10 @@ import type {
   StudioImageStyle,
   StudioReelEpisode,
   StudioSceneVideoItem,
+  StudioVideoEngine,
 } from '../../../shared/stickman-engine';
 import { INITIAL_CONTENT_PILLARS, STORY_DIMENSIONS } from '../../../shared/stickman-engine';
-import type { ProjectDTO, ScriptDTO, VideoFormat, VoiceDTO } from '../../../shared/types';
+import type { MuseSettingsDTO, ProjectDTO, ScriptDTO, VideoFormat, VoiceDTO } from '../../../shared/types';
 import castPreview from '../assets/stickman-cast-preview.webp';
 import { readStudioDraft, studioDraftKey, writeStudioDraft } from '../lib/studio-draft';
 import { SAMPLE_REFRIGERATOR_SCRIPT } from '../../../shared/screenplay-parser';
@@ -190,10 +191,18 @@ function StickmanProjectSession({
   >('episodeImagesMap', {});
   const [generatingImages, setGeneratingImages] = useState(false);
 
-  // Scene Videos (Mấp máy môi / Lip-sync trực tiếp trong app)
+  // Scene Videos & Engine
+  const [sceneVideoEngine, setSceneVideoEngine] = draftField<StudioVideoEngine>('sceneVideoEngine', 'STICKMAN_LIPSYNC');
   const [sceneVideosMap, setSceneVideosMap] = draftField<Record<number, StudioSceneVideoItem>>('sceneVideosMap', {});
   const [sceneVideosOutputDir, setSceneVideosOutputDir] = draftField<string | null>('sceneVideosOutputDir', null);
   const [generatingVideos, setGeneratingVideos] = useState(false);
+  const [museModalOpen, setMuseModalOpen] = useState(false);
+  const [museSettings, setMuseSettings] = useState<MuseSettingsDTO | null>(null);
+  const [museApiUrlInput, setMuseApiUrlInput] = useState('http://127.0.0.1:8000');
+  const [museApiKeyInput, setMuseApiKeyInput] = useState('');
+  const [museWebUrlInput, setMuseWebUrlInput] = useState('https://muse.ai');
+  const [museTesting, setMuseTesting] = useState(false);
+  const [museTestMessage, setMuseTestMessage] = useState<string | null>(null);
 
   // Section regen modal
   const [regenBeatId, setRegenBeatId] = draftField<string | null>('regenBeatId', null);
@@ -741,14 +750,138 @@ function StickmanProjectSession({
     }
   }
 
+  function getSceneMusePrompt(s: EngineScene) {
+    const isVertical = format === 'SHORT';
+    const ratio = isVertical ? 'Vertical 9:16 format' : 'Widescreen 16:9 format';
+    const charSummary = (s.characters || [])
+      .map(c => `${c.name || 'Character'}${c.emotion ? ` feeling ${c.emotion}` : ''}${c.action ? `, ${c.action}` : ''}${c.prop ? `, holding ${c.prop}` : ''}`)
+      .join('. ');
+
+    const parts = [
+      `${ratio}, cinematic video, photorealistic 8k, fluid natural motion.`,
+      s.visualDescription || s.imagePrompt || '',
+      charSummary ? `Characters: ${charSummary}.` : (s.action ? `Action: ${s.action}.` : ''),
+      s.location ? `Setting: ${s.location}.` : '',
+      s.narration ? `Scene context: "${s.narration}".` : '',
+      'Camera movement: subtle tracking shot, dynamic lighting, shallow depth of field.',
+      'Continuous motion, no watermark, no text overlays, no distortion.'
+    ].filter(Boolean);
+    return parts.join(' ');
+  }
+
+  async function handleOpenMuseWindow() {
+    try {
+      await window.contentFactory.storyMedia.openMuseWindow();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleOpenMuseSettings() {
+    try {
+      const s = await window.contentFactory.settings.getMuse();
+      setMuseSettings(s);
+      setMuseApiUrlInput(s.apiUrl || 'http://127.0.0.1:8000');
+      setMuseApiKeyInput(s.apiKey || '');
+      setMuseWebUrlInput(s.webUrl || 'https://muse.ai');
+      setMuseTestMessage(null);
+      setMuseModalOpen(true);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleSaveMuseSettings() {
+    try {
+      const updated = await window.contentFactory.settings.saveMuse({
+        apiUrl: museApiUrlInput,
+        apiKey: museApiKeyInput,
+        webUrl: museWebUrlInput,
+      });
+      setMuseSettings(updated);
+      setMuseModalOpen(false);
+      alert('✓ Đã lưu cài đặt Muse AI!');
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleTestMuseConnection() {
+    setMuseTesting(true);
+    setMuseTestMessage(null);
+    try {
+      const res = await window.contentFactory.settings.testMuse();
+      setMuseTestMessage(res.ok ? `✓ ${res.message}` : `⚠️ ${res.message}`);
+    } catch (err) {
+      setMuseTestMessage(`❌ Lỗi: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setMuseTesting(false);
+    }
+  }
+
+  async function handleImportStudioSceneVideo(sceneNumber: number) {
+    if (!selectedProjectId) return;
+    try {
+      const files = await window.contentFactory.stickmanEngine.chooseSceneVideoFiles(false);
+      if (!files || files.length === 0) return;
+      setLoading(true);
+      setLoadingMessage(`Đang nhập video cho cảnh ${sceneNumber}…`);
+      const res = await window.contentFactory.stickmanEngine.importStudioSceneVideo({
+        projectId: selectedProjectId,
+        scriptId: importedScript?.scriptId,
+        sceneNumber,
+        filePath: files[0],
+        format,
+      });
+      setSceneVideosMap(prev => ({
+        ...prev,
+        [sceneNumber]: res.sceneVideo,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleImportMultipleStudioSceneVideos() {
+    if (!selectedProjectId) return;
+    try {
+      const files = await window.contentFactory.stickmanEngine.chooseSceneVideoFiles(true);
+      if (!files || files.length === 0) return;
+      setLoading(true);
+      setLoadingMessage(`Đang nhập ${files.length} video cho các phân cảnh…`);
+      const sorted = [...files].sort();
+      const newMap = { ...sceneVideosMap };
+      for (let i = 0; i < sorted.length && i < scenes.length; i++) {
+        const sceneNum = scenes[i].sceneNumber || i + 1;
+        const res = await window.contentFactory.stickmanEngine.importStudioSceneVideo({
+          projectId: selectedProjectId,
+          scriptId: importedScript?.scriptId,
+          sceneNumber: sceneNum,
+          filePath: sorted[i],
+          format,
+        });
+        newMap[sceneNum] = res.sceneVideo;
+      }
+      setSceneVideosMap(newMap);
+      alert(`🎉 Đã nhập thành công ${Math.min(sorted.length, scenes.length)} video phân cảnh!`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleGenerateStudioSceneVideos(singleSceneNumber?: number) {
     if (!selectedProjectId || scenes.length === 0 || loading || generatingVideos) return;
     setGeneratingVideos(true);
     setLoading(true);
+    const isMuse = sceneVideoEngine === 'MUSE_AI';
     setLoadingMessage(
       singleSceneNumber
-        ? `Đang dựng video cảnh ${singleSceneNumber} (người que mấp máy môi 60fps)…`
-        : `Đang dựng video mấp máy môi 60fps trực tiếp cho tất cả ${scenes.length} cảnh…`,
+        ? `Đang dựng video cảnh ${singleSceneNumber} ${isMuse ? 'bằng Muse AI' : '(người que mấp máy môi 60fps)'}…`
+        : `Đang dựng video ${isMuse ? 'bằng Muse AI' : 'mấp máy môi 60fps'} cho tất cả ${scenes.length} cảnh…`,
     );
     setError(null);
     try {
@@ -758,6 +891,7 @@ function StickmanProjectSession({
         scenes,
         format,
         style: sceneImageStyle,
+        videoEngine: sceneVideoEngine,
         singleSceneNumber,
       });
       const newMap = { ...sceneVideosMap };
@@ -768,8 +902,8 @@ function StickmanProjectSession({
       setSceneVideosOutputDir(res.outputDir);
       alert(
         singleSceneNumber
-          ? `🎉 Đã dựng xong video cảnh ${singleSceneNumber} (người que mấp máy môi 60fps) trực tiếp trong app!\nThư mục: ${res.outputDir}`
-          : `🎉 Đã dựng xong toàn bộ ${res.sceneVideos.length} video cảnh (mấp máy môi 60fps) trực tiếp trong app!\nThư mục: ${res.outputDir}`,
+          ? `🎉 Đã dựng xong video cảnh ${singleSceneNumber} ${isMuse ? '(Muse AI)' : '(người que mấp máy môi 60fps)'}!\nThư mục: ${res.outputDir}`
+          : `🎉 Đã dựng xong toàn bộ ${res.sceneVideos.length} video cảnh ${isMuse ? '(Muse AI)' : '(mấp máy môi 60fps)'}!\nThư mục: ${res.outputDir}`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1733,49 +1867,24 @@ function StickmanProjectSession({
               </p>
             </div>
             <div className="button-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <label
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '13px',
-                  color: '#94a3b8',
-                }}>
-                <span>Kiểu ảnh:</span>
-                <select
-                  value={sceneImageStyle}
-                  disabled={loading || generatingImages}
-                  onChange={e => setSceneImageStyle(e.target.value as StudioImageStyle)}
-                  style={{
-                    background: '#1e293b',
-                    color: '#f8fafc',
-                    border: '1px solid #475569',
-                    borderRadius: '6px',
-                    padding: '5px 8px',
-                    fontSize: '13px',
-                  }}>
-                  <option value="STICKMAN_2D">👤 Stickman 2D Doodle</option>
-                  <option value="STICKMAN_3D">📐 3D Engineer</option>
-                  <option value="AI_BETTER_MIND">🧠 AI A Better Mind (@abettermind)</option>
-                  <option value="AI_FLUX">⚡ AI FLUX Cinematic</option>
-                </select>
-              </label>
               <button
                 type="button"
                 className="engine-primary-btn"
-                onClick={() => void handleGenerateStudioSceneImages()}
+                onClick={() => void handleGenerateStudioSceneImages('STICKMAN_2D')}
                 disabled={loading || generatingImages || !selectedProjectId}
                 style={{ background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)' }}>
-                {generatingImages ? 'Đang tạo ảnh…' : `🖼️ Tạo bộ ảnh ${format === 'SHORT' ? '9:16' : '16:9'}`}
+                {generatingImages ? 'Đang tạo ảnh…' : `🖼️ Tạo bộ ảnh phân cảnh (Vector 2D) · ${format === 'SHORT' ? '9:16' : '16:9'}`}
               </button>
+
               <button
                 type="button"
                 className="engine-primary-btn"
                 onClick={() => void handleGenerateStudioSceneVideos()}
                 disabled={loading || generatingVideos || !selectedProjectId}
                 style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)' }}>
-                {generatingVideos ? 'Đang dựng video…' : `🎬 Dựng Video toàn bộ cảnh (Mấp máy môi)`}
+                {generatingVideos ? 'Đang dựng video…' : `🎬 Dựng video phân cảnh (Vector 2D)`}
               </button>
+
               {sceneImagesOutputDir && (
                 <button
                   type="button"
@@ -1917,7 +2026,7 @@ function StickmanProjectSession({
                             borderColor: '#6366f1',
                           }}
                           onClick={() => void window.contentFactory.app.copyText(s.animationPrompt)}>
-                          📋 Copy (nếu cần gửi AI ngoài)
+                          📋 Copy
                         </button>
                       )}
                     </div>
@@ -1936,7 +2045,7 @@ function StickmanProjectSession({
                     }}
                     disabled={loading || generatingVideos}
                     onClick={() => void handleGenerateStudioSceneVideos(s.sceneNumber)}>
-                    {generatingVideos ? '⏳ Đang dựng...' : '🎬 Dựng Video cảnh này (Mấp máy môi)'}
+                    {generatingVideos ? '⏳ Đang dựng...' : '🎬 Dựng video cảnh này (Vector 2D)'}
                   </button>
                   {sceneVideosMap[s.sceneNumber] && (
                     <button
@@ -2104,52 +2213,32 @@ function StickmanProjectSession({
                 {loading
                   ? 'Đang xử lý…'
                   : format === 'SHORT'
-                    ? '🎬 Generate Reel · 9:16'
-                    : '🎬 Generate Video dài · 16:9'}
+                    ? '🎬 Xuất Reel Full (Vector 2D) · 9:16'
+                    : '🎬 Xuất Video Full (Vector 2D) · 16:9'}
               </button>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                Kiểu ảnh:
-                <select
-                  value={sceneImageStyle}
-                  disabled={loading || generatingImages}
-                  onChange={e => setSceneImageStyle(e.target.value as StudioImageStyle)}>
-                  <option value="STICKMAN_2D">🎨 Stickman 2D</option>
-                  <option value="STICKMAN_3D">🗿 Stickman 3D Clay</option>
-                  <option value="AI_BETTER_MIND">🧠 AI Chi tiết (A Better Mind)</option>
-                  <option value="AI_FLUX">⚡ AI FLUX</option>
-                </select>
-              </label>
               <button
                 type="button"
                 className="engine-render-btn"
                 style={{ background: 'linear-gradient(135deg, #0284c7, #0369a1)', color: '#fff' }}
                 disabled={loading || generatingImages}
-                onClick={() => void handleGenerateStudioSceneImages()}>
+                onClick={() => void handleGenerateStudioSceneImages('STICKMAN_2D')}>
                 {generatingImages
                   ? '⏳ Đang tạo…'
                   : format === 'SHORT'
-                    ? '🖼️ Tạo bộ ảnh · 9:16'
-                    : '🖼️ Tạo bộ ảnh · 16:9'}
+                    ? '🖼️ Tạo bộ ảnh phân cảnh (Vector 2D) · 9:16'
+                    : '🖼️ Tạo bộ ảnh phân cảnh (Vector 2D) · 16:9'}
               </button>
               <button
                 type="button"
                 className="engine-render-btn"
                 style={{ background: 'linear-gradient(135deg, #d97706, #b45309)', color: '#fff' }}
                 disabled={loading || generatingImages}
-                onClick={() => void handleGenerateStudioThumbnail()}>
+                onClick={() => void handleGenerateStudioThumbnail('STICKMAN_2D')}>
                 {generatingImages
                   ? '⏳ Đang tạo…'
                   : format === 'SHORT'
-                    ? '🎨 Tạo Thumbnail · 9:16'
-                    : '🎨 Tạo Thumbnail · 16:9'}
-              </button>
-              <button
-                type="button"
-                className="engine-render-btn"
-                style={{ background: 'linear-gradient(135deg, #7c3aed, #ec4899)', color: '#fff' }}
-                disabled={loading || generatingVideos}
-                onClick={() => void handleGenerateStudioSceneVideos()}>
-                {generatingVideos ? '⏳ Đang dựng…' : '🎬 Dựng Video toàn cảnh (Mấp máy môi)'}
+                    ? '🎨 Tạo Thumbnail (Vector 2D) · 9:16'
+                    : '🎨 Tạo Thumbnail (Vector 2D) · 16:9'}
               </button>
               <button type="button" className="engine-secondary-btn" onClick={handleCopyPackage}>
                 📋 Sao chép Gói Nội Dung
@@ -2549,6 +2638,92 @@ function StickmanProjectSession({
                 onClick={() => void handleImportScreenplay()}>
                 {importScriptLoading ? '⏳ Đang phân cảnh…' : '🚀 Tự Động Phân Cảnh & Dựng Kịch Bản'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL: CÀI ĐẶT MUSE AI */}
+      {museModalOpen && (
+        <div className="engine-modal-backdrop" onClick={() => setMuseModalOpen(false)}>
+          <div className="engine-modal-card" style={{ maxWidth: 540 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>🎥 Cấu Hình Muse AI (Video Generator)</span>
+              </h3>
+              <button type="button" className="engine-close-btn" onClick={() => setMuseModalOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <p style={{ fontSize: 13, color: '#94a3b8', margin: '8px 0 16px' }}>
+              Kết nối với Muse AI qua API Bridge (như <code>muse2api</code>, proxy local hoặc server riêng) để tự động tạo video cho từng phân đoạn kịch bản.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label>
+                <span style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12, color: '#cbd5e1' }}>
+                  API Bridge URL (OpenAI-compatible hoặc muse2api):
+                </span>
+                <input
+                  type="text"
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#fff' }}
+                  value={museApiUrlInput}
+                  onChange={e => setMuseApiUrlInput(e.target.value)}
+                  placeholder="http://127.0.0.1:8000"
+                />
+                <small style={{ color: '#64748b', fontSize: 11 }}>
+                  Mặc định là <code>http://127.0.0.1:8000</code> khi chạy bridge cục bộ trên máy.
+                </small>
+              </label>
+
+              <label>
+                <span style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12, color: '#cbd5e1' }}>
+                  API Key (nếu bridge hoặc proxy yêu cầu):
+                </span>
+                <input
+                  type="password"
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#fff' }}
+                  value={museApiKeyInput}
+                  onChange={e => setMuseApiKeyInput(e.target.value)}
+                  placeholder="Tùy chọn (để trống nếu không cần)"
+                />
+              </label>
+
+              <label>
+                <span style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12, color: '#cbd5e1' }}>
+                  Địa chỉ Muse AI Web:
+                </span>
+                <input
+                  type="text"
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#fff' }}
+                  value={museWebUrlInput}
+                  onChange={e => setMuseWebUrlInput(e.target.value)}
+                  placeholder="https://muse.ai"
+                />
+              </label>
+
+              {museTestMessage && (
+                <div style={{ padding: '8px 12px', borderRadius: 6, background: '#1e293b', fontSize: 12, color: '#f8fafc' }}>
+                  {museTestMessage}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between' }}>
+              <button
+                type="button"
+                className="engine-secondary-btn"
+                disabled={museTesting}
+                onClick={() => void handleTestMuseConnection()}>
+                {museTesting ? '⏳ Đang kiểm tra…' : '🔌 Kiểm tra kết nối API'}
+              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="engine-secondary-btn" onClick={() => setMuseModalOpen(false)}>
+                  Đóng
+                </button>
+                <button type="button" className="engine-primary-btn" onClick={() => void handleSaveMuseSettings()}>
+                  💾 Lưu Cấu Hình
+                </button>
+              </div>
             </div>
           </div>
         </div>
